@@ -1,5 +1,7 @@
 # Compete on economic & network moats, not Skill secrecy
 
+**Status:** Accepted, updated 2026-06 (post-feasibility validation)
+
 ## Context
 
 Without TEE (tabled in ADR 0003), a hidden Skill's *behavior* can be partially reconstructed from

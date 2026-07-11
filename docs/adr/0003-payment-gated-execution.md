@@ -1,5 +1,7 @@
 # Payment-gated execution: payment is the meter, not a witness
 
+**Status:** Accepted, updated 2026-06 (post-feasibility validation); clarified 2026-07-11 (Wielder-side qualifier per ADR-0008)
+
 ## Context
 
 A Skill runs hidden off-chain; royalties settle on-chain. The intuitive design — "prove to the
@@ -37,10 +39,14 @@ synchronous, single-chain, atomic** case. The real architecture (ADR-0005) decou
 gate (x402/USDC on Base) from on-chain royalty settlement (Story), with **off-chain batching**.
 Consequence:
 
-- The per-invocation **gate** stays trust-minimized — *no credential, no run*, enforced per call.
+- The per-invocation **gate** stays **Wielder-side** trust-minimized — *no credential, no run*,
+  enforced per call (the Wielder cannot obtain a run without a settled payment; from every other
+  seat this is enforced by the Collar's own code and key custody — an ops SLO backed by a
+  key-custody/rotation design, not an architectural property; see ADR-0008 and the PRD's
+  Reliability targets).
 - **Settlement** degrades from "structurally impossible to defraud" to an **auditable accumulator**:
-  the collar batches off-chain and could in principle mis-report or skim. Mitigations: signed,
+  the Collar batches off-chain and could in principle mis-report or skim. Mitigations: signed,
   auditable invocation logs; on-chain published settlement batches for reconciliation; refund +
   reputation for accept-payment-but-fail-to-run; tabled TEE as the eventual structural fix.
-- The **execution credential** is the x402 settled **txHash** (collar-checked off-chain), NOT a
+- The **execution credential** is the x402 settled **txHash** (Collar-checked off-chain), NOT a
   per-call on-chain Story License Token (uneconomic at per-call cadence).

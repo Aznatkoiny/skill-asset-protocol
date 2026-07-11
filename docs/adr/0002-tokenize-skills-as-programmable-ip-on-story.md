@@ -1,5 +1,7 @@
 # Tokenize Skills as Programmable IP on Story Protocol
 
+**Status:** Accepted, updated 2026-06 (post-feasibility validation); amended 2026-07-11 (see Update)
+
 ## Context
 
 The token must do three jobs at once: (1) tamper-proof **provenance** of who authored a Skill,
@@ -51,3 +53,6 @@ full analysis in `docs/feasibility/report.md`:
   composable trading market is not available. Trading must be permissioned (ERC-3643 + ATS +
   transfer agent); claims are kept non-transferable in closed modes (ADR-0006).
 - The "attestation bridge" is resolved as the **two-leg settlement** of ADR-0005.
+- **2026-07-11:** Superseded on emphasis by ADR-0007 — the tradeable claim is underwritten
+  optionality, not the goal ("the goal is to trailblaze" no longer stands); the regulatory
+  exposure of tradeability is deferred with Phase 3, not accepted up front.

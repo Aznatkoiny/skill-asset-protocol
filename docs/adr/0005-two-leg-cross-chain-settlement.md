@@ -1,5 +1,7 @@
 # Two-leg cross-chain settlement; off-chain execution credential
 
+**Status:** Accepted, updated 2026-06 (pre-build spikes)
+
 ## Context
 
 Feasibility validation (`docs/feasibility/report.md`) found the literal ADR-0003 vision — one
@@ -19,7 +21,7 @@ Settle in **two decoupled legs**:
 
 - **Leg 1 — synchronous gate (Base):** the Wielder pays USDC on Base via x402 (EIP-3009
   `transferWithAuthorization`, gasless). The settled **txHash is the single-use execution
-  credential**, checked off-chain by the collar. Settle the payment first (sub-second), release the
+  credential**, checked off-chain by the Collar. Settle the payment first (sub-second), release the
   credential, *then* run the agent asynchronously and stream output — never hold the x402 handshake
   open across the agent run (x402 `maxTimeoutSeconds` ~60s < cold agent start + loop).
 - **Leg 2 — asynchronous settlement (Story):** an off-chain worker accrues payments in an auditable
@@ -39,10 +41,10 @@ The execution credential is **off-chain**; do NOT mint a per-call on-chain Licen
 ## Consequences
 
 - Settlement is **eventually-consistent**, not atomic.
-- Batching makes the collar an **in-flight fund custodian** → FinCEN MSB exposure. Minimize custody:
-  route in-flight value through a licensed facilitator/bridge and keep the collar a non-custodial
+- Batching makes the Collar an **in-flight fund custodian** → FinCEN MSB exposure. Minimize custody:
+  route in-flight value through a licensed facilitator/bridge and keep the Collar a non-custodial
   pass-through (see ADR-0006 + regulatory section of the report).
-- A bridge stall leaves "execution done, ancestor unpaid" — needs reconciliation + sound collar
+- A bridge stall leaves "execution done, ancestor unpaid" — needs reconciliation + sound Collar
   bookkeeping.
 - **Re-verify before building:** that no x402 facilitator has added Story 1514; the CDP fee schedule;
   cold `sessions.create`→first-token latency; whether a License Token can serve as a non-burned
@@ -64,7 +66,7 @@ Spike results in `docs/feasibility/prebuild-spikes.md`. All four confirm this AD
   and per-call minting is on-chain WIP + gas + block latency. **License Tokens are scoped to Phase 0
   provenance / fork declaration only.**
 - **Finality caveat (new):** the x402 "~200ms" is a Base **Flashblocks preconfirmation**, not hard
-  finality; under congestion Base confirmation can take **10–28s**. The collar must own its own
+  finality; under congestion Base confirmation can take **10–28s**. The Collar must own its own
   txHash/nonce bookkeeping, set sane timeouts, and fund refunds from treasury (x402 is irreversible,
   no resubmit).
 - **Latency (Leg 1 + run) is acceptable:** no Anthropic SLA (CMA beta), but the async-after-gate

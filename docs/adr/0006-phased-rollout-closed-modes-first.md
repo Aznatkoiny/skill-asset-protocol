@@ -1,5 +1,7 @@
 # Phased rollout: closed modes first; tradeable claims are permissioned securities
 
+**Status:** Accepted (2026-06-06), amended 2026-07-11
+
 ## Context
 
 Feasibility validation (`docs/feasibility/report.md`) found:
@@ -35,3 +37,19 @@ Launch in order of *safety*, not ambition:
   is gated behind the securities stack.
 - Cloning risk is met first where it is weakest (closed modes), buying time to build live-evolution /
   live-data moats before facing the open market.
+
+## Amendment (2026-07-11)
+
+Emphasis reversed per ADR-0007. The phasing above stands; its framing does not:
+
+- **Phase 1 is the terminal state by design.** The closed-mode compensation layer must be
+  independently viable if Phases 2–3 never ship. Phases 2–3 are exercised only if warranted —
+  they are no longer the point of the exercise (ADR-0007).
+- **The open Marketplace is underwritten optionality, not the headline or the destination.** The
+  Consequences above ("the headline … is the **last** thing shipped", "buying time … before facing
+  the open market") record the pre-reframe emphasis: closed modes are no longer a waypoint toward
+  the open market.
+- **Education is demoted from the Phase-1 follow-on to deferred** ("Intra-org, then Education" no
+  longer holds): it un-defers only if a re-run of the fork-economics spike, with "re-author with
+  class knowledge ≈ free" as an explicit alternative branch, still shows a real forking incentive
+  (ADR-0007).

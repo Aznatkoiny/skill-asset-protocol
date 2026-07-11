@@ -1,9 +1,13 @@
 # Skill Asset Protocol (working name)
 
-A protocol for tokenizing and monetizing the long-term value of authored **Skills**
-(natively-digital work artifacts such as Claude Code skills, plugins, and agents) so
-their **Creators** retain a durable economic claim each time others use them — instead
-of handing the value over once and capturing none of the upside.
+A compensation, attribution, and metering layer for authored **Skills**
+(natively-digital work artifacts such as Claude Code skills, plugins, and agents) —
+"Carta for AI work artifacts." **Creators** retain a durable, co-holdable economic
+claim each time others use their Skill, instead of handing the value over once under
+work-for-hire and capturing none of the upside. The closed modes (**Intra-org**;
+**Education**, currently deferred pending the fork-economics re-run — ADR-0007) are
+the product; the open **Marketplace** is one *future* mode —
+underwritten optionality, not the identity (ADR-0007).
 
 ## Language
 
@@ -18,8 +22,12 @@ _Avoid_: author, developer, owner (ownership becomes ambiguous once tokenized)
 
 **Wielder**:
 The party that invokes a **Skill** to perform productive work. Need not be the party
-that ultimately profits from that work.
-_Avoid_: user (overloaded), operator, consumer
+that ultimately profits from that work. Any client that can pay is a Wielder: a wallet,
+not a specific harness — Claude Code, Pi, a cron job, and curl are all Wielders. The
+paying wallet may be funded by the **Beneficiary** — who wields and who funds the
+payment remain distinct roles. The entire Wielder-side protocol footprint is "answer
+HTTP 402 with a signed payment and retry" (ADR-0008).
+_Avoid_: user (overloaded), operator, consumer, harness (a Wielder may be one, but need not be)
 
 **Beneficiary**:
 The party that realizes downstream economic value from a **Wielder**'s use of a **Skill**
@@ -32,13 +40,21 @@ The open venue where **Invocation-rights** to **Skills** are offered to any **Wi
 privately; the Marketplace is the public one.
 _Avoid_: store, exchange, platform
 
+**Collar**:
+The hosted gate wrapped around a **Skill**'s execution: the sole platform API-key holder,
+the x402 resource server (it answers unpaid requests with HTTP 402 and checks the settled
+payment as the **Execution credential**), and the off-chain meter that records every
+**Invocation** and credits the royalty split. The single trusted component in the system —
+the **Wielder** stays a thin payer precisely because the Collar absorbs the trust.
+_Avoid_: gateway, proxy, middleware (each names a mechanism; the Collar is the trust boundary)
+
 ## Archetypes
 
 The three distribution modes are all the same Creator → Wielder → Beneficiary shape,
 collapsed differently:
 
 - **Marketplace**: independent **Creator** → any **Wielder** (Wielder and Beneficiary are the same person)
-- **Intra-org**: employee-**Creator** and employer **co-hold the Royalty claim** (replacing work-for-hire's 100/0); shared upside comes from *external* **Wielders** invoking the Skill across the **Marketplace**
+- **Intra-org**: employee-**Creator** and employer **co-hold the Royalty claim** (replacing work-for-hire's 100/0); shared upside comes from *external* **Wielders** invoking the Skill — routed privately/directly in the closed modes, or via the open **Marketplace** if that mode ever ships
 - **Education**: institution-**Creator** authors a base **Skill**; the student forks it into a **Derivative** they own (becoming a **Creator** themselves) and wields it at work; the employer-**Beneficiary** pays per **Invocation**, which splits to the student's **Derivative** and flows through to the school
 
 ## Relationships
@@ -57,7 +73,9 @@ _Avoid_: call, request, run (use Invocation for the billable unit specifically)
 
 **Invocation-right**:
 What a Wielder acquires — permission to trigger **Invocations** of a **Skill**, priced
-per use. This (not the artifact) is the thing that gets tokenized and traded.
+per use and exercised by paying (ADR-0008). It (not the artifact) is what gets
+tokenized — and traded only in the open **Marketplace** mode (underwritten
+optionality, ADR-0007).
 _Avoid_: license (too broad), ownership
 
 **Derivative**:
@@ -100,5 +118,13 @@ _Avoid_: token (overloaded), license, key
   deferred trust boundary per ADR-0004; TEE is the tabled future hardening. The Skill IS hidden
   from the **Wielder**, who sees only the output.
 - Settlement is **eventually-consistent**, not atomic: the per-**Invocation** payment gate and the
-  on-chain royalty settlement are decoupled legs (ADR-0005). The gate is trust-minimized; batched
-  settlement is an "auditable accumulator" (ADR-0003 Update).
+  on-chain royalty settlement are decoupled legs (ADR-0005). The gate is **Wielder-side**
+  trust-minimized — the trusted component is the **Collar**; batched settlement is an "auditable
+  accumulator" (ADR-0003 Update).
+- Marketplace-vs-closed-mode identity — RESOLVED (2026-07): the closed modes ARE the product — a
+  compensation/attribution layer that must be independently viable even if the open **Marketplace**
+  never ships. The Marketplace is underwritten optionality, not the identity (ADR-0007).
+- What fraction of the existing skill supply is **host-compatible** — i.e. loses little of its value
+  when executed hosted, behind a **Collar**, rather than inside the caller's own context — is
+  UNKNOWN and unmeasured. Context-bound skills (plausibly most Claude Code skills) may lose most of
+  their value when hosted. Flagged, not resolved.
