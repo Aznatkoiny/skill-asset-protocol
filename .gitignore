@@ -1,0 +1,13 @@
+# Secrets — never commit (phase0/.env holds the Story wallet private key)
+.env
+*.env
+!.env.example
+
+# Dependencies & build output
+node_modules/
+dist/
+out/
+
+# Local machine state
+.DS_Store
+.claude/settings.local.json
