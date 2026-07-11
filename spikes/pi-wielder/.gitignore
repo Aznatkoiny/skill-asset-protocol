@@ -1,0 +1,4 @@
+# Session ledgers are per-run artifacts, not source.
+session-ledger.jsonl
+*.jsonl
+# (.env and node_modules are already ignored by the repo root .gitignore)
