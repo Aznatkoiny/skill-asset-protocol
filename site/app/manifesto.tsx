@@ -10,9 +10,9 @@
 // garment label.
 
 import { useState } from 'react';
-import type { Manifesto } from '../content';
-import { useInvoke, type InvokeState } from '../components/useInvoke';
-import styles from './VariantA.module.css';
+import type { Manifesto } from './content';
+import { useInvoke, type InvokeState } from './components/useInvoke';
+import styles from './manifesto.module.css';
 
 const YELLOW = '#FFD100';
 
