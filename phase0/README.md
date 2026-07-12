@@ -1,65 +1,104 @@
-# Phase 0 — Provenance (Story IP Assets + Derivatives)
+# Phase 0 — Story provenance demo
 
-The first real, shippable slice (ADR-0006, Phase 0). It establishes the
-**provenance + fork-graph** that the whole moat rests on — *before* any payments,
-agents, or settlement. Everything runs on **Story's Aeneid testnet**.
-
-What it does:
-- Register a **Skill** as a Story **IP Asset** with commercial-remix **PIL** license terms.
-- Hash the actual skill artifact (`--skill-file`) into the on-chain record (content provenance).
-- Register a **Derivative** (fork) that declares its parent on-chain, so royalties can flow later.
-
-Royalty policy defaults to **LAP** (the originator keeps a share of *all* descendants regardless of
-depth) — the answer to the spike-4 depth-dilution finding. Use `--policy LRP` for per-hop relative.
-The LAP-vs-LRP decision is a real Phase-2 commitment (see `../docs/feasibility/prebuild-spikes.md`);
-LAP is the safer default for the education vision.
-
-## Setup
+From a funded Aeneid wallet, one command creates an SPG NFT collection and
+registers a real three-level provenance graph:
 
 ```bash
 cd phase0
 npm install
-cp .env.example .env          # then edit .env
+cp .env.example .env        # add a throwaway testnet key
+npm run demo
 ```
 
-In `.env`, set `WALLET_PRIVATE_KEY` to a **throwaway** testnet key, then fund it:
-- Faucet: https://aeneid.faucet.story.foundation/ (10 IP per claim)
+The demo checks the RPC's chain ID and the wallet's native-IP balance before it
+does anything else. An exactly-zero balance exits nonzero before metadata is
+fetched, `registrations.json` is changed, or a Story transaction is submitted,
+and prints the wallet, network, and Aeneid faucet URL. Funding is always a human
+step: <https://aeneid.faucet.story.foundation/>.
+
+## What the command writes
+
+The confirmed sequence is:
+
+1. create an SPG NFT collection;
+2. register the base **Skill** with commercial-remix PIL terms and a small,
+   positive, testnet-only minting fee (`0.001 IP`);
+3. register a declared **Derivative** of that Skill;
+4. register a second-level Derivative whose parent is the first Derivative.
+
+The three artifacts are committed under `fixtures/`; every registration hashes
+the actual `SKILL.md` bytes with SHA-256. IP and NFT metadata JSON are each
+serialized exactly once, hashed with SHA-256, embedded by default in a
+retrievable `https://httpbin.org/base64/<base64url>` URI, fetched back, and
+byte-compared before any Story write. `IP_METADATA_URI` and `NFT_METADATA_URI`
+may override those defaults only when their fetched bytes match exactly.
+
+Immediately after every confirmed transaction, the demo atomically replaces
+`registrations.json`. The artifact records the network and wallet, SPG contract,
+collection transaction, and each Skill/Derivative's `ipId`, `tokenId`,
+transaction hash, inherited license-terms ID, parent IP IDs, minting-fee values,
+and metadata URI/hash pairs. Native `bigint` values are persisted as decimal
+strings. A rerun with the same chain and wallet skips confirmed stages and
+resumes only the missing suffix; a different wallet is rejected rather than
+overwriting the proof.
+
+The committed artifact is deliberately `status: "not-run"` with null IDs. The
+write path remains **unexecuted** until `registrations.json` contains confirmed
+IDs and transaction hashes from a funded-wallet run.
+
+Before each Derivative transaction, the CLI calls
+`predictMintingLicenseFee(..., amount: 1)` and passes the returned `tokenAmount`
+as an explicit `maxMintingFee` cap. In Story SDK 1.4.4, `0` means unlimited; the
+explicit predicted cap is spend protection and exercises the paid-parent path,
+not a workaround for a claimed SDK incompatibility.
+
+## Network boundary and PRD criterion
+
+This code targets **Story Aeneid testnet, chain ID 1315**, and never sends
+mainnet transactions or real funds. The PRD's Phase-0 success criterion targets
+**Story mainnet, chain ID 1514**, and requires broader proof than this testnet
+write path. Aeneid results are useful engineering evidence; they **do not
+satisfy the PRD Phase-0 success criterion**.
+
+## Advanced commands
+
+The individual commands remain available for targeted runs. They return only
+after validating the SDK's optional proof fields, and registrations verify
+metadata bytes before submitting a transaction.
 
 ```bash
-npm run check                 # confirms wallet, chain, balance
+npm run check
+
+npm run create-collection -- --name Skills --symbol SKILL
+
+npm run register-skill -- \
+  --spg <spgNftContract> \
+  --name "research-skill" \
+  --description "base research Skill" \
+  --skill-file fixtures/demo-base/SKILL.md \
+  --rev-share 25 \
+  --policy LAP \
+  --minting-fee 1000000000000000
+
+npm run register-derivative -- \
+  --spg <spgNftContract> \
+  --parent <parentIpId> \
+  --license-terms-id <licenseTermsId> \
+  --name "research-derivative" \
+  --description "declared Derivative" \
+  --skill-file fixtures/demo-child/SKILL.md
 ```
 
-## Usage
+`register-derivative` predicts the parent's current minting fee immediately
+before its write and uses that value as the cap. Explorer links use
+<https://aeneid.explorer.story.foundation/>.
+
+## Local verification
 
 ```bash
-# 1. one-time: create an SPG NFT collection to mint Skills into
-npm run create-collection
-#    → copy the printed spgNftContract into .env as SPG_NFT_CONTRACT
-
-# 2. register a Skill (here, hashing this repo's own CONTEXT.md as the artifact)
-npm run register-skill -- --name "fin-modeling" --description "base financial-modeling skill" \
-  --skill-file ../CONTEXT.md --rev-share 25
-#    → prints ipId + licenseTermsId, and the exact command to fork it
-
-# 3. register a Derivative (a student forking the school's Skill)
-npm run register-derivative -- --parent <parentIpId> --license-terms-id <id> \
-  --name "biotech-fin-modeling" --description "a fork specialised for biotech"
+npm test
+npm run typecheck
 ```
 
-Each command prints an explorer link (`https://aeneid.explorer.story.foundation/ipa/<ipId>`) so you
-can see the IP Asset and its parent/child links on-chain.
-
-## What this proves (and what it deliberately doesn't)
-
-**Proves:** a Skill and its fork lineage are registered on-chain with declared ancestry and license
-terms — the provenance layer the marketplace moat depends on (ADR-0004).
-
-**Out of scope for Phase 0** (later phases): the payment gate (x402), hidden hosted execution
-(managed agent), and royalty *settlement* (the two-leg flow of ADR-0005). This slice intentionally
-has no money movement.
-
-## Notes
-- Testnet only. Use a throwaway key.
-- Metadata: if you don't set `IP_METADATA_URI` / `NFT_METADATA_URI`, placeholders are used — the
-  on-chain content **hashes** are still real. For production, pin the metadata JSON to IPFS.
-- SDK: `@story-protocol/core-sdk` v1.4.x. `commercialRevShare` is an integer **percent (0–100)**.
+The tests use injected fakes only at filesystem, HTTP, RPC, and Story SDK
+boundaries. They make no network calls and use no wallet key.

@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "status": "not-run",
+  "network": {
+    "name": "Story Aeneid",
+    "chainId": 1315
+  },
+  "wallet": null,
+  "spgNftContract": null,
+  "collectionTxHash": null,
+  "registrations": {
+    "root": null,
+    "child": null,
+    "grandchild": null
+  }
+}

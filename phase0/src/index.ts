@@ -1,152 +1,203 @@
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { formatEther, type Address } from "viem";
-import { PILFlavor, WIP_TOKEN_ADDRESS, NativeRoyaltyPolicy } from "@story-protocol/core-sdk";
-import { getAccount, getClient, getPublicClient, EXPLORER } from "./client";
-import { buildMetadata } from "./metadata";
 
-const { values: o, positionals } = parseArgs({
+import { formatEther, type Address } from "viem";
+
+import { EXPLORER, getAccount, getClient, getPublicClient } from "./client";
+import { runDemo } from "./demo";
+import { HttpMetadataProvider } from "./metadata";
+import { FileRegistrationStore } from "./registrations";
+import {
+  StoryChain,
+} from "./story";
+
+const { values: options, positionals } = parseArgs({
   allowPositionals: true,
   options: {
     name: { type: "string" },
     description: { type: "string" },
     "skill-file": { type: "string" },
-    "rev-share": { type: "string" }, // percent 0-100
-    policy: { type: "string" }, // LAP | LRP
-    "minting-fee": { type: "string" }, // wei
+    "rev-share": { type: "string" },
+    policy: { type: "string" },
+    "minting-fee": { type: "string" },
     spg: { type: "string" },
     symbol: { type: "string" },
-    parent: { type: "string" }, // parent ipId for a derivative
+    parent: { type: "string" },
     "license-terms-id": { type: "string" },
   },
 });
 
-const cmd = positionals[0];
+const command = positionals[0];
+const registrationsPath = fileURLToPath(new URL("../registrations.json", import.meta.url));
+
+function storyChain(): StoryChain {
+  return new StoryChain({
+    sdk: getClient(),
+    publicClient: getPublicClient(),
+  });
+}
+
+function requiredOption(name: keyof typeof options): string {
+  const value = options[name];
+  if (typeof value !== "string" || value.length === 0) throw new Error(`--${name} is required`);
+  return value;
+}
 
 function spgAddress(): Address {
-  const spg = (o.spg ?? process.env.SPG_NFT_CONTRACT) as Address | undefined;
-  if (!spg) throw new Error("No SPG collection. Run `npm run create-collection`, then set SPG_NFT_CONTRACT in .env (or pass --spg).");
-  return spg;
+  const value = options.spg ?? process.env.SPG_NFT_CONTRACT;
+  if (!value) {
+    throw new Error(
+      "No SPG collection. Run `npm run demo`, or run `npm run create-collection` and pass --spg/set SPG_NFT_CONTRACT.",
+    );
+  }
+  return value as Address;
+}
+
+function royaltyPolicy(): "LAP" | "LRP" {
+  const value = (options.policy ?? "LAP").toUpperCase();
+  if (value !== "LAP" && value !== "LRP") throw new Error("--policy must be LAP or LRP");
+  return value;
 }
 
 async function check() {
   const account = getAccount();
-  const bal = await getPublicClient().getBalance({ address: account.address });
+  const chain = storyChain();
+  const chainId = await chain.getChainId();
+  const balance = await chain.getBalance(account.address);
   console.log("wallet      :", account.address);
-  console.log("chain       : Story Aeneid (1315)");
-  console.log("balance     :", formatEther(bal), "IP");
-  console.log("SPG contract:", process.env.SPG_NFT_CONTRACT || "(none — run create-collection)");
-  if (bal === 0n) console.log("\n⚠ Wallet has 0 IP. Fund it: https://aeneid.faucet.story.foundation/");
+  console.log("chain       :", `Story Aeneid (${chainId})`);
+  console.log("balance     :", formatEther(balance), "IP");
+  console.log("SPG contract:", process.env.SPG_NFT_CONTRACT || "(none — npm run demo creates one)");
+  if (balance === 0n) {
+    console.log("\n⚠ Wallet has 0 IP. Fund it manually: https://aeneid.faucet.story.foundation/");
+  }
+  return { wallet: account.address, chainId, balance };
 }
 
 async function createCollection() {
-  const client = getClient();
-  const res = await client.nftClient.createNFTCollection({
-    name: o.name ?? "Skills",
-    symbol: o.symbol ?? "SKILL",
-    isPublicMinting: true,
-    mintOpen: true,
-    mintFeeRecipient: getAccount().address,
-    contractURI: "",
+  const account = getAccount();
+  const result = await storyChain().createCollection({
+    name: options.name ?? "Skills",
+    symbol: options.symbol ?? "SKILL",
+    mintFeeRecipient: account.address,
   });
-  console.log("✓ SPG collection created");
-  console.log("spgNftContract:", res.spgNftContract);
-  console.log("txHash        :", res.txHash);
-  console.log("\n→ add to .env:  SPG_NFT_CONTRACT=" + res.spgNftContract);
+  console.log("✓ SPG NFT collection created");
+  console.log("spgNftContract:", result.spgNftContract);
+  console.log("txHash        :", result.txHash);
+  console.log("\n→ pass to advanced commands: --spg " + result.spgNftContract);
+  return result;
 }
 
 async function registerSkill() {
-  if (!o.name) throw new Error("--name is required");
-  const client = getClient();
-  const revShare = Number(o["rev-share"] ?? "25");
-  const policy = (o.policy ?? "LAP").toUpperCase() === "LRP" ? NativeRoyaltyPolicy.LRP : NativeRoyaltyPolicy.LAP;
-  const mintingFee = BigInt(o["minting-fee"] ?? "0");
-
-  const meta = buildMetadata(client, {
-    name: o.name,
-    description: o.description ?? "",
-    creatorAddress: getAccount().address,
-    skillFile: o["skill-file"],
+  const account = getAccount();
+  const name = requiredOption("name");
+  const artifactPath = requiredOption("skill-file");
+  const metadata = await new HttpMetadataProvider().prepare({
+    stage: "root",
+    name,
+    description: options.description ?? "",
+    creatorAddress: account.address,
+    artifactPath,
   });
-
-  const terms = PILFlavor.commercialRemix({
-    defaultMintingFee: mintingFee,
-    commercialRevShare: revShare, // percent 0-100
-    currency: WIP_TOKEN_ADDRESS,
-    royaltyPolicy: policy, // default LAP — protects originators against depth-dilution (spike 4)
-  });
-
-  const res = await client.ipAsset.mintAndRegisterIpAssetWithPilTerms({
+  const revShare = Number(options["rev-share"] ?? "25");
+  const result = await storyChain().registerSkill({
     spgNftContract: spgAddress(),
-    licenseTermsData: [{ terms }],
-    ipMetadata: meta.onchain,
+    metadata: metadata.onchain,
+    defaultMintingFee: BigInt(options["minting-fee"] ?? "0"),
+    revShare,
+    policy: royaltyPolicy(),
   });
-
   console.log("✓ Skill registered as a Story IP Asset");
-  console.log("ipId          :", res.ipId);
-  console.log("tokenId       :", res.tokenId?.toString());
-  console.log("licenseTermsId:", res.licenseTermsIds?.[0]?.toString());
-  console.log("revShare      :", revShare + "%", "| policy:", policy === NativeRoyaltyPolicy.LRP ? "LRP" : "LAP");
-  if (meta.contentHash) console.log("skill content :", meta.contentHash, "(keccak256 of the artifact)");
-  console.log("txHash        :", res.txHash);
-  console.log("explorer      :", `${EXPLORER}/ipa/${res.ipId}`);
-  console.log("\n→ to fork this Skill:  npm run register-derivative -- --parent " + res.ipId + " --license-terms-id " + res.licenseTermsIds?.[0]?.toString() + " --name \"<fork name>\"");
+  console.log("ipId          :", result.ipId);
+  console.log("tokenId       :", result.tokenId.toString());
+  console.log("licenseTermsId:", result.licenseTermsId.toString());
+  console.log("artifact hash :", metadata.proof.artifact.mediaHash, "(SHA-256)");
+  console.log("txHash        :", result.txHash);
+  console.log("explorer      :", `${EXPLORER}/ipa/${result.ipId}`);
+  return { ...result, metadata };
 }
 
 async function registerDerivative() {
-  if (!o.name) throw new Error("--name is required");
-  if (!o.parent) throw new Error("--parent <ipId> is required");
-  if (!o["license-terms-id"]) throw new Error("--license-terms-id <id> is required (the parent's licenseTermsId)");
-  const client = getClient();
-
-  const meta = buildMetadata(client, {
-    name: o.name,
-    description: o.description ?? "",
-    creatorAddress: getAccount().address,
-    skillFile: o["skill-file"],
+  const account = getAccount();
+  const name = requiredOption("name");
+  const artifactPath = requiredOption("skill-file");
+  const parentIpId = requiredOption("parent") as Address;
+  const licenseTermsId = BigInt(requiredOption("license-terms-id"));
+  const metadata = await new HttpMetadataProvider().prepare({
+    stage: "child",
+    name,
+    description: options.description ?? "",
+    creatorAddress: account.address,
+    artifactPath,
   });
-
-  const res = await client.ipAsset.mintAndRegisterIpAndMakeDerivative({
+  const chain = storyChain();
+  const predicted = await chain.predictMintingLicenseFee({
+    licensorIpId: parentIpId,
+    licenseTermsId,
+    amount: 1,
+  });
+  const result = await chain.registerDerivative({
     spgNftContract: spgAddress(),
-    derivData: {
-      parentIpIds: [o.parent as Address],
-      licenseTermsIds: [BigInt(o["license-terms-id"])],
-      maxMintingFee: 0n,
-      maxRts: 100_000_000,
-      maxRevenueShare: 100,
-    },
-    ipMetadata: meta.onchain,
+    parentIpId,
+    licenseTermsId,
+    maxMintingFee: predicted.tokenAmount,
+    metadata: metadata.onchain,
   });
-
-  console.log("✓ Derivative registered (owes royalties to its parent on-chain)");
-  console.log("ipId    :", res.ipId);
-  console.log("tokenId :", res.tokenId?.toString());
-  console.log("parent  :", o.parent);
-  console.log("txHash  :", res.txHash);
-  console.log("explorer:", `${EXPLORER}/ipa/${res.ipId}`);
+  console.log("✓ Derivative registered (declared parent on-chain)");
+  console.log("ipId          :", result.ipId);
+  console.log("tokenId       :", result.tokenId.toString());
+  console.log("parentIpId    :", parentIpId);
+  console.log("licenseTermsId:", licenseTermsId.toString());
+  console.log("maxMintingFee :", predicted.tokenAmount.toString(), "(predicted explicit cap)");
+  console.log("artifact hash :", metadata.proof.artifact.mediaHash, "(SHA-256)");
+  console.log("txHash        :", result.txHash);
+  console.log("explorer      :", `${EXPLORER}/ipa/${result.ipId}`);
+  return { ...result, licenseTermsId, maxMintingFee: predicted.tokenAmount, metadata };
 }
 
-const commands: Record<string, () => Promise<void>> = {
+async function demo() {
+  const account = getAccount();
+  const manifest = await runDemo({
+    wallet: account.address,
+    chain: storyChain(),
+    metadata: new HttpMetadataProvider(),
+    store: new FileRegistrationStore(registrationsPath),
+  });
+  console.log("✓ Phase 0 provenance demo status:", manifest.status);
+  console.log("wallet        :", manifest.wallet);
+  console.log("spgNftContract:", manifest.spgNftContract);
+  for (const stage of ["root", "child", "grandchild"] as const) {
+    const registration = manifest.registrations[stage];
+    console.log(`${stage.padEnd(10)}:`, registration?.ipId ?? "not registered");
+  }
+  console.log("proof artifact:", registrationsPath);
+  return manifest;
+}
+
+const commands: Record<string, () => Promise<unknown>> = {
   check,
+  demo,
   "create-collection": createCollection,
   "register-skill": registerSkill,
   "register-derivative": registerDerivative,
 };
 
 async function main() {
-  const run = cmd ? commands[cmd] : undefined;
+  const run = command ? commands[command] : undefined;
   if (!run) {
     console.log("Phase 0 — Story provenance CLI\n");
     console.log("commands:");
+    console.log("  npm run demo");
     console.log("  npm run check");
     console.log("  npm run create-collection [-- --name Skills --symbol SKILL]");
-    console.log("  npm run register-skill -- --name \"<name>\" [--description \"..\"] [--skill-file path] [--rev-share 25] [--policy LAP|LRP]");
-    console.log("  npm run register-derivative -- --parent <ipId> --license-terms-id <id> --name \"<name>\"");
-    process.exit(cmd ? 1 : 0);
+    console.log("  npm run register-skill -- --spg <address> --name <name> --skill-file <path> [--rev-share 25] [--policy LAP|LRP]");
+    console.log("  npm run register-derivative -- --spg <address> --parent <ipId> --license-terms-id <id> --name <name> --skill-file <path>");
+    process.exit(command ? 1 : 0);
   }
   await run();
 }
 
-main().catch((err) => {
-  console.error("\n✗ " + (err instanceof Error ? err.message : String(err)));
+main().catch((error) => {
+  console.error("\n✗ " + (error instanceof Error ? error.message : String(error)));
   process.exit(1);
 });
