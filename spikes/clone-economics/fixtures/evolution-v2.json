@@ -1,0 +1,6 @@
+{
+  "evidenceLabel": "SYNTHETIC",
+  "version": "v2-overlay",
+  "newRequirement": "ask before destructive or externally visible actions",
+  "statement": "One static synthetic v2 overlay cannot establish Skill half-life or evolution efficacy."
+}

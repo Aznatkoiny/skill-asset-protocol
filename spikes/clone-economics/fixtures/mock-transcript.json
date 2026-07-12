@@ -1,0 +1,68 @@
+{
+  "evidenceLabel": "SYNTHETIC",
+  "pricing": {
+    "inputUsdPerMillion": 10,
+    "outputUsdPerMillion": 10,
+    "asOf": "2026-07-12",
+    "source": "SYNTHETIC canned pricing fixture; operator must replace for live runs"
+  },
+  "usageProfiles": {
+    "target-train": { "inputTokens": 800, "outputTokens": 1200, "costUsd": 0.02, "latencyMs": 100 },
+    "distill": { "inputTokens": 20000, "outputTokens": 10000, "costUsd": 0.3, "latencyMs": 400 },
+    "target-heldout": { "inputTokens": 400, "outputTokens": 600, "costUsd": 0.01, "latencyMs": 80 },
+    "clone-heldout": { "inputTokens": 200, "outputTokens": 300, "costUsd": 0.005, "latencyMs": 60 },
+    "bad-clone-heldout": { "inputTokens": 40, "outputTokens": 60, "costUsd": 0.001, "latencyMs": 40 },
+    "target-v2-heldout": { "inputTokens": 400, "outputTokens": 600, "costUsd": 0.01, "latencyMs": 80 },
+    "clone-v2-heldout": { "inputTokens": 200, "outputTokens": 300, "costUsd": 0.005, "latencyMs": 60 }
+  },
+  "trainOutputs": {
+    "tr-optimize-checkout": "Mode: Optimize\nChange @src/checkout/totals.ts only. Preserve totals behavior. Done when: npm test -- src/checkout/totals.test.ts. Show the diff.",
+    "tr-generate-auth": "Mode: Generate\nAdd logout in @src/auth/logout.ts following the supplied auth inventory. Done when: npm test -- src/auth/logout.test.ts. Show the diff.",
+    "tr-diagnose-scope": "Mode: Diagnose\nLimit changes to @src/validation/email.ts and revert unrelated modules. Reproduce first with npm test -- src/validation/email.test.ts. Show the diff.",
+    "tr-spec-billing": "Mode: Spec\nInterview for the recurring-billing boundaries, write @BILLING_SPEC.md, and defer implementation until the plan is approved. Validate with npm test -- src/billing/subscription. Show the diff.",
+    "tr-unresolved-command": "Mode: Generate\nUse @src/queue/runner.ts. Ask one question to choose the retry policy, then verify with npm test -- src/queue/runner.test.ts. Show the diff.",
+    "tr-preserve-no-deps": "Mode: Optimize\nEdit @src/download/archive.ts; preserve the public response and avoid dependency changes. Done when: npm test -- src/download/archive.test.ts. Show the diff."
+  },
+  "heldoutOutputs": {
+    "ho-optimize-cache": {
+      "target": "Mode: Optimize\nEdit @src/cache.ts. Constraints: keep the cache API backward-compatible. Done when: npm test -- src/cache.test.ts. Show the diff.",
+      "clone": "Mode: Optimize\nEdit @src/cache.ts. Constraints: keep the cache API backward-compatible. Done when: npm test -- src/cache.test.ts.",
+      "bad": "Mode: Optimize\nChange [the relevant file] and run tests."
+    },
+    "ho-generate-export": {
+      "target": "Mode: Generate\nAdd CSV export in @src/export/report.ts; use no new dependencies. Done when: npm test -- src/export/report.test.ts. Show the diff.",
+      "clone": "Mode: Generate\nAdd CSV export in @src/export/report.ts; use no new dependencies. Done when: npm test -- src/export/report.test.ts.",
+      "bad": "Mode: Generate\nChange [the relevant file] and run tests."
+    },
+    "ho-diagnose-session": {
+      "target": "Mode: Diagnose\nInvestigate @src/auth/session.ts and fix the root cause without suppressing the error. Done when: npm test -- src/auth/session.test.ts. Show the diff.",
+      "clone": "Mode: Diagnose\nInvestigate @src/auth/session.ts and fix the root cause without suppressing the error. Done when: npm test -- src/auth/session.test.ts.",
+      "bad": "Mode: Diagnose\nChange [the relevant file] and run tests."
+    },
+    "ho-spec-audit": {
+      "target": "Mode: Spec\nWrite @SPEC.md for the audit trail and keep implementation out of this session. The eventual check is npm test -- src/audit. Show the diff.",
+      "clone": "Mode: Spec\nWrite @SPEC.md for the audit trail and keep implementation out of this session. The eventual check is npm test -- src/audit.",
+      "bad": "Mode: Spec\nChange [the relevant file] and run tests."
+    },
+    "ho-unresolved-pattern": {
+      "target": "Mode: Generate\nWork in @src/jobs/worker.ts and ask at most one question before assuming the retry policy: should the modern worker pattern win? Done when: npm test -- src/jobs/worker.test.ts. Show the diff.",
+      "clone": "Mode: Generate\nWork in @src/jobs/worker.ts and ask at most one question before assuming the retry policy: should the modern worker pattern win? Done when: npm test -- src/jobs/worker.test.ts.",
+      "bad": "Mode: Generate\nChange [the relevant file] and run tests."
+    },
+    "ho-preserve-json": {
+      "target": "Mode: Optimize\nEdit @src/api/orders.ts and preserve the JSON response shape exactly. Done when: npm test -- src/api/orders.test.ts. Show the diff.",
+      "clone": "Mode: Optimize\nEdit @src/api/orders.ts and preserve the JSON response shape exactly. Done when: npm test -- src/api/orders.test.ts.",
+      "bad": "Mode: Optimize\nChange [the relevant file] and run tests."
+    }
+  },
+  "v2Outputs": {
+    "v2-optimize-cache": {
+      "target": "Mode: Optimize\nEdit @src/cache.ts. Constraints: keep the cache API backward-compatible and ask before destructive or externally visible actions. Done when: npm test -- src/cache.test.ts. Show the diff.",
+      "clone": "Mode: Optimize\nEdit @src/cache.ts. Constraints: keep the cache API backward-compatible. Done when: npm test -- src/cache.test.ts."
+    },
+    "v2-diagnose-session": {
+      "target": "Mode: Diagnose\nInvestigate @src/auth/session.ts, fix the root cause without suppressing the error, and ask before destructive or externally visible actions. Done when: npm test -- src/auth/session.test.ts. Show the diff.",
+      "clone": "Mode: Diagnose\nInvestigate @src/auth/session.ts and fix the root cause without suppressing the error. Done when: npm test -- src/auth/session.test.ts."
+    }
+  }
+}

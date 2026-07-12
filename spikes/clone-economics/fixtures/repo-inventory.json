@@ -1,0 +1,6 @@
+{
+  "evidenceLabel": "SYNTHETIC",
+  "files": ["src/checkout/totals.ts", "src/checkout/totals.test.ts", "src/auth/logout.ts", "src/auth/logout.test.ts", "src/validation/email.ts", "src/validation/email.test.ts", "src/billing/subscription.ts", "src/queue/runner.ts", "src/queue/runner.test.ts", "src/download/archive.ts", "src/download/archive.test.ts", "BILLING_SPEC.md", "src/cache.ts", "src/cache.test.ts", "src/export/report.ts", "src/export/report.test.ts", "src/auth/session.ts", "src/auth/session.test.ts", "src/audit/index.ts", "src/jobs/worker.ts", "src/jobs/worker.test.ts", "src/api/orders.ts", "src/api/orders.test.ts", "SPEC.md"],
+  "scripts": { "test": "node --test" },
+  "patterns": { "jobs": ["src/jobs/worker.ts", "src/jobs/legacy-worker.ts"], "auth": "src/auth/session.ts" }
+}

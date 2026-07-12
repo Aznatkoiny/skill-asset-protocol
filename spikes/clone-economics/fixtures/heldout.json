@@ -1,0 +1,80 @@
+[
+  {
+    "id": "ho-optimize-cache",
+    "mode": "Optimize",
+    "input": "Optimize this prompt: make cache invalidation safer without breaking callers.",
+    "rubric": {
+      "expectedMode": "Optimize", "maxQuestions": 0,
+      "exactPaths": [{ "value": "@src/cache.ts", "weight": 2, "critical": true }],
+      "exactCommands": [{ "value": "npm test -- src/cache.test.ts", "weight": 2, "critical": true }],
+      "requiredAll": [{ "value": "keep the cache API backward-compatible", "dimension": "constraints", "weight": 2, "critical": true }],
+      "requiredAny": [{ "values": ["Show the diff", "Return the patch"], "dimension": "output", "weight": 1, "critical": false }],
+      "forbidden": [{ "value": "[", "dimension": "grounding", "weight": 1, "critical": true }]
+    }
+  },
+  {
+    "id": "ho-generate-export",
+    "mode": "Generate",
+    "input": "Help me ask Claude Code to add CSV report export.",
+    "rubric": {
+      "expectedMode": "Generate", "maxQuestions": 0,
+      "exactPaths": [{ "value": "@src/export/report.ts", "weight": 2, "critical": true }],
+      "exactCommands": [{ "value": "npm test -- src/export/report.test.ts", "weight": 2, "critical": true }],
+      "requiredAll": [{ "value": "use no new dependencies", "dimension": "constraints", "weight": 2, "critical": true }],
+      "requiredAny": [{ "values": ["Show the diff", "Return the patch"], "dimension": "output", "weight": 1, "critical": false }],
+      "forbidden": [{ "value": "[", "dimension": "grounding", "weight": 1, "critical": true }]
+    }
+  },
+  {
+    "id": "ho-diagnose-session",
+    "mode": "Diagnose",
+    "input": "Claude hid a session-timeout error instead of fixing it. Rewrite my request.",
+    "rubric": {
+      "expectedMode": "Diagnose", "maxQuestions": 0,
+      "exactPaths": [{ "value": "@src/auth/session.ts", "weight": 2, "critical": true }],
+      "exactCommands": [{ "value": "npm test -- src/auth/session.test.ts", "weight": 2, "critical": true }],
+      "requiredAll": [{ "value": "fix the root cause without suppressing the error", "dimension": "constraints", "weight": 2, "critical": true }],
+      "requiredAny": [{ "values": ["Show the diff", "Return the patch"], "dimension": "output", "weight": 1, "critical": false }],
+      "forbidden": [{ "value": "[", "dimension": "grounding", "weight": 1, "critical": true }]
+    }
+  },
+  {
+    "id": "ho-spec-audit",
+    "mode": "Spec",
+    "input": "I need a multi-file audit trail feature. What should I ask Claude Code to do next?",
+    "rubric": {
+      "expectedMode": "Spec", "maxQuestions": 0,
+      "exactPaths": [{ "value": "@SPEC.md", "weight": 2, "critical": true }],
+      "exactCommands": [{ "value": "npm test -- src/audit", "weight": 2, "critical": true }],
+      "requiredAll": [{ "value": "keep implementation out of this session", "dimension": "constraints", "weight": 2, "critical": true }],
+      "requiredAny": [{ "values": ["Show the diff", "Return the patch"], "dimension": "output", "weight": 1, "critical": false }],
+      "forbidden": [{ "value": "[", "dimension": "grounding", "weight": 1, "critical": true }]
+    }
+  },
+  {
+    "id": "ho-unresolved-pattern",
+    "mode": "Generate",
+    "input": "Generate a prompt for retry behavior when the repo has two plausible worker patterns.",
+    "rubric": {
+      "expectedMode": "Generate", "maxQuestions": 1,
+      "exactPaths": [{ "value": "@src/jobs/worker.ts", "weight": 2, "critical": true }],
+      "exactCommands": [{ "value": "npm test -- src/jobs/worker.test.ts", "weight": 2, "critical": true }],
+      "requiredAll": [{ "value": "ask at most one question before assuming the retry policy", "dimension": "constraints", "weight": 2, "critical": true }],
+      "requiredAny": [{ "values": ["Show the diff", "Return the patch"], "dimension": "output", "weight": 1, "critical": false }],
+      "forbidden": [{ "value": "[", "dimension": "grounding", "weight": 1, "critical": true }]
+    }
+  },
+  {
+    "id": "ho-preserve-json",
+    "mode": "Optimize",
+    "input": "Tighten this request: add order filtering but do not change API JSON.",
+    "rubric": {
+      "expectedMode": "Optimize", "maxQuestions": 0,
+      "exactPaths": [{ "value": "@src/api/orders.ts", "weight": 2, "critical": true }],
+      "exactCommands": [{ "value": "npm test -- src/api/orders.test.ts", "weight": 2, "critical": true }],
+      "requiredAll": [{ "value": "preserve the JSON response shape exactly", "dimension": "constraints", "weight": 2, "critical": true }],
+      "requiredAny": [{ "values": ["Show the diff", "Return the patch"], "dimension": "output", "weight": 1, "critical": false }],
+      "forbidden": [{ "value": "[", "dimension": "grounding", "weight": 1, "critical": true }]
+    }
+  }
+]
