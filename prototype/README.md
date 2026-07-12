@@ -131,6 +131,6 @@ cold to visible output on top of a ~0.8s testnet x402 gate (see
 first bound, not a distribution. Reviewer caveat: the warm path assumes the
 events stream tails rather than replays history; no near-zero samples
 appeared (consistent with tailing), but the assumption is undocumented in
-the API. Housekeeping: the bench created env_01ABHUjx5niRAtaqcnMUtA4c /
-agent_016wddwbPwmmajbuZPZ5jHwV on the operator's account — archive/delete
-when convenient (archiving is permanent).
+the API. Housekeeping: each bench run creates a throwaway managed-agents
+environment + agent on the operator's account — archive/delete them in the
+console when convenient (archiving is permanent).
