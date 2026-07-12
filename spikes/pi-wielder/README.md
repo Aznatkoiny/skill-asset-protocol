@@ -130,3 +130,35 @@ For the real-facilitator testnet run and the live Pi demo, see
 - **Engine amounts are atomic USDC** (6-decimal integers): the prototype
   rounds to 2 decimals, which is lossy for $0.25 micro-royalties; integers
   keep the split exact (250000 → creator 243750 / treasury 6250).
+
+## Measured results — first real-network run (Base Sepolia, 2026-07-12)
+
+Executed per RUNBOOK §1–2 with a Circle-faucet-funded Wielder wallet
+(`0xdddf…053F`), the free `x402.org/facilitator`, and a real Anthropic key
+(no OPENAI key was present, so the gpt leg was skipped — two paid legs, not
+three). Everything below is on-chain-verifiable.
+
+**Session ledger (real settlements):**
+
+| leg | label | paid | txHash | split |
+|---|---|---|---|---|
+| model | claude/plan | $0.041 | `0x01daa723…38ff49` | — |
+| skill | optimizing-claude-code-prompts | $0.25 | `0xaf1ba2fe…7af522` | creator $0.24375 / treasury $0.00625 |
+| model | claude/plan2 (overhead capture) | $0.041 | — | — |
+
+On-chain balance check after the session: Wielder 20 → **19.668** USDC;
+sellers' address received exactly **0.332** — every cent accounted for.
+
+**Measured x402 payment overhead (real facilitator, n=1 instrumented call):**
+402-roundtrip **3.9 ms** · EIP-3009 sign **1.1 ms** · facilitator
+verify+settle **776 ms** · **total ≈ 781 ms** per paid call. The facilitator
+leg dominates; mainnet Base with Flashblocks claims ~200 ms, so testnet
+numbers are likely an upper bound. End-to-end including inference: 6.7 s
+(plan leg), 14.5 s (skill invocation — includes the hosted skill's own
+model run).
+
+**What this run proved beyond the offline e2e:** real 402 → sign → settle
+against a live facilitator; real USDC moving on a public chain per call;
+skill executed behind the Collar with output-only response; splits credited
+per the settlement engine — the protocol's Phase-1 Leg-1 loop, end to end,
+for $0.33 of play money.
