@@ -12,7 +12,6 @@
 // ============================================================================
 //  WE CANNOT RUN THIS HERE. There is no API key and no CMA beta access in this
 //  environment. Run it yourself with your own key + managed-agents beta access.
-//  (Script was syntax-verified with `node --check` only.)
 // ============================================================================
 //
 // Prerequisites:
@@ -38,27 +37,27 @@
 //     effort lives on the model/agent config, low + no-thinking is the floor,
 //     high/max adaptive is the worst case (tens of seconds to first answer token).
 
-import Anthropic from \"@anthropic-ai/sdk\";
+import Anthropic from "@anthropic-ai/sdk";
 
 const args = Object.fromEntries(
   process.argv.slice(2).map((a) => {
-    const [k, v] = a.replace(/^--/, \"\").split(\"=\");
+    const [k, v] = a.replace(/^--/, "").split("=");
     return [k, v === undefined ? true : v];
   }),
 );
-const TRIALS = parseInt(args.trials ?? \"10\", 10);
-const MODEL = args.model ?? \"claude-opus-4-8\";
-const COLD_ONLY = !!args[\"cold-only\"];
-const WARM_ONLY = !!args[\"warm-only\"];
-const REUSE_AGENT = args[\"reuse-agent\"] ?? process.env.CMA_AGENT_ID ?? null;
-const REUSE_ENV = args[\"reuse-env\"] ?? process.env.CMA_ENV_ID ?? null;
+const TRIALS = parseInt(args.trials ?? "10", 10);
+const MODEL = args.model ?? "claude-opus-4-8";
+const COLD_ONLY = !!args["cold-only"];
+const WARM_ONLY = !!args["warm-only"];
+const REUSE_AGENT = args["reuse-agent"] ?? process.env.CMA_AGENT_ID ?? null;
+const REUSE_ENV = args["reuse-env"] ?? process.env.CMA_ENV_ID ?? null;
 
 if (!process.env.ANTHROPIC_API_KEY) {
-  console.error(\"ERROR: set ANTHROPIC_API_KEY in your environment.\");
+  console.error("ERROR: set ANTHROPIC_API_KEY in your environment.");
   process.exit(1);
 }
 const client = new Anthropic();
-const PROMPT = \"Reply with exactly the word: ack\";
+const PROMPT = "Reply with exactly the word: ack";
 
 const ms = () => Number(process.hrtime.bigint() / 1000000n);
 function pct(arr, p) {
@@ -80,7 +79,7 @@ async function ensureAgentAndEnv() {
   if (!envId) {
     const env = await client.beta.environments.create({
       name: `bench-env-${Date.now()}`,
-      config: { type: \"cloud\", networking: { type: \"unrestricted\" } },
+      config: { type: "cloud", networking: { type: "unrestricted" } },
     });
     envId = env.id; console.log(`created environment ${envId}`);
   }
@@ -88,8 +87,8 @@ async function ensureAgentAndEnv() {
     const agent = await client.beta.agents.create({
       name: `bench-agent-${Date.now()}`,
       model: MODEL,
-      system: \"You are a latency benchmark target. Answer in one short word. Do not use tools.\",
-      tools: [{ type: \"agent_toolset_20260401\", default_config: { enabled: true } }],
+      system: "You are a latency benchmark target. Answer in one short word. Do not use tools.",
+      tools: [{ type: "agent_toolset_20260401", default_config: { enabled: true } }],
     });
     agentId = agent.id; console.log(`created agent ${agentId}`);
   }
@@ -102,29 +101,29 @@ async function runTurn({ agentId, envId, existingSessionId }) {
   let sessionId = existingSessionId;
   if (!sessionId) {
     const session = await client.beta.sessions.create({
-      agent: { type: \"agent\", id: agentId }, environment_id: envId,
+      agent: { type: "agent", id: agentId }, environment_id: envId,
     });
     sessionId = session.id; marks.tSessionCreated = ms() - t0;
   }
   const stream = await client.beta.sessions.events.stream(sessionId);
   marks.tStreamOpen = ms() - t0;
   const sendP = client.beta.sessions.events.send(sessionId, {
-    events: [{ type: \"user.message\", content: [{ type: \"text\", text: PROMPT }] }],
+    events: [{ type: "user.message", content: [{ type: "text", text: PROMPT }] }],
   });
   let gotFirstEvent = false, gotAnswer = false;
   for await (const event of stream) {
-    if (!gotFirstEvent && event.type !== \"user.message\" && event.type !== \"user.custom_tool_result\") {
+    if (!gotFirstEvent && event.type !== "user.message" && event.type !== "user.custom_tool_result") {
       marks.tFirstEvent = ms() - t0; gotFirstEvent = true;
     }
-    if (!gotAnswer && event.type === \"agent.message\") {
+    if (!gotAnswer && event.type === "agent.message") {
       for (const block of event.content ?? []) {
-        if (block.type === \"text\" && block.text?.length > 0) {
+        if (block.type === "text" && block.text?.length > 0) {
           marks.tFirstAnswerToken = ms() - t0; gotAnswer = true; break;
         }
       }
     }
-    if (event.type === \"session.status_terminated\") break;
-    if (event.type === \"session.status_idle\" && event.stop_reason?.type !== \"requires_action\") {
+    if (event.type === "session.status_terminated") break;
+    if (event.type === "session.status_idle" && event.stop_reason?.type !== "requires_action") {
       marks.tIdle = ms() - t0; break;
     }
   }
@@ -138,7 +137,7 @@ async function main() {
   const cold = { sessionCreate: [], streamOpen: [], firstEvent: [], firstAnswer: [], total: [] };
   const sessionsForWarm = [];
   if (!WARM_ONLY) {
-    console.log(`\\n=== COLD (sessions.create on hot path) ===`);
+    console.log(`\n=== COLD (sessions.create on hot path) ===`);
     for (let i = 0; i < TRIALS; i++) {
       try {
         const { sessionId, marks } = await runTurn({ agentId, envId });
@@ -148,17 +147,17 @@ async function main() {
         cold.firstAnswer.push(marks.tFirstAnswerToken);
         cold.total.push(marks.tIdle);
         sessionsForWarm.push(sessionId);
-        process.stdout.write(`  trial ${i+1}/${TRIALS}: create=${marks.tSessionCreated}ms firstEvent=${marks.tFirstEvent}ms firstAnswer=${marks.tFirstAnswerToken}ms\\n`);
+        process.stdout.write(`  trial ${i+1}/${TRIALS}: create=${marks.tSessionCreated}ms firstEvent=${marks.tFirstEvent}ms firstAnswer=${marks.tFirstAnswerToken}ms\n`);
       } catch (e) { console.error(`  trial ${i+1} failed:`, e?.message ?? e); }
     }
   }
   const warm = { streamOpen: [], firstEvent: [], firstAnswer: [], total: [] };
   if (!COLD_ONLY) {
-    console.log(`\\n=== WARM (reuse existing session, no sessions.create) ===`);
+    console.log(`\n=== WARM (reuse existing session, no sessions.create) ===`);
     let pool = sessionsForWarm;
     if (pool.length === 0) {
       for (let i = 0; i < Math.min(TRIALS, 3); i++) {
-        const s = await client.beta.sessions.create({ agent: { type: \"agent\", id: agentId }, environment_id: envId });
+        const s = await client.beta.sessions.create({ agent: { type: "agent", id: agentId }, environment_id: envId });
         pool.push(s.id);
       }
     }
@@ -170,26 +169,26 @@ async function main() {
         warm.firstEvent.push(marks.tFirstEvent);
         warm.firstAnswer.push(marks.tFirstAnswerToken);
         warm.total.push(marks.tIdle);
-        process.stdout.write(`  trial ${i+1}/${TRIALS}: firstEvent=${marks.tFirstEvent}ms firstAnswer=${marks.tFirstAnswerToken}ms\\n`);
+        process.stdout.write(`  trial ${i+1}/${TRIALS}: firstEvent=${marks.tFirstEvent}ms firstAnswer=${marks.tFirstAnswerToken}ms\n`);
       } catch (e) { console.error(`  trial ${i+1} failed:`, e?.message ?? e); }
     }
   }
-  console.log(`\\n================ SUMMARY (p50 / p95) ================`);
+  console.log(`\n================ SUMMARY (p50 / p95) ================`);
   if (!WARM_ONLY) {
-    console.log(\"COLD path:\");
-    report(\"sessions.create\", cold.sessionCreate);
-    report(\"-> stream open (cumulative)\", cold.streamOpen);
-    report(\"-> first event (cumulative)\", cold.firstEvent);
-    report(\"-> first ANSWER token (cumulative)\", cold.firstAnswer);
-    report(\"-> idle/end_turn (cumulative)\", cold.total);
+    console.log("COLD path:");
+    report("sessions.create", cold.sessionCreate);
+    report("-> stream open (cumulative)", cold.streamOpen);
+    report("-> first event (cumulative)", cold.firstEvent);
+    report("-> first ANSWER token (cumulative)", cold.firstAnswer);
+    report("-> idle/end_turn (cumulative)", cold.total);
   }
   if (!COLD_ONLY) {
-    console.log(\"WARM path (reused session):\");
-    report(\"send -> stream open\", warm.streamOpen);
-    report(\"send -> first event\", warm.firstEvent);
-    report(\"send -> first ANSWER token\", warm.firstAnswer);
-    report(\"send -> idle/end_turn\", warm.total);
+    console.log("WARM path (reused session):");
+    report("send -> stream open", warm.streamOpen);
+    report("send -> first event", warm.firstEvent);
+    report("send -> first ANSWER token", warm.firstAnswer);
+    report("send -> idle/end_turn", warm.total);
   }
-  console.log(`\\nInterpretation: for an interactive Wielder gate the perceptible numbers are 'first event' (render 'working…' immediately) and 'first answer token'. effort=low + minimal agent => single-digit seconds; high/max + adaptive thinking => first-answer-token can be tens of seconds because thinking precedes the answer. Archive/delete the bench agent+env afterward (archiving an agent is PERMANENT); delete sessions with client.beta.sessions.delete(id).`);
+  console.log(`\nInterpretation: for an interactive Wielder gate the perceptible numbers are 'first event' (render 'working…' immediately) and 'first answer token'. effort=low + minimal agent => single-digit seconds; high/max + adaptive thinking => first-answer-token can be tens of seconds because thinking precedes the answer. Archive/delete the bench agent+env afterward (archiving an agent is PERMANENT); delete sessions with client.beta.sessions.delete(id).`);
 }
 main().catch((e) => { console.error(e); process.exit(1); });
