@@ -35,7 +35,7 @@
 //     you surface as 'working...' immediately.
 //   * Re-create the agent with a different model/effort to compare configs;
 //     effort lives on the model/agent config, low + no-thinking is the floor,
-//     high/max adaptive is the worst case (tens of seconds to first answer token).
+//     and adaptive-thinking configurations must be measured rather than assumed.
 
 import Anthropic from "@anthropic-ai/sdk";
 
@@ -45,13 +45,24 @@ const args = Object.fromEntries(
     return [k, v === undefined ? true : v];
   }),
 );
-const TRIALS = parseInt(args.trials ?? "10", 10);
+const trialsArg = args.trials ?? "10";
+const TRIALS = typeof trialsArg === "string" && trialsArg.trim() !== ""
+  ? Number(trialsArg)
+  : NaN;
 const MODEL = args.model ?? "claude-opus-4-8";
 const COLD_ONLY = !!args["cold-only"];
 const WARM_ONLY = !!args["warm-only"];
 const REUSE_AGENT = args["reuse-agent"] ?? process.env.CMA_AGENT_ID ?? null;
 const REUSE_ENV = args["reuse-env"] ?? process.env.CMA_ENV_ID ?? null;
 
+if (!Number.isInteger(TRIALS) || TRIALS <= 0) {
+  console.error("ERROR: --trials must be a positive integer.");
+  process.exit(1);
+}
+if (COLD_ONLY && WARM_ONLY) {
+  console.error("ERROR: --cold-only and --warm-only are mutually exclusive.");
+  process.exit(1);
+}
 if (!process.env.ANTHROPIC_API_KEY) {
   console.error("ERROR: set ANTHROPIC_API_KEY in your environment.");
   process.exit(1);
@@ -72,6 +83,22 @@ function report(label, samples) {
     `  ${label.padEnd(34)} p50=${String(pct(c,50)).padStart(7)}ms  ` +
     `p95=${String(pct(c,95)).padStart(7)}ms  min=${Math.min(...c)}ms  max=${Math.max(...c)}ms  n=${c.length}`,
   );
+}
+
+function requireSampleCount(label, samplesByMetric) {
+  for (const [metric, samples] of Object.entries(samplesByMetric)) {
+    if (samples.length !== TRIALS) {
+      throw new Error(`${label} ${metric} has ${samples.length}/${TRIALS} required samples`);
+    }
+  }
+}
+
+function requireFiniteTurnMarks(marks, cold) {
+  const required = ["tStreamSetup", "tSendFirstEvent", "tSendFirstAnswerToken", "tSendIdle"];
+  if (cold) required.push("tSessionCreated", "tStreamOpen", "tFirstEvent", "tFirstAnswerToken", "tIdle");
+  for (const name of required) {
+    if (!Number.isFinite(marks[name])) throw new Error(`turn completed without finite ${name}`);
+  }
 }
 
 async function ensureAgentAndEnv() {
@@ -97,37 +124,51 @@ async function ensureAgentAndEnv() {
 
 async function runTurn({ agentId, envId, existingSessionId }) {
   const marks = {};
-  const t0 = ms(); marks.t0 = t0;
+  const coldStarted = existingSessionId ? null : ms();
   let sessionId = existingSessionId;
   if (!sessionId) {
     const session = await client.beta.sessions.create({
       agent: { type: "agent", id: agentId }, environment_id: envId,
     });
-    sessionId = session.id; marks.tSessionCreated = ms() - t0;
+    sessionId = session.id; marks.tSessionCreated = ms() - coldStarted;
   }
+  const streamSetupStarted = ms();
   const stream = await client.beta.sessions.events.stream(sessionId);
-  marks.tStreamOpen = ms() - t0;
+  marks.tStreamSetup = ms() - streamSetupStarted;
+  if (coldStarted !== null) marks.tStreamOpen = ms() - coldStarted;
+  const sendStarted = ms();
   const sendP = client.beta.sessions.events.send(sessionId, {
     events: [{ type: "user.message", content: [{ type: "text", text: PROMPT }] }],
   });
-  let gotFirstEvent = false, gotAnswer = false;
-  for await (const event of stream) {
-    if (!gotFirstEvent && event.type !== "user.message" && event.type !== "user.custom_tool_result") {
-      marks.tFirstEvent = ms() - t0; gotFirstEvent = true;
-    }
-    if (!gotAnswer && event.type === "agent.message") {
-      for (const block of event.content ?? []) {
-        if (block.type === "text" && block.text?.length > 0) {
-          marks.tFirstAnswerToken = ms() - t0; gotAnswer = true; break;
+  const eventsP = (async () => {
+    let gotFirstEvent = false, gotAnswer = false;
+    for await (const event of stream) {
+      const eventAt = ms();
+      if (!gotFirstEvent && event.type !== "user.message" && event.type !== "user.custom_tool_result") {
+        marks.tSendFirstEvent = eventAt - sendStarted;
+        if (coldStarted !== null) marks.tFirstEvent = eventAt - coldStarted;
+        gotFirstEvent = true;
+      }
+      if (!gotAnswer && event.type === "agent.message") {
+        for (const block of event.content ?? []) {
+          if (block.type === "text" && block.text?.length > 0) {
+            marks.tSendFirstAnswerToken = eventAt - sendStarted;
+            if (coldStarted !== null) marks.tFirstAnswerToken = eventAt - coldStarted;
+            gotAnswer = true;
+            break;
+          }
         }
       }
+      if (event.type === "session.status_terminated") break;
+      if (event.type === "session.status_idle" && event.stop_reason?.type !== "requires_action") {
+        marks.tSendIdle = eventAt - sendStarted;
+        if (coldStarted !== null) marks.tIdle = eventAt - coldStarted;
+        break;
+      }
     }
-    if (event.type === "session.status_terminated") break;
-    if (event.type === "session.status_idle" && event.stop_reason?.type !== "requires_action") {
-      marks.tIdle = ms() - t0; break;
-    }
-  }
-  await sendP.catch(() => {});
+  })();
+  await Promise.all([sendP, eventsP]);
+  requireFiniteTurnMarks(marks, coldStarted !== null);
   return { sessionId, marks };
 }
 
@@ -139,19 +180,18 @@ async function main() {
   if (!WARM_ONLY) {
     console.log(`\n=== COLD (sessions.create on hot path) ===`);
     for (let i = 0; i < TRIALS; i++) {
-      try {
-        const { sessionId, marks } = await runTurn({ agentId, envId });
-        cold.sessionCreate.push(marks.tSessionCreated);
-        cold.streamOpen.push(marks.tStreamOpen);
-        cold.firstEvent.push(marks.tFirstEvent);
-        cold.firstAnswer.push(marks.tFirstAnswerToken);
-        cold.total.push(marks.tIdle);
-        sessionsForWarm.push(sessionId);
-        process.stdout.write(`  trial ${i+1}/${TRIALS}: create=${marks.tSessionCreated}ms firstEvent=${marks.tFirstEvent}ms firstAnswer=${marks.tFirstAnswerToken}ms\n`);
-      } catch (e) { console.error(`  trial ${i+1} failed:`, e?.message ?? e); }
+      const { sessionId, marks } = await runTurn({ agentId, envId });
+      cold.sessionCreate.push(marks.tSessionCreated);
+      cold.streamOpen.push(marks.tStreamOpen);
+      cold.firstEvent.push(marks.tFirstEvent);
+      cold.firstAnswer.push(marks.tFirstAnswerToken);
+      cold.total.push(marks.tIdle);
+      sessionsForWarm.push(sessionId);
+      process.stdout.write(`  trial ${i+1}/${TRIALS}: create=${marks.tSessionCreated}ms firstEvent(cumulative)=${marks.tFirstEvent}ms firstAnswer(cumulative)=${marks.tFirstAnswerToken}ms\n`);
     }
+    requireSampleCount("COLD", cold);
   }
-  const warm = { streamOpen: [], firstEvent: [], firstAnswer: [], total: [] };
+  const warm = { streamSetup: [], firstEvent: [], firstAnswer: [], total: [] };
   if (!COLD_ONLY) {
     console.log(`\n=== WARM (reuse existing session, no sessions.create) ===`);
     let pool = sessionsForWarm;
@@ -163,15 +203,14 @@ async function main() {
     }
     for (let i = 0; i < TRIALS; i++) {
       const sessionId = pool[i % pool.length];
-      try {
-        const { marks } = await runTurn({ agentId, envId, existingSessionId: sessionId });
-        warm.streamOpen.push(marks.tStreamOpen);
-        warm.firstEvent.push(marks.tFirstEvent);
-        warm.firstAnswer.push(marks.tFirstAnswerToken);
-        warm.total.push(marks.tIdle);
-        process.stdout.write(`  trial ${i+1}/${TRIALS}: firstEvent=${marks.tFirstEvent}ms firstAnswer=${marks.tFirstAnswerToken}ms\n`);
-      } catch (e) { console.error(`  trial ${i+1} failed:`, e?.message ?? e); }
+      const { marks } = await runTurn({ agentId, envId, existingSessionId: sessionId });
+      warm.streamSetup.push(marks.tStreamSetup);
+      warm.firstEvent.push(marks.tSendFirstEvent);
+      warm.firstAnswer.push(marks.tSendFirstAnswerToken);
+      warm.total.push(marks.tSendIdle);
+      process.stdout.write(`  trial ${i+1}/${TRIALS}: streamSetup(pre-send)=${marks.tStreamSetup}ms firstEvent(from-send)=${marks.tSendFirstEvent}ms firstAnswer(from-send)=${marks.tSendFirstAnswerToken}ms\n`);
     }
+    requireSampleCount("WARM", warm);
   }
   console.log(`\n================ SUMMARY (p50 / p95) ================`);
   if (!WARM_ONLY) {
@@ -184,11 +223,11 @@ async function main() {
   }
   if (!COLD_ONLY) {
     console.log("WARM path (reused session):");
-    report("send -> stream open", warm.streamOpen);
+    report("stream setup (pre-send)", warm.streamSetup);
     report("send -> first event", warm.firstEvent);
     report("send -> first ANSWER token", warm.firstAnswer);
     report("send -> idle/end_turn", warm.total);
   }
-  console.log(`\nInterpretation: for an interactive Wielder gate the perceptible numbers are 'first event' (render 'working…' immediately) and 'first answer token'. effort=low + minimal agent => single-digit seconds; high/max + adaptive thinking => first-answer-token can be tens of seconds because thinking precedes the answer. Archive/delete the bench agent+env afterward (archiving an agent is PERMANENT); delete sessions with client.beta.sessions.delete(id).`);
+  console.log(`\nInterpretation: use only the observed sample distributions. For an interactive Wielder gate, 'first event' is when the UI can render 'working…', while 'first answer token' is when visible answer content begins. No latency range is assumed; compare measured model/effort configurations directly. Archive/delete the bench agent+env afterward (archiving an agent is PERMANENT); delete sessions with client.beta.sessions.delete(id).`);
 }
 main().catch((e) => { console.error(e); process.exit(1); });
