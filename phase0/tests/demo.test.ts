@@ -237,11 +237,56 @@ test("a confirmed partial proof survives failure and rerun resumes only missing 
   const result = await runDemo({ wallet: WALLET, chain: resumedChain, metadata: resumedMetadata, store });
 
   assert.deepEqual(resumedChain.writes, ["child", "grandchild"]);
-  assert.deepEqual(resumedMetadata.stages, ["child", "grandchild"]);
+  assert.deepEqual(resumedMetadata.stages, ["root", "child", "grandchild"]);
   assert.equal(result.status, "complete");
   assert.equal(result.registrations.root?.txHash, "0xroot");
   assert.equal(result.registrations.child?.txHash, "0xchild");
   assert.equal(result.registrations.grandchild?.txHash, "0xgrandchild");
+});
+
+test("resume rejects drift in a persisted root metadata proof before writes or saves", async () => {
+  const store = new MemoryStore();
+  const firstChain = new FakeChain();
+  firstChain.failOn = "child";
+
+  await assert.rejects(
+    runDemo({ wallet: WALLET, chain: firstChain, metadata: new FakeMetadata(), store }),
+    /child failed/,
+  );
+
+  const savesBeforeResume = store.saveCalls;
+  const persistedRootTxHash = store.manifest.registrations.root?.txHash;
+  const currentMetadata = new FakeMetadata();
+  const driftedRootHash = `0x${"f".repeat(64)}` as const;
+  const metadata: DemoMetadataProvider = {
+    prepare: async (input) => {
+      const prepared = await currentMetadata.prepare(input);
+      if (input.stage !== "root") return prepared;
+      return {
+        ...prepared,
+        proof: {
+          ...prepared.proof,
+          artifact: {
+            ...prepared.proof.artifact,
+            mediaHash: driftedRootHash,
+          },
+        },
+      };
+    },
+  };
+  const resumedChain = new FakeChain();
+
+  await assert.rejects(
+    runDemo({ wallet: WALLET, chain: resumedChain, metadata, store }),
+    /root.*metadata.*drift/i,
+  );
+
+  assert.deepEqual(currentMetadata.stages, ["root", "child", "grandchild"]);
+  assert.deepEqual(resumedChain.writes, []);
+  assert.equal(store.saveCalls, savesBeforeResume);
+  assert.equal(store.manifest.registrations.root?.txHash, persistedRootTxHash);
+  assert.equal(store.manifest.registrations.child, null);
+  assert.equal(store.manifest.registrations.grandchild, null);
 });
 
 for (const scenario of [

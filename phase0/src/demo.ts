@@ -124,6 +124,17 @@ function ensureResumableManifest(manifest: RegistrationManifest, wallet: `0x${st
   }
 }
 
+function metadataProofMatches(stored: MetadataProof, current: MetadataProof): boolean {
+  return (
+    stored.ip.uri === current.ip.uri
+    && stored.ip.hash === current.ip.hash
+    && stored.nft.uri === current.nft.uri
+    && stored.nft.hash === current.nft.hash
+    && stored.artifact.mediaHash === current.artifact.mediaHash
+    && stored.artifact.mediaType === current.artifact.mediaType
+  );
+}
+
 function proof(input: {
   definition: DemoSkillDefinition;
   result: { ipId: `0x${string}`; tokenId: bigint; txHash: `0x${string}` };
@@ -167,9 +178,20 @@ export async function runDemo(input: RunDemoInput): Promise<RegistrationManifest
   const metadata = new Map<DemoStage, PreparedMetadata>();
 
   for (const stage of ["root", "child", "grandchild"] as const) {
-    if (!manifest.registrations[stage]) {
-      const definition = definitionFor(skills, stage);
-      metadata.set(stage, await input.metadata.prepare({ ...definition, creatorAddress: input.wallet }));
+    const definition = definitionFor(skills, stage);
+    metadata.set(stage, await input.metadata.prepare({ ...definition, creatorAddress: input.wallet }));
+  }
+
+  for (const stage of ["root", "child", "grandchild"] as const) {
+    const stored = manifest.registrations[stage];
+    if (stored) {
+      const current = metadata.get(stage);
+      if (!current) throw new Error(`${stage} metadata was not prepared`);
+      if (!metadataProofMatches(stored.metadata, current.proof)) {
+        throw new Error(
+          `${stage} metadata proof drift detected: the current artifact or metadata no longer matches registrations.json. Restore the recorded inputs or start a separate proof artifact before resuming.`,
+        );
+      }
     }
   }
 
