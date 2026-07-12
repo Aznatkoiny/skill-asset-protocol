@@ -1,0 +1,27 @@
+{
+  "name": "skill-asset-phase0",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "license": "Apache-2.0",
+  "description": "Phase 0 (ADR-0006): register a Skill as a Story IP Asset with commercial-remix PIL terms, and declare a Derivative (fork). Provenance + fork-graph on Story Aeneid testnet.",
+  "scripts": {
+    "check": "node --import tsx src/index.ts check",
+    "demo": "node --import tsx src/index.ts demo",
+    "create-collection": "node --import tsx src/index.ts create-collection",
+    "register-skill": "node --import tsx src/index.ts register-skill",
+    "register-derivative": "node --import tsx src/index.ts register-derivative",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@story-protocol/core-sdk": "^1.4.4",
+    "dotenv": "^16.4.5",
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}

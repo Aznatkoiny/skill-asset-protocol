@@ -1,0 +1,13 @@
+{
+  "name": "clone-economics-spike",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Throwaway offline-first harness for Skill clone economics and staleness.",
+  "scripts": {
+    "e2e": "MOCK_LLM=1 ALLOW_LIVE_LLM=0 node e2e.mjs",
+    "run": "MOCK_LLM=1 node run.mjs",
+    "real": "MOCK_LLM=0 node run.mjs --live"
+  }
+}

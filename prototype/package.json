@@ -1,0 +1,16 @@
+{
+  "name": "prototype",
+  "version": "1.0.0",
+  "description": "> **Throwaway.** This exists to answer one question, then be deleted or absorbed. > `settlement-engine.mjs` is the keeper (pure logic); `settlement-tui.mjs` is the disposable shell.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.111.0"
+  }
+}

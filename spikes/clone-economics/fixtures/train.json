@@ -1,0 +1,8 @@
+[
+  { "id": "tr-optimize-checkout", "mode": "Optimize", "input": "Tighten this request for the synthetic repo: make checkout totals faster without changing behavior." },
+  { "id": "tr-generate-auth", "mode": "Generate", "input": "Write a Claude Code request to add logout support using the existing auth pattern." },
+  { "id": "tr-diagnose-scope", "mode": "Diagnose", "input": "Claude refactored three modules when I asked for one validation fix. Help me correct the request." },
+  { "id": "tr-spec-billing", "mode": "Spec", "input": "Turn a broad recurring-billing feature idea into the right next instruction for Claude Code." },
+  { "id": "tr-unresolved-command", "mode": "Generate", "input": "Ask Claude to add retry handling, but the synthetic inventory exposes two possible worker patterns." },
+  { "id": "tr-preserve-no-deps", "mode": "Optimize", "input": "Improve my export prompt while preserving the public response and adding no dependencies." }
+]

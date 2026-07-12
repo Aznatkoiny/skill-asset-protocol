@@ -1,0 +1,28 @@
+# Secrets — never commit (phase0/.env holds the Story wallet private key)
+.env
+.env.*
+*.env
+!.env.example
+
+# Dependencies & build output
+node_modules/
+dist/
+out/
+
+# Local machine state
+.DS_Store
+.claude/settings.local.json
+
+# Run artifacts (belt-and-braces; spikes also ignore locally)
+runs/
+*.jsonl
+
+# Vendor doc snapshots — do not track (redistribution-unsafe)
+.archive/
+
+# Locally installed third-party skills — track only our own
+.claude/skills/*
+!.claude/skills/optimizing-claude-code-prompts/
+.agents/skills/*
+!.agents/skills/optimizing-claude-code-prompts/
+skills-lock.json

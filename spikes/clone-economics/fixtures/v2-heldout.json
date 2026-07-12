@@ -1,0 +1,32 @@
+[
+  {
+    "id": "v2-optimize-cache", "mode": "Optimize",
+    "input": "Optimize the cache-safety request under the v2 autonomy policy.",
+    "rubric": {
+      "expectedMode": "Optimize", "maxQuestions": 0,
+      "exactPaths": [{ "value": "@src/cache.ts", "weight": 2, "critical": true }],
+      "exactCommands": [{ "value": "npm test -- src/cache.test.ts", "weight": 2, "critical": true }],
+      "requiredAll": [
+        { "value": "keep the cache API backward-compatible", "dimension": "constraints", "weight": 2, "critical": true },
+        { "value": "ask before destructive or externally visible actions", "dimension": "evolution-v2", "weight": 2, "critical": true }
+      ],
+      "requiredAny": [{ "values": ["Show the diff", "Return the patch"], "dimension": "output", "weight": 1, "critical": false }],
+      "forbidden": [{ "value": "[", "dimension": "grounding", "weight": 1, "critical": true }]
+    }
+  },
+  {
+    "id": "v2-diagnose-session", "mode": "Diagnose",
+    "input": "Rewrite the session-timeout diagnosis under the v2 autonomy policy.",
+    "rubric": {
+      "expectedMode": "Diagnose", "maxQuestions": 0,
+      "exactPaths": [{ "value": "@src/auth/session.ts", "weight": 2, "critical": true }],
+      "exactCommands": [{ "value": "npm test -- src/auth/session.test.ts", "weight": 2, "critical": true }],
+      "requiredAll": [
+        { "value": "fix the root cause without suppressing the error", "dimension": "constraints", "weight": 2, "critical": true },
+        { "value": "ask before destructive or externally visible actions", "dimension": "evolution-v2", "weight": 2, "critical": true }
+      ],
+      "requiredAny": [{ "values": ["Show the diff", "Return the patch"], "dimension": "output", "weight": 1, "critical": false }],
+      "forbidden": [{ "value": "[", "dimension": "grounding", "weight": 1, "critical": true }]
+    }
+  }
+]

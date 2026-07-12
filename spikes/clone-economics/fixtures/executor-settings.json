@@ -1,0 +1,7 @@
+{
+  "evidenceLabel": "SYNTHETIC",
+  "temperature": 0,
+  "maxTokens": 1024,
+  "toolsEnabled": false,
+  "syntheticRepoOnly": true
+}
