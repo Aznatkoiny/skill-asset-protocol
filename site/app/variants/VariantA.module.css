@@ -1,0 +1,79 @@
+/* VARIANT A — "THE TEN" (industrial wall text)
+   White gallery wall · Helvetica Bold caps · hollow-outlined numerals ·
+   hazard-stripe dividers · safety-yellow reserved for the invoke panel. */
+
+.page {
+  font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  background: #ffffff;
+  color: #000000;
+  scroll-behavior: smooth;
+}
+
+.page ::selection {
+  background: #000000;
+  color: #ffffff;
+}
+
+/* Massive hollow-outlined principle numerals — gallery wall text. */
+.hollow {
+  color: transparent;
+  -webkit-text-stroke: 2px #000000;
+  letter-spacing: -0.04em;
+}
+
+@media (min-width: 768px) {
+  .hollow {
+    -webkit-text-stroke: 3.5px #000000;
+  }
+}
+
+/* Smaller hollow digits (steps on the shipping label). */
+.hollowSm {
+  color: transparent;
+  -webkit-text-stroke: 1.5px #000000;
+}
+
+/* Diagonal hazard-stripe divider — black / safety-yellow. */
+.hazard {
+  height: 22px;
+  border-top: 2px solid #000000;
+  border-bottom: 2px solid #000000;
+  background: repeating-linear-gradient(
+    -45deg,
+    #000000 0,
+    #000000 16px,
+    #ffd100 16px,
+    #ffd100 32px
+  );
+}
+
+@media (min-width: 768px) {
+  .hazard {
+    height: 30px;
+    background: repeating-linear-gradient(
+      -45deg,
+      #000000 0,
+      #000000 22px,
+      #ffd100 22px,
+      #ffd100 44px
+    );
+  }
+}
+
+/* Woven-thread texture for the garment-label footer. */
+.weave {
+  background-image: repeating-linear-gradient(
+      0deg,
+      rgba(0, 0, 0, 0.055) 0,
+      rgba(0, 0, 0, 0.055) 1px,
+      transparent 1px,
+      transparent 3px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      rgba(0, 0, 0, 0.03) 0,
+      rgba(0, 0, 0, 0.03) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+}

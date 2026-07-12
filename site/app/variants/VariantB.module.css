@@ -1,0 +1,55 @@
+/* VariantB — "RECEIPT". Thermal-printer paper on pure black.
+   Variant-scoped: phosphor glow, blinking block cursor, CSS barcode. */
+
+.paper {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  text-shadow: 0 0 1.5px rgba(186, 255, 186, 0.28);
+  font-variant-ligatures: none;
+}
+
+.cursor {
+  display: inline-block;
+  width: 0.62em;
+  height: 1.05em;
+  margin-left: 0.18em;
+  vertical-align: -0.16em;
+  background: #eaffea;
+  animation: vbBlink 1.06s step-end infinite;
+}
+
+@keyframes vbBlink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cursor {
+    animation: none;
+  }
+}
+
+/* Fake EAN texture — pure CSS, no images. */
+.barcode {
+  height: 44px;
+  background: repeating-linear-gradient(
+    90deg,
+    #eaffea 0 2px,
+    transparent 2px 5px,
+    #eaffea 5px 6px,
+    transparent 6px 8px,
+    #eaffea 8px 11px,
+    transparent 11px 15px,
+    #eaffea 15px 16px,
+    transparent 16px 18px,
+    #eaffea 18px 20px,
+    transparent 20px 25px,
+    #eaffea 25px 26px,
+    transparent 26px 29px
+  );
+}
