@@ -17,8 +17,24 @@ const sha256 = (value) => `sha256:${createHash('sha256').update(value).digest('h
 const normalizedInputHash = (value) => sha256(value.trim().replace(/\s+/g, ' ').toLowerCase());
 const rounded = (value) => Number(value.toFixed(12));
 
+// Models routinely wrap file content in code fences or add a one-line preamble;
+// extraction is part of distillation tooling, not a fidelity judgment. Validity
+// is still asserted on the extracted artifact.
+function extractSkillMd(raw) {
+  let text = raw.trim();
+  // Unwrap ONLY if the entire response is one fenced block — a fence appearing
+  // inside the body (e.g. an example snippet) must never trigger extraction.
+  const whole = text.match(/^```[a-z]*\n([\s\S]*)\n```$/);
+  if (whole) text = whole[1].trim();
+  const start = text.indexOf('---\nname:');
+  if (start > 0) text = text.slice(start);
+  return text;
+}
+
 function assertValidClone(skillMd) {
-  if (!skillMd.startsWith('---\nname:') || !skillMd.includes('\n---\n') || !skillMd.includes('\n# ')) {
+  // Frontmatter is required by the skill format; a body heading of ANY level
+  // suffices (the format does not mandate an H1 — live models favor H2s).
+  if (!skillMd.startsWith('---\nname:') || !skillMd.includes('\n---\n') || !/\n#{1,6} /.test(skillMd)) {
     throw new Error('Distillation did not produce a valid SKILL.md');
   }
 }
@@ -120,11 +136,18 @@ export async function runExperiment(options = {}) {
   }
 
   const distillationPayload = {
-    instructions: 'Author one valid SKILL.md that reproduces the demonstrated input-to-output capability. Use only the supplied examples. Return SKILL.md only.',
+    // The SKILL.md format is public documentation; specifying it tests capability
+    // reproduction rather than format guessing (a real cloner knows the format).
+    instructions: 'Author one valid SKILL.md that reproduces the demonstrated input-to-output capability. Use only the supplied examples. Return the raw file content only — no code fences, no preamble — starting with YAML frontmatter exactly like:\n---\nname: <kebab-case-slug>\ndescription: <one line describing when to use the skill>\n---\nfollowed by the markdown body.',
     pairs: acquisitionPairs,
   };
   const distilled = await adapter.invoke({ kind: 'distill', payload: distillationPayload });
-  const cloneSkillMd = distilled.output;
+  // Persist the raw distillation output BEFORE validation so a failed live run
+  // leaves evidence instead of discarding paid model output.
+  const rawDumpDir = path.resolve(options.outputDir ?? path.join(spikeRoot, 'runs', mode));
+  fs.mkdirSync(rawDumpDir, { recursive: true });
+  fs.writeFileSync(path.join(rawDumpDir, 'distilled-raw.txt'), distilled.output ?? '');
+  const cloneSkillMd = extractSkillMd(distilled.output);
   assertValidClone(cloneSkillMd);
 
   const targetOutputs = await collect(adapter, heldoutFixtures, 'target-heldout', (fixture) => ({ input: fixture.input, targetSkill: targetText, reference: referenceText, ...sharedExecutor }));

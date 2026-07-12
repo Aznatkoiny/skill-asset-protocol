@@ -114,3 +114,23 @@ updates, tool/data access, or support value is measured and made contractible, o
 direct school→employer licensing instead of relying on student-declared lineage.
 
 _No CONTEXT.md term change needed; this is an economic-policy finding, not a language one._
+
+## MEASURED — CMA latency (claude-sonnet-4-6, trials=3, 2026-07-12)
+
+First live run of `spike-cma-latency.mjs` (managed-agents beta):
+
+- COLD (sessions.create on hot path): create p50 431ms; first event p50
+  1139ms; **first answer token p50 2541ms** (min 1930 / max 2541); end_turn
+  p50 2739ms.
+- WARM (session reuse): stream setup p50 170ms; **send→first answer p50
+  1534ms** (one 7730ms outlier of three trials — needs more samples).
+
+Kill-criterion-2 reading: pay-then-run-async is comfortably usable — ~2.5s
+cold to visible output on top of a ~0.8s testnet x402 gate (see
+`spikes/pi-wielder/README.md`). n=3, one model, no effort sweep; treat as a
+first bound, not a distribution. Reviewer caveat: the warm path assumes the
+events stream tails rather than replays history; no near-zero samples
+appeared (consistent with tailing), but the assumption is undocumented in
+the API. Housekeeping: the bench created env_01ABHUjx5niRAtaqcnMUtA4c /
+agent_016wddwbPwmmajbuZPZ5jHwV on the operator's account — archive/delete
+when convenient (archiving is permanent).
