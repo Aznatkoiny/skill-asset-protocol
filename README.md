@@ -7,6 +7,10 @@ instead of handing the value over once under work-for-hire.
 This is a **research/spike repository**: design documents plus executable evidence, not a
 product. Every claim below is labeled measured, modeled, or hypothesis.
 
+**The manifesto is live — and it is a working protocol endpoint:
+[neverhandedover.com](https://neverhandedover.com)** (also at
+[skillassetprotocol.com](https://skillassetprotocol.com); source in [`site/`](site/)).
+
 ## The demo result
 
 On 2026-07-12, one wallet paid per model call **and** per hosted-skill invocation over x402
