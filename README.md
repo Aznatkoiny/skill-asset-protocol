@@ -1,3 +1,5 @@
+![NEVER HANDED OVER — Skill Asset Protocol](assets/github-banner.png)
+
 # Skill Asset Protocol
 
 A compensation, attribution, and metering layer for authored AI **Skills** — "Carta for AI

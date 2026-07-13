@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://neverhandedover.com"),
-  title: "“NEVER HANDED OVER” — SKILL ASSET PROTOCOL",
+  title: "MANIFESTO",
   description:
     "A manifesto for the sovereignty of authored work. Pay $0.25 in testnet USDC and the hosted skill runs for you — you get the output, never the skill.",
   openGraph: {
