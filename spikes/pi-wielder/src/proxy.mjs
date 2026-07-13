@@ -101,7 +101,8 @@ export function createProxy({
     const resBody = await res.text();
 
     if (paid && res.ok) {
-      const parsed = JSON.parse(resBody);
+      let parsed = {};
+      try { parsed = JSON.parse(resBody); } catch { /* SSE bodies are not JSON */ }
       const model = JSON.parse(bodyText || '{}').model ?? '';
       const label = leg === 'skill'
         ? `skill/${path.split('/').pop()}`
@@ -115,7 +116,7 @@ export function createProxy({
 
     // Spike-only debug headers: proof-of-402 + overhead for e2e, and the raw
     // X-PAYMENT so the e2e can attempt (and be refused) a credential replay.
-    const headers = { 'content-type': 'application/json' };
+    const headers = { 'content-type': res.headers.get('content-type') ?? 'application/json' };
     if (paid) {
       headers['x-wielder-402'] = '1';
       headers['x-wielder-overhead'] = JSON.stringify(timings);

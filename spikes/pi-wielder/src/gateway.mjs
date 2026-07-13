@@ -45,9 +45,17 @@ export function createGateway({
     async (c) => {
       const body = await c.req.json();
       const model = body.model ?? '';
-      if (mockLlm) return c.json(mockCompletion(body));
-      if (model.startsWith('claude')) return c.json(await viaAnthropic(body));
-      return c.json(await viaOpenAI(body)); // gpt-* and anything else
+      const completion = mockLlm ? mockCompletion(body)
+        : model.startsWith('claude') ? await viaAnthropic(body)
+        : await viaOpenAI(body); // gpt-* and anything else
+      if (!body.stream) return c.json(completion);
+      // OpenAI-style clients (pi included) speak SSE. The spike computes the
+      // full completion first, then replays it as one compliant stream:
+      // role+content delta -> finish chunk -> [DONE].
+      return c.newResponse(sseFromCompletion(completion), 200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-cache',
+      });
     },
   );
 
@@ -136,4 +144,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     : (process.env.FACILITATOR_URL || 'https://x402.org/facilitator');
   const { url } = await startGateway({ port: Number(process.env.GATEWAY_PORT || 8403), facilitatorUrl });
   console.log(`[gateway] x402-gated /v1/chat/completions at ${url} (facilitator: ${facilitatorUrl})`);
+}
+
+// Wrap a completed chat.completion as OpenAI SSE chunks. Not true streaming —
+// the whole answer arrives in one delta — but protocol-correct for clients
+// that refuse buffered JSON ("Stream ended without finish_reason").
+function sseFromCompletion(completion) {
+  const base = { id: completion.id, object: 'chat.completion.chunk', created: completion.created, model: completion.model };
+  const delta = { ...base, choices: [{ index: 0, delta: { role: 'assistant', content: completion.choices[0].message.content }, finish_reason: null }] };
+  const finish = { ...base, choices: [{ index: 0, delta: {}, finish_reason: completion.choices[0].finish_reason ?? 'stop' }], usage: completion.usage ?? null };
+  return `data: ${JSON.stringify(delta)}\n\ndata: ${JSON.stringify(finish)}\n\ndata: [DONE]\n\n`;
 }
