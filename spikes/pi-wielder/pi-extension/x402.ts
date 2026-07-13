@@ -41,12 +41,22 @@ export default function activate(pi: Pi) {
       {
         id: "claude-sonnet-4-6",
         name: "claude via x402 (pay-per-call, Base Sepolia)",
+        reasoning: false,
+        input: ["text"],
+        // pi tracks per-token cost; ours is flat per-call and lands on the
+        // /ledger — zeros here so pi's meter doesn't double-count.
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: 200_000,
         maxTokens: 8_192,
       },
       {
         id: "gpt-5.2",
         name: "gpt via x402 (pay-per-call, Base Sepolia)",
+        reasoning: false,
+        input: ["text"],
+        // pi tracks per-token cost; ours is flat per-call and lands on the
+        // /ledger — zeros here so pi's meter doesn't double-count.
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: 128_000,
         maxTokens: 8_192,
       },
