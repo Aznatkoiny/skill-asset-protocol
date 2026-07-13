@@ -64,7 +64,7 @@ export function createGateway({
 
 // --- MOCK_LLM=1: canned OpenAI-format completions --------------------------
 function mockCompletion(body) {
-  const lastUser = [...(body.messages ?? [])].reverse().find((m) => m.role === 'user')?.content ?? '';
+  const lastUser = contentToText([...(body.messages ?? [])].reverse().find((m) => m.role === 'user')?.content);
   const family = (body.model ?? '').startsWith('claude') ? 'claude' : 'gpt';
   const content =
     family === 'claude'
@@ -81,21 +81,69 @@ function mockCompletion(body) {
 }
 
 // --- real upstreams ---------------------------------------------------------
-// Thin OpenAI-chat -> Anthropic Messages translation (system extraction, text
-// content only — spike-grade, no tools/streaming).
+// OpenAI-chat -> Anthropic Messages translation. Covers the shapes pi actually
+// sends: content as a string OR an array of typed parts, tool definitions,
+// assistant tool_calls, and role:"tool" results.
+const contentToText = (content) =>
+  typeof content === 'string' ? content
+  : Array.isArray(content) ? content.map((p) => (typeof p === 'string' ? p : p?.text ?? '')).join('')
+  : content == null ? '' : String(content);
+
+function toAnthropicMessages(oaiMessages = []) {
+  const out = [];
+  const push = (role, blocks) => {
+    if (!blocks.length) return;
+    const prev = out[out.length - 1];
+    // Anthropic requires alternating roles; tool results (user) can directly
+    // follow a real user turn, so merge consecutive same-role turns.
+    if (prev && prev.role === role) prev.content.push(...blocks);
+    else out.push({ role, content: [...blocks] });
+  };
+  for (const m of oaiMessages) {
+    if (m.role === 'system') continue;
+    if (m.role === 'tool') {
+      push('user', [{ type: 'tool_result', tool_use_id: m.tool_call_id, content: contentToText(m.content) }]);
+    } else if (m.role === 'assistant') {
+      const blocks = [];
+      const text = contentToText(m.content);
+      if (text) blocks.push({ type: 'text', text });
+      for (const tc of m.tool_calls ?? []) {
+        blocks.push({ type: 'tool_use', id: tc.id, name: tc.function.name, input: JSON.parse(tc.function.arguments || '{}') });
+      }
+      push('assistant', blocks);
+    } else {
+      push('user', [{ type: 'text', text: contentToText(m.content) }]);
+    }
+  }
+  return out;
+}
+
 async function viaAnthropic(body) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY required for claude-* models unless MOCK_LLM=1');
-  const system = (body.messages ?? []).filter((m) => m.role === 'system').map((m) => m.content).join('\n') || undefined;
-  const messages = (body.messages ?? []).filter((m) => m.role !== 'system')
-    .map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content) }));
+  const system = (body.messages ?? []).filter((m) => m.role === 'system').map((m) => contentToText(m.content)).join('\n') || undefined;
+  const tools = (body.tools ?? []).map((t) => ({
+    name: t.function.name,
+    description: t.function.description ?? '',
+    input_schema: t.function.parameters ?? { type: 'object', properties: {} },
+  }));
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-    body: JSON.stringify({ model: body.model, max_tokens: body.max_tokens ?? 2048, system, messages }),
+    body: JSON.stringify({
+      model: body.model,
+      max_tokens: body.max_tokens ?? 2048,
+      system,
+      messages: toAnthropicMessages(body.messages),
+      ...(tools.length ? { tools } : {}),
+    }),
   });
   if (!res.ok) throw new Error(`Anthropic API ${res.status}: ${await res.text()}`);
   const data = await res.json();
+  const text = data.content?.filter((b) => b.type === 'text').map((b) => b.text).join('') ?? '';
+  const toolCalls = (data.content ?? []).filter((b) => b.type === 'tool_use').map((b) => ({
+    id: b.id, type: 'function', function: { name: b.name, arguments: JSON.stringify(b.input ?? {}) },
+  }));
   return {
     id: data.id,
     object: 'chat.completion',
@@ -103,8 +151,13 @@ async function viaAnthropic(body) {
     model: data.model,
     choices: [{
       index: 0,
-      message: { role: 'assistant', content: data.content?.map((b) => b.text ?? '').join('') ?? '' },
-      finish_reason: data.stop_reason === 'max_tokens' ? 'length' : 'stop',
+      message: {
+        role: 'assistant',
+        content: toolCalls.length && !text ? null : text,
+        ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
+      },
+      finish_reason: data.stop_reason === 'tool_use' ? 'tool_calls'
+        : data.stop_reason === 'max_tokens' ? 'length' : 'stop',
     }],
     usage: {
       prompt_tokens: data.usage?.input_tokens ?? 0,
@@ -117,10 +170,12 @@ async function viaAnthropic(body) {
 async function viaOpenAI(body) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error('OPENAI_API_KEY required for gpt-* models unless MOCK_LLM=1');
+  // Always fetch buffered — the gateway synthesizes its own SSE downstream.
+  const { stream, stream_options, ...rest } = body;
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify(rest),
   });
   if (!res.ok) throw new Error(`OpenAI API ${res.status}: ${await res.text()}`);
   return res.json();
@@ -151,7 +206,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 // that refuse buffered JSON ("Stream ended without finish_reason").
 function sseFromCompletion(completion) {
   const base = { id: completion.id, object: 'chat.completion.chunk', created: completion.created, model: completion.model };
-  const delta = { ...base, choices: [{ index: 0, delta: { role: 'assistant', content: completion.choices[0].message.content }, finish_reason: null }] };
+  const msg = completion.choices[0].message;
+  const d = { role: 'assistant' };
+  if (msg.content) d.content = msg.content;
+  if (msg.tool_calls?.length) d.tool_calls = msg.tool_calls.map((tc, index) => ({ index, ...tc }));
+  const delta = { ...base, choices: [{ index: 0, delta: d, finish_reason: null }] };
   const finish = { ...base, choices: [{ index: 0, delta: {}, finish_reason: completion.choices[0].finish_reason ?? 'stop' }], usage: completion.usage ?? null };
   return `data: ${JSON.stringify(delta)}\n\ndata: ${JSON.stringify(finish)}\n\ndata: [DONE]\n\n`;
 }
