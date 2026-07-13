@@ -66,7 +66,7 @@ function Barcode() {
 }
 
 export default function VariantA({ manifesto }: { manifesto: Manifesto }) {
-  const { state, output, paid, error, invoke, needsWallet } = useInvoke();
+  const { state, output, paid, error, account, connect, invoke, needsWallet } = useInvoke();
   const [input, setInput] = useState('');
   const busy = state === 'connecting' || state === 'paying' || state === 'running';
 
@@ -230,6 +230,27 @@ export default function VariantA({ manifesto }: { manifesto: Manifesto }) {
                 </li>
               ))}
             </ol>
+          </div>
+
+          {/* Field 04 — the signatory (step 01 made pressable) */}
+          <div className="mt-8">
+            <p className="text-[9px] font-bold tracking-[0.3em]">
+              FIELD 04 — SIGNATORY (STEP 01: CONNECT A WALLET)
+            </p>
+            {account ? (
+              <p className="mt-2 inline-block border-2 border-black bg-white px-3 py-2 font-mono text-[11px] normal-case">
+                CONNECTED — {shortTx(account)} · BASE SEPOLIA
+              </p>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void connect()}
+                disabled={busy}
+                className="mt-2 cursor-pointer border-2 border-black bg-white px-4 py-3 text-[11px] font-bold tracking-[0.2em] transition-colors hover:bg-black hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {state === 'connecting' ? 'CONNECTING…' : '“CONNECT A WALLET”'}
+              </button>
+            )}
           </div>
 
           {/* Field 05 — the prompt */}
