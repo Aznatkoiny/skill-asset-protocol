@@ -34,6 +34,9 @@ export default function activate(pi: Pi) {
   pi.registerProvider("x402", {
     baseUrl: `${PROXY}/v1`,
     api: "openai-completions", // the proxy/gateway speak OpenAI chat-completions
+    // pi requires an apiKey field when models are defined; the paying proxy
+    // ignores Authorization entirely — payment IS the credential (ADR-0008).
+    apiKey: "x402-payment-is-the-credential",
     models: [
       {
         id: "claude-sonnet-4-6",
