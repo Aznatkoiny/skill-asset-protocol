@@ -171,7 +171,10 @@ async function viaOpenAI(body) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error('OPENAI_API_KEY required for gpt-* models unless MOCK_LLM=1');
   // Always fetch buffered — the gateway synthesizes its own SSE downstream.
-  const { stream, stream_options, ...rest } = body;
+  const { stream, stream_options, max_tokens, ...rest } = body;
+  // Newer OpenAI models reject max_tokens (400 unsupported_parameter) and
+  // require max_completion_tokens; clients (pi included) send max_tokens.
+  if (max_tokens != null && rest.max_completion_tokens == null) rest.max_completion_tokens = max_tokens;
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },

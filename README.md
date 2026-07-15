@@ -24,8 +24,9 @@ claude/plan $0.041 · skill $0.25 → creator $0.24375 / treasury $0.00625
 ```
 
 On-chain balances reconciled to the cent (Wielder 20 → 19.668 USDC; sellers received exactly
-0.332). Measured x402 payment overhead: 402-roundtrip 3.9 ms + EIP-3009 sign 1.1 ms +
-facilitator verify/settle 776 ms ≈ **781 ms per paid call** (testnet; likely an upper bound).
+0.332). Measured x402 payment overhead across 48 settled calls (2026-07-15, two model providers):
+**p50 731 ms / p95 1206 ms per paid call** — facilitator verify/settle is nearly all of it
+(p50 729 ms); the 402 roundtrip + EIP-3009 signature add ~2 ms.
 Details and txHashes: [`spikes/pi-wielder/README.md`](spikes/pi-wielder/README.md).
 
 ## Try it offline — zero keys, zero funds
@@ -61,8 +62,9 @@ All four proofs run with no API keys, no network payments, and no wallet. Where 
 
 The repo's discipline is to label every number:
 
-- **Measured (real network, n=1 session):** the demo run above — real 402 → sign → settle,
-  real USDC per call, splits credited by the settlement engine.
+- **Measured (real network, n=48 settled calls + a live pi session):** the runs above — real
+  402 → sign → settle, real USDC per call, splits credited by the settlement engine, wallet
+  reconciled on-chain to the cent; two failure modes documented (pay-then-fail, settled-but-rejected).
 - **Measured (n=3, one model):** hosted-agent cold start — first answer token p50 ~2.5 s;
   pay-then-run-async reads as usable on top of the ~0.8 s testnet payment gate.
 - **Measured (N=6, small fixtures):** the clone attack **failed on fidelity** — all 6 held-out
