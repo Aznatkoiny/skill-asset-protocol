@@ -2,8 +2,10 @@
 
 ## Current assignment
 
-**→ `docs/handoffs/2026-07-11-codex-premise-review-followups.md`** — read it
-first and execute its four tasks in order, on branch `codex/prd-execution`.
+**→ `docs/handoffs/2026-07-15-launch-week-handoff.md`** — read it first; it
+lists the ordered agent-doable tasks and the human-only launch items, on
+branch `codex/prd-execution`. (The 2026-07-11 handoff is complete —
+see `docs/plans/2026-07-12-phase-a-findings.md`.)
 
 ## Repo orientation (durable)
 

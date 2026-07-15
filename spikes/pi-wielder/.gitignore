@@ -2,3 +2,5 @@
 session-ledger.jsonl
 *.jsonl
 # (.env and node_modules are already ignored by the repo root .gitignore)
+# Local pi install artifact — created per RUNBOOK §3 (cp pi-extension/x402.ts .pi/extensions/)
+.pi/

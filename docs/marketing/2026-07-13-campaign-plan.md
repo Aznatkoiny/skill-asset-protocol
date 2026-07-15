@@ -64,6 +64,24 @@ calendar slips before a conversation does.
 Day 0 = **Tuesday 2026-07-14**: repo flip + soft launch. "Soft" means: repo public, site
 verified live, LinkedIn Post 1 out — no X thread, no HN.
 
+> **Slip record (2026-07-15).** Day 0 did not execute: as of Wed 07-15 the repo is
+> still private (`gh repo view` verified), no pre-flight was logged, and the §3 metrics
+> table was never started. No slip cause was recorded — this note is the record. The
+> pre-flight (fresh-machine clone-and-run) has not been run; per Day −1's own rule,
+> Day 0 slips until it passes.
+>
+> **Proposed re-anchor: Day 0 = Thursday 2026-07-16** (runbook-allowed weekday),
+> preserving all weekday semantics rather than shifting dates mechanically:
+> pre-flight Wed 07-15 → flip + Post 1 Thu 07-16 → X artifact #1 Fri 07-17 →
+> rest Sat/Sun → Post 2 + artifacts #2–4 week of Mon 07-20 → demo clip Thu 07-23 →
+> **Post 3 + X launch thread Tue 07-28** (12 days of reply history) → HN pre-flight
+> Wed 07-29 → **Post 5 + Show HN Thu 07-30** → clone-attack thread + Post 4 + day-7
+> review Mon 08-03. The daily X reply routine starts immediately regardless — the
+> launch thread needs the reply history more than it needs any particular date.
+> Raw artifacts for posts #1–2 are pre-captured in `docs/marketing/artifacts/`.
+> The original table below is preserved unedited as the Day-number playbook; read
+> its Date column through this mapping.
+
 **Standing daily items (every non-rest day, not repeated in the table):**
 
 - **X reply routine, 30–45 min** — the daily engagement routine from `x.md` §4: saved

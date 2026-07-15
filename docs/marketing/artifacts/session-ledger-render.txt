@@ -1,0 +1,3 @@
+$ curl -s localhost:8402/ledger
+claude/smoke $0.041 · claude/chat $0.041 · claude/chat $0.041 · claude/chat $0.041 · claude/chat $0.041 · claude/chat $0.041 · claude/chat $0.041 · claude/chat $0.041
+  session total $0.328 across 8 paid calls, one wallet
