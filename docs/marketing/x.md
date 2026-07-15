@@ -50,10 +50,10 @@ claude/plan $0.041 · skill $0.25 → creator $0.24375 / treasury $0.00625
 On-chain balances reconciled to the cent.
 
 **5/**
-The overhead of paying per call, measured on the same run:
+The overhead of paying per call, measured across 48 settled calls:
 
-· payment adds ~781ms per call
-· hosted-agent cold start: ~2.5s to first token
+· payment adds p50 731ms / p95 1206ms per call (n=48 settled calls)
+· hosted-agent cold start: ~2.5s to first token (separate n=3 measurement)
 
 Not free. Not prohibitive. Numbers you can build against.
 
@@ -192,9 +192,9 @@ All of the server side fits in a ~150-line proxy we call the Wielder: enforce 40
 150 lines, because the rails already exist.
 
 **8/**
-Measured (Base Sepolia, 2026-07-12, testnet):
+Measured (Base Sepolia, 2026-07-12 + 07-15, testnet):
 
-· payment overhead ~781ms/call
+· payment overhead p50 731ms / p95 1206ms (n=48 settled calls)
 · cold start ~2.5s to first token
 · $0.25/invocation → creator $0.24375 / treasury $0.00625, reconciled on-chain to the cent
 
@@ -232,7 +232,7 @@ Daily routine, 30–45 minutes:
 question asked, never pitch.
 
 Good (someone asks whether x402 latency is workable):
-> We measured it on Base Sepolia last week: ~781ms of payment overhead per call, ~2.5s cold start to first token on a hosted agent. Fine for per-task pricing, painful inside a tight loop.
+> We measured it across 48 settled calls on Base Sepolia: p50 731ms / p95 1206ms of payment overhead per call; cold start to first token on a hosted agent is ~2.5s (n=3). Fine for per-task pricing, painful inside a tight loop.
 
 Good (someone claims per-call pricing stops people cloning your agent):
 > We tested that against our own skill. $1.58 total to distill a clone from its outputs — the distillation step cost $0.03. The clone failed our 6 fidelity gates, but cost was never the thing protecting it. N=6, so high-N is still an open question.
@@ -252,6 +252,17 @@ Single tweets, not threads. One screenshot-sized artifact per day:
 - Day 11: the kill-criteria arithmetic that killed our education mode.
 - Day 12: the ~150-line Wielder proxy, as a code screenshot.
 - Day 13–14: rest the feed; replies only. Launch thread ships when the demo receipts are final.
+
+**New artifacts (added 2026-07-15; slots per the revamped calendar in `2026-07-13-campaign-plan.md` §2; verify character counts at post time):**
+
+- **The n=48 overhead distribution** — artifact: the distribution decomposition from `spikes/pi-wielder/README.md`.
+  > x402 payment overhead, measured across 48 settled calls on Base Sepolia (testnet, play money), two model providers, real facilitator: p50 731ms · p95 1206ms. The facilitator verify+settle leg is the whole story (p50 729ms); the 402 roundtrip + signature add ~2ms. Wallet reconciled on-chain to the cent.
+- **The pay-then-fail receipt** — artifact: the ten-500s ledger excerpt.
+  > We paid $0.87 in testnet USDC (play money) for ten HTTP 500s. Pay-first-then-run means a seller bug after settlement is the buyer's loss — x402 v1 has no refund path. Our bug, our dime. Fixed it, published the receipt. If you're building on 402 rails, design for pay-then-fail.
+- **The settled-but-rejected reconciliation** — artifact: the balance-reconciliation lines.
+  > 1 of 50 calls settled on-chain but the seller still answered 402 — the facilitator's reply to the seller failed mid-flight. Buyer charged, no output. We only caught it because the wallet reconciles to the cent (testnet, play money). The meter is its own audit trail.
+- **The pi session ledger** — artifact: `docs/marketing/artifacts/session-ledger-render.txt` (note: the first of its 8 entries is our own pre-demo smoke test).
+  > An unmodified coding agent (pi v0.80.6) paid its own way through our proxy: 7 streaming calls, $0.287 in testnet USDC (play money). One human prompt → 7 paid model turns. Flat per-call pricing meters agentic chattiness — a live datapoint we're feeding into pricing design.
 
 Reply routine continues daily throughout. The ratio stays lopsided: for every original post, several substantive replies elsewhere.
 

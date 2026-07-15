@@ -192,7 +192,9 @@ protocol observations worth keeping:
    facilitator flake rate over this run: ~4% of calls errored mid-payment.
 
 **Live pi session (same day):** unmodified pi v0.80.6 with the extension
-paid 8 streaming calls ($0.328) through the proxy in a real agentic session
+paid 7 streaming calls ($0.287) through the proxy in a real agentic session
 — one human prompt produced 7 paid model turns, a live datapoint that flat
 per-call pricing amplifies agentic chattiness (relevant to the PRD's
-pricing-model spike).
+pricing-model spike). (The session ledger renders 8 entries / $0.328
+because it also caught the pre-demo smoke call; the wallet reconciliation
+attributes $0.287 to pi.)

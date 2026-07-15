@@ -35,12 +35,17 @@ the result that is most likely to survive HN scrutiny, because it is us attackin
 > What we measured (testnet, 2026-07-12): one wallet paid per model call AND per skill
 > invocation over x402. Ledger: claude/plan $0.041, skill $0.25 → creator $0.24375 /
 > treasury $0.00625, reconciled against on-chain balances to the cent. Payment overhead
-> ~781ms/call; hosted-agent cold start ~2.5s to first token.
+> p50 731ms / p95 1206ms per call (n=48 settled calls, both model providers);
+> hosted-agent cold start ~2.5s to first token.
 >
 > What we tried to break: we paid $1.58 to distill a clone of our own skill from its
 > outputs (distillation itself cost $0.03). The clone failed all 6 held-out fidelity gates —
 > but N=6, high-N behavior unknown. Modeled break-even if a clone ever passes: 8 invocations.
 > Cost protects nothing.
+>
+> We also documented two live failure modes: 10 calls that settled then 500'd ($0.87 paid,
+> no refund path in x402 v1 — our bug, published), and 1 of 50 that settled on-chain yet
+> returned 402 — that one caught only by cent-exact wallet reconciliation.
 >
 > What is unproven: that employers will buy this. We published our kill-criteria and killed
 > our own education mode with arithmetic.
@@ -147,7 +152,7 @@ Production notes:
 - No music required; if any, something metronomic and quiet.
 - Shots 2–4 are one unbroken terminal take — do not cut between 402 and output; the
   no-cut is the proof.
-- Keep real latency visible (the ~781ms payment beat, the ~2.5s cold start). Speeding it up
+- Keep real latency visible (the ~731ms-median payment beat, the ~2.5s cold start). Speeding it up
   would be the only dishonest frame in the clip.
 - Shot 6's caption carries the compliance load with shot 3: "testnet / play money" must be
   on screen in both the payment shot and the closing card.
@@ -209,3 +214,21 @@ Explicitly **not** tracked as success: impressions, likes, follower counts, HN p
 the fact. One derived number matters most at day 7: **conversations that could become a
 design-partner LOI** — because kill-criterion 1 says that if none materialize in the
 Phase-0 window, we do not build Phase 1 on spec.
+
+### Daily log (started late — see slip note)
+
+> **Slip note (recorded 2026-07-15):** the planned Day 0 (repo flip + Post 1 together,
+> Tue 07-14) did not execute as designed. Post 1 shipped Mon 07-13 with the repo still
+> private — its repo link 404'd for readers from Monday until the flip on Wed 07-15. No
+> pre-flight was logged and this table was not started on time; the rows below are
+> reconstructed from verifiable sources, with "not logged" where nothing was recorded.
+> Day 0's ~$0.328 of gateway-debugging spend is not logged per-call; on-chain receipts
+> are pullable from basescan retroactively. All on-chain invocations to date are our own
+> wallet (self-traffic): unique external payers = 0.
+
+| Day | Date | Demo invocations (count / unique payers) | Repo stars / forks / clones | Conversations started | Critiques we couldn't answer |
+|---|---|---|---|---|---|
+| — | Sun 07-12 | 3 / 1 (self — first real-network run: 2 model legs + 1 skill, $0.332, reconciled on-chain) | n/a (repo private) | 0 | 0 |
+| 0 | Mon 07-13 | self only, ~$0.328 (gateway debugging; not logged per-call) | n/a (repo private — Post 1 link 404) | not logged | not logged |
+| 1 | Tue 07-14 | 0 | n/a (repo private) | not logged | not logged |
+| 2 | Wed 07-15 | 57 settlements / 1 payer (all self): 1 smoke + 7 pi session + 48 bench + 1 settled-but-rejected; $3.211 total, wallet 19.340 → 16.129 reconciled to the cent | flip today — baseline 0 / 0 / 0; first insights readable tomorrow | fill at EOD | fill at EOD |

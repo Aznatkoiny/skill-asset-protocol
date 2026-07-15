@@ -47,9 +47,15 @@ executed and committed by 2026-07-12; see `docs/plans/2026-07-12-phase-a-finding
 
 ## Human-only (do not attempt)
 
-- Pre-flight + repo flip + LinkedIn Post 1 (proposed Day 0 Thu 07-16); the
-  daily X reply routine; design-partner LOI outreach (KC1 — the binding
-  constraint on everything); counsel engagement (KC5 instrument; collar/MSB).
+- ~~Pre-flight + repo flip~~ **Done 2026-07-15 PM:** pre-flight PASSED
+  (fresh clone, offline e2e green, secrets scan CLEAN), public repo synced
+  (gateway fix + n=48 numbers, commit 84f8da4) and **flipped public**
+  (verified logged-out). LinkedIn Post 1 had already shipped Mon 07-13;
+  the revamped calendar (campaign-plan §2) anchors today = Day 2: Post 2 +
+  X artifact #1 today, launch thread Thu 07-23, Show HN Tue 07-28.
+- Still human-only: publish Post 2 + the artifact tweet; the daily X reply
+  routine; design-partner LOI outreach (KC1 — the binding constraint on
+  everything); counsel engagement (KC5 instrument; collar/MSB).
 - Known asset defect: the committed public-repo banner reads "EST.2024"
   (contradicts the 2026-07-11 corpus) — needs an image edit before flip.
   `docs/marketing-assets/` (untracked) holds duplicates, one with a space in

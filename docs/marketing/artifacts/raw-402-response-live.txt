@@ -1,0 +1,13 @@
+$ curl -i -s -X POST https://neverhandedover.com/api/invoke/optimizing-claude-code-prompts -H "content-type: application/json" -d '{"input":"optimize this prompt"}'
+HTTP/2 402 
+cache-control: public, max-age=0, must-revalidate
+content-type: application/json
+date: Wed, 15 Jul 2026 22:15:11 GMT
+server: Vercel
+strict-transport-security: max-age=63072000
+vary: rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch
+x-matched-path: /api/invoke/[skillId]
+x-vercel-cache: MISS
+x-vercel-id: iad1::iad1::c862n-1784153710185-f43a1ca063e9
+
+{"x402Version":1,"error":"X-PAYMENT header is required","accepts":[{"scheme":"exact","network":"base-sepolia","maxAmountRequired":"250000","resource":"https://neverhandedover.com/api/invoke/optimizing-claude-code-prompts","description":"Run the hosted skill \"optimizing-claude-code-prompts\" — output only, never the skill.","mimeType":"application/json","payTo":"0x25005dFaC23d4bc45C801eAeB6c8b5a2BaB0F189","maxTimeoutSeconds":60,"asset":"0x036CbD53842c5426634e7929541eC2318f3dCF7e","extra":{"name":"USDC","version":"2"}}]}

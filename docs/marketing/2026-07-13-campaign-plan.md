@@ -64,23 +64,47 @@ calendar slips before a conversation does.
 Day 0 = **Tuesday 2026-07-14**: repo flip + soft launch. "Soft" means: repo public, site
 verified live, LinkedIn Post 1 out — no X thread, no HN.
 
-> **Slip record (2026-07-15).** Day 0 did not execute: as of Wed 07-15 the repo is
-> still private (`gh repo view` verified), no pre-flight was logged, and the §3 metrics
-> table was never started. No slip cause was recorded — this note is the record. The
-> pre-flight (fresh-machine clone-and-run) has not been run; per Day −1's own rule,
-> Day 0 slips until it passes.
+> **Revamp (2026-07-15, supersedes the 07-15 morning slip note and the table below).**
+> What actually happened: **LinkedIn Post 1 shipped Mon 07-13** — but the repo flip did
+> not, so Post 1's repo link 404'd for two days (verified: repo still private Wed 07-15,
+> 0 stars). Tue 07-14 was silent; the x402 Foundation launched under the Linux Foundation
+> that day. Re-anchor: **Post 1 day = Day 0 (Mon 07-13); today Wed 07-15 = Day 2.**
+> Pre-flight ran 2026-07-15 and PASSED (fresh clone, offline e2e 20 checks green in
+> 1.6 s, all four offline proofs pass, full-history secrets scan CLEAN).
 >
-> **Proposed re-anchor: Day 0 = Thursday 2026-07-16** (runbook-allowed weekday),
-> preserving all weekday semantics rather than shifting dates mechanically:
-> pre-flight Wed 07-15 → flip + Post 1 Thu 07-16 → X artifact #1 Fri 07-17 →
-> rest Sat/Sun → Post 2 + artifacts #2–4 week of Mon 07-20 → demo clip Thu 07-23 →
-> **Post 3 + X launch thread Tue 07-28** (12 days of reply history) → HN pre-flight
-> Wed 07-29 → **Post 5 + Show HN Thu 07-30** → clone-attack thread + Post 4 + day-7
-> review Mon 08-03. The daily X reply routine starts immediately regardless — the
-> launch thread needs the reply history more than it needs any particular date.
-> Raw artifacts for posts #1–2 are pre-captured in `docs/marketing/artifacts/`.
-> The original table below is preserved unedited as the Day-number playbook; read
-> its Date column through this mapping.
+> **Acknowledged kit overrides:** (a) x.md §4's "week 1 = reply only, post nothing
+> original" is compressed — Post 1 already broke broadcast silence on 07-13, so the
+> artifact cadence starts today; (b) Post 2's context prefers mid-week *morning* —
+> afternoon-after-the-flip beats morning-before-the-flip, so it ships this afternoon;
+> (c) the launch thread's reply history is 8 calendar days / 6 active reply days
+> (weekends rest) — start the reply routine today without fail.
+
+### Revamped calendar (Day 2 = Wed 07-15 → HN)
+
+| Day | Date | Actions |
+|---|---|---|
+| 0 | Mon 07-13 | *(done)* LinkedIn Post 1 out, pinned. Repo flip did NOT happen — slip recorded. |
+| 1 | Tue 07-14 | *(done)* Silent. x402 Foundation launches under the Linux Foundation — this week's reply-routine entry point. |
+| **2** | **Wed 07-15 (today)** | ① **Repo public FIRST** (pre-flight passed; verify from a logged-out browser after the flip). ② Reply to any Post-1 comments that hit the 404 — factual correction in a reply, never silent. ③ **LinkedIn Post 2** (clone story) this afternoon — 2 days after Post 1; repo link in first comment now resolves. ④ **X artifact #1**: the raw 402 from the LIVE endpoint (`docs/marketing/artifacts/raw-402-response-live.txt` — production URL + "output only, never the skill" in the payload); tweet text below. ⑤ Reply routine starts (x402-Foundation news as the entry; measured numbers, never a pitch). ⑥ Metrics table started (`hn-and-demo.md` §3 daily log). |
+| 3 | Thu 07-16 | X artifact #2: the ledger line reconciled on-chain to the cent (testnet, play money). Replies. |
+| 4 | Fri 07-17 | X artifact #3: "What we have NOT validated" page, screenshotted. Light day. |
+| 5–6 | Sat–Sun 07-18/19 | **Rest days** (Sun: optional 15 min of replies if a good conversation is live). |
+| 7 | Mon 07-20 | X artifact #4: the kill-criteria arithmetic that killed education mode. Replies. |
+| 8 | Tue 07-21 | **LinkedIn Post 3** (design-partner ask) ~8:30am ET + targeted reshares. X artifact #5: the n=48 overhead distribution (new artifact, x.md §4). |
+| 9 | Wed 07-22 | **Record the demo clip** (`hn-and-demo.md` §2) — one week of live traffic since the flip; verify basescan links. X artifact #6: pay-then-fail receipt. Prep ecosystem tag reply; hand-verify org @handles. |
+| 10 | Thu 07-23 | **X launch thread** (x.md §1, amended numbers) late morning, demo clip on tweet 1, pin, ecosystem tag reply first. Hours 1–3 live in replies. |
+| 11 | Fri 07-24 | Thread aftercare. X spacer: the pi session ledger (single tweet — 48h thread spacing holds). |
+| 12–13 | Sat–Sun 07-25/26 | **Rest days** (optional launch-thread reply sweep). |
+| 14 | Mon 07-27 | X spacer: ~150-line Wielder proxy screenshot. Evening: **HN pre-flight** (re-run fresh-machine test, live 402 + paid invocation, five prepared answers open). |
+| 15 | **Tue 07-28** | **LinkedIn Post 5** ~8:00am ET, cross-linked from the repo README. **Show HN** 8:30–10:00am ET (title 1, §1 text as first comment, runbook cadence). **X how-it-works thread** mid-morning (≥48h after launch thread ✓). *(Post 5's context prefers Thursday; staying paired with HN day matters more — if HN slips, both move to Thu 07-30.)* |
+| 16 | Wed 07-29 | HN aftercare (hourly sweeps; log unanswerable critiques as corpus defects). X spacer: settled-but-rejected reconciliation — the honesty artifact while HN eyes are on the account. |
+| 17 | Thu 07-30 | **X clone-attack thread** (≥48h after how-it-works ✓; may reference HN). **LinkedIn Post 4** (kill-criteria). **Day-7-after-launch-thread review**: count conversations that could become a design-partner LOI — the one derived number that matters. |
+
+Constraint check: repo flip before anything that links to it ✓ · ≥48h between threads (07-23 / 07-28 / 07-30) ✓ · launch thread + HN on Tue/Thu ✓ · weekends rest ✓ · demo clip after a week of live traffic ✓.
+
+**Today's X artifact #1 tweet** (attach the live-endpoint 402 capture; ~250 chars, verify at post time; single tweet, no thread, no link — the artifact is the content):
+
+> POST to a paid endpoint without paying and this is the reply: HTTP 402, with the terms machine-readable in the body — amount, network, asset, payTo. No API key, no account; the settlement receipt becomes the auth. Base Sepolia testnet — play money.
 
 **Standing daily items (every non-rest day, not repeated in the table):**
 
@@ -91,6 +115,8 @@ verified live, LinkedIn Post 1 out — no X thread, no HN.
   (invocations, unique payers, stars/forks/clones, conversations started, unanswerable
   critiques).
 - **LinkedIn comment tending** — reply to substantive comments on whichever posts are live.
+
+**Original pre-slip table (superseded by the revamped calendar above, 2026-07-15 — its dates are no longer valid; kept for the per-day action detail the revamp references):**
 
 | Day | Date | Actions |
 |---|---|---|
