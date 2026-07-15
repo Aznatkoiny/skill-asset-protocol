@@ -31,9 +31,10 @@ executed and committed by 2026-07-12; see `docs/plans/2026-07-12-phase-a-finding
 
 ## Next tasks (agent-doable, in order)
 
-1. **x402 overhead distribution:** n≈30 paid calls through the spike proxy
-   (both claude and the never-yet-run gpt leg), report p50/p95, update
-   `spikes/pi-wielder/README.md` and the PRD spike-13 note.
+1. ~~x402 overhead distribution~~ **Done 2026-07-15:** p50 731 ms / p95
+   1206 ms (n=48 settled, both legs); gateway `max_completion_tokens` fix;
+   pay-then-fail + settled-but-rejected failure modes recorded in
+   `spikes/pi-wielder/README.md`; PRD updated.
 2. **High-N clone-economics run** (`spikes/clone-economics/`) — required
    before any public copy leans on the N=6 result (LinkedIn Post 2, X
    clone-attack thread).

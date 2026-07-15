@@ -162,3 +162,37 @@ against a live facilitator; real USDC moving on a public chain per call;
 skill executed behind the Collar with output-only response; splits credited
 per the settlement engine — the protocol's Phase-1 Leg-1 loop, end to end,
 for $0.33 of play money.
+
+## Measured results — overhead distribution + live pi session (2026-07-15)
+
+**x402 payment overhead, n=48 settled calls** (29 claude + 19 gpt, real
+`x402.org/facilitator`, Base Sepolia): **p50 731 ms · p95 1206 ms** (mean
+830, min 487, max 1859). Decomposition: facilitator verify+settle p50 729 ms
+(the whole story); 402-roundtrip p50 1.2 ms; EIP-3009 sign p50 0.9 ms.
+End-to-end paid roundtrip including inference (green calls): claude p50
+2.15 s / p95 3.94 s; gpt p50 1.47 s / p95 3.30 s. Wallet reconciled
+on-chain to the cent: 19.299 → 16.129 USDC = one pi session ($0.287) +
+29×$0.041 + 19×$0.087 + one settled-but-rejected call ($0.041).
+
+**The gpt leg ran for the first time** (skipped 2026-07-12 for lack of a
+key) — after fixing a real gateway bug the bench surfaced: newer OpenAI
+models reject `max_tokens` (400 `unsupported_parameter`), so the gateway now
+translates it to `max_completion_tokens`. The first 10 gpt attempts
+**settled and then failed upstream** — $0.87 paid for ten 500s. Two
+protocol observations worth keeping:
+
+1. **Pay-then-fail is the buyer's risk under pay-first-then-run.** A seller
+   bug after settlement costs the Wielder real money with no refund path in
+   x402 v1. (Design note for the Collar: attempt-then-settle ordering, or a
+   retry-credit convention.)
+2. **Settled-but-rejected happens.** 1 of 50 calls settled on-chain but the
+   facilitator's response to the seller failed, so the seller returned 402
+   anyway — buyer charged, no output (confirmed by exact balance
+   reconciliation). A second 402-after-signing did *not* settle. Testnet
+   facilitator flake rate over this run: ~4% of calls errored mid-payment.
+
+**Live pi session (same day):** unmodified pi v0.80.6 with the extension
+paid 8 streaming calls ($0.328) through the proxy in a real agentic session
+— one human prompt produced 7 paid model turns, a live datapoint that flat
+per-call pricing amplifies agentic chattiness (relevant to the PRD's
+pricing-model spike).
