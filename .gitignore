@@ -12,6 +12,7 @@ out/
 # Local machine state
 .DS_Store
 .claude/settings.local.json
+.worktrees/
 
 # Run artifacts (belt-and-braces; spikes also ignore locally)
 runs/
