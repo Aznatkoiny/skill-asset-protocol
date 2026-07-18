@@ -279,6 +279,30 @@ test('live publication gate rejects a coordinated pass when one high-N target fa
   );
 });
 
+test('live publication gate rejects acquisition rows outside preregistered seeded order', (t) => {
+  const samples = completePublicationSamples();
+  const acquisitionIndexes = samples
+    .map((sample, index) => ({ sample, index }))
+    .filter(({ sample }) => (
+      sample.n === 100
+      && sample.replicateId === 'r1'
+      && sample.phase === 'acquisition'
+    ))
+    .map(({ index }) => index);
+  [samples[acquisitionIndexes[0]], samples[acquisitionIndexes[1]]] = [
+    samples[acquisitionIndexes[1]],
+    samples[acquisitionIndexes[0]],
+  ];
+  const fixture = fixtureContract(t, {
+    samples,
+    publicationGate: { publishableHighN: true, suppressionReason: null },
+  });
+  assert.throws(
+    () => verifyLiveEvidenceContract(fixture.samples, fixture.manifest, fixture.root),
+    /exact preregistered seeded order/i,
+  );
+});
+
 test('live contract rejects non-approved budget or economics fixtures', (t) => {
   const unapprovedBudget = fixtureContract(t, {
     snapshot: {

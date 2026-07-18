@@ -99,3 +99,44 @@ test('committed blobs are read from the recorded tree, not the working copy', (t
     /repository-relative committed blob path/i,
   );
 });
+
+test('commit replacement refs cannot change recorded-tree bytes', (t) => {
+  const { repo } = committedRepo(t);
+  const recordedCommit = git(repo, ['rev-parse', 'HEAD']);
+  fs.writeFileSync(path.join(repo, 'tracked.txt'), 'replacement-commit\n');
+  git(repo, ['add', 'tracked.txt']);
+  git(repo, ['commit', '-m', 'replacement commit']);
+  const replacementCommit = git(repo, ['rev-parse', 'HEAD']);
+  git(repo, ['replace', recordedCommit, replacementCommit]);
+
+  assert.equal(
+    readGitBlobAtCommit(repo, recordedCommit, 'tracked.txt').toString('utf8'),
+    'committed\n',
+  );
+});
+
+test('blob replacement refs cannot change recorded-tree bytes', (t) => {
+  const { repo } = committedRepo(t);
+  const recordedCommit = git(repo, ['rev-parse', 'HEAD']);
+  const recordedBlob = git(repo, ['rev-parse', 'HEAD:tracked.txt']);
+  const replacementPath = path.join(repo, 'replacement.txt');
+  fs.writeFileSync(replacementPath, 'replacement-blob\n');
+  const replacementBlob = git(repo, ['hash-object', '-w', 'replacement.txt']);
+  git(repo, ['replace', recordedBlob, replacementBlob]);
+
+  assert.equal(
+    readGitBlobAtCommit(repo, recordedCommit, 'tracked.txt').toString('utf8'),
+    'committed\n',
+  );
+});
+
+test('blob-to-commit replacement refs cannot forge commit resolution', (t) => {
+  const { repo } = committedRepo(t);
+  const commit = git(repo, ['rev-parse', 'HEAD']);
+  const blob = git(repo, ['rev-parse', 'HEAD:tracked.txt']);
+  git(repo, ['update-ref', `refs/replace/${blob}`, commit]);
+  assert.throws(
+    () => resolveGitCommit(repo, blob),
+    /recorded git commit does not resolve to a commit/i,
+  );
+});

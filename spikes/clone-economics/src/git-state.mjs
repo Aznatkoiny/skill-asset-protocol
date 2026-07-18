@@ -14,6 +14,7 @@ const GIT_CONTEXT_KEYS = [
 function cleanGitEnvironment() {
   const env = { ...process.env };
   for (const key of GIT_CONTEXT_KEYS) delete env[key];
+  env.GIT_NO_REPLACE_OBJECTS = '1';
   return env;
 }
 

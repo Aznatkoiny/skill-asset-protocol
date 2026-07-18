@@ -119,9 +119,11 @@ const CREDENTIAL_VALUE_PATTERNS = [
   /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/,
   /\bAIza[0-9A-Za-z_-]{20,}\b/,
   /\b(?:gh[pousr]|github_pat)_[A-Za-z0-9_]{20,}\b/i,
-  /\b(?:glpat|npm|hf)_[A-Za-z0-9_-]{20,}\b/i,
+  /\bglpat[-_][A-Za-z0-9_-]{20,}\b/i,
+  /\b(?:npm|hf)_[A-Za-z0-9_-]{20,}\b/i,
   /\bxox[baprs]-[A-Za-z0-9-]{20,}\b/i,
   /\bsk-(?:ant-|proj-|live-|test-)?[A-Za-z0-9_-]{16,}\b/i,
+  /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b/i,
   /\b0x[0-9a-f]{64}\b/i,
   /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/,
   /\bbearer\s+[A-Za-z0-9._~+/-]{12,}\b/i,
@@ -1115,6 +1117,18 @@ function requireExactCaseRows(rows, expectedFixtures, label) {
   return rows;
 }
 
+function requireExactOrderedCaseRows(rows, expectedFixtures, label) {
+  const expectedIds = expectedFixtures.map((fixture) => fixture.id);
+  const actualIds = rows.map((sample) => sample.caseId);
+  if (JSON.stringify(actualIds) !== JSON.stringify(expectedIds)) {
+    throw new Error(`High-N publication gate samples do not follow the exact preregistered seeded order for ${label}`);
+  }
+  if (rows.some((sample) => sample.success !== true)) {
+    throw new Error(`High-N publication gate samples contain a failed ${label} attempt`);
+  }
+  return rows;
+}
+
 function targetBenchmarkFromRows(rows, fixtures, config, label) {
   requireExactCaseRows(rows, fixtures, label);
   if (rows.some((sample) => !Number.isFinite(sample.score)
@@ -1190,7 +1204,7 @@ function recomputeHighNPublicationGate({ samples, config, fixtures, v2Fixtures, 
         sample.phase === 'acquisition' && sample.profile === 'target'
       ));
       const expectedAcquisition = seededOrder(fixtures.train, replicate.pairOrderSeed).slice(0, n);
-      requireExactCaseRows(acquisition, expectedAcquisition, `N=${n} acquisition`);
+      requireExactOrderedCaseRows(acquisition, expectedAcquisition, `N=${n} acquisition`);
 
       const distillation = rows.filter((sample) => sample.phase === 'distillation');
       if (distillation.length !== 1

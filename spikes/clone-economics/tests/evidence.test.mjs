@@ -486,6 +486,11 @@ test('every free-form evidence string rejects credential-shaped values', () => {
     { caseId: `ghp_${'x'.repeat(32)}` },
     { replicateId: `xoxb-${'1'.repeat(12)}-${'x'.repeat(24)}` },
     { providerRequestId: `eyJ${'a'.repeat(20)}.${'b'.repeat(20)}.${'c'.repeat(20)}` },
+    { providerRequestId: `glpat-${'x'.repeat(24)}` },
+    { sampleId: `sk_live_${'x'.repeat(24)}` },
+    { caseId: `sk_test_${'x'.repeat(24)}` },
+    { replicateId: `rk_live_${'x'.repeat(24)}` },
+    { sampleId: `rk_test_${'x'.repeat(24)}` },
   ];
   for (const mutation of fakeCredentialShapes) {
     assert.throws(
@@ -499,6 +504,8 @@ test('every free-form evidence string rejects credential-shaped values', () => {
     const manifests = [
       { experimentId: `ghp_${'x'.repeat(32)}` },
       { model: `sk-test-${'x'.repeat(32)}` },
+      { model: `sk_live_${'x'.repeat(24)}` },
+      { model: `rk_test_${'x'.repeat(24)}` },
       { command: `node sweep.mjs --token=xoxb-${'1'.repeat(12)}-${'x'.repeat(24)}` },
       { configuration: { attemptCoverage: '-----BEGIN PRIVATE KEY-----' } },
     ];
