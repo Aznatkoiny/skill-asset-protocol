@@ -2,3 +2,9 @@ node_modules/
 .env
 dist/
 *.log
+
+# Contains a signed, testnet-only transaction while crash recovery is in flight.
+pending-transactions.json
+pending-transactions.json.*.tmp
+pending-transactions.json.lock
+pending-transactions.json.lock.*.claim
