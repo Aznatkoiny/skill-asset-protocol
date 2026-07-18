@@ -52,9 +52,23 @@ export function renderRegistryReport(metricValues) {
 export function buildRegistryReport(eventsValue, registryValue) {
   if (!Array.isArray(eventsValue)) throw new TypeError('settlement fixture must be an array');
   const classifier = createVerifiedBillingClassifier(registryValue);
+  const parsedEvents = eventsValue.map(parseSettlementMetricEvent);
+  const settlementIds = new Set();
+  const successfulInvocationIds = new Set();
+  for (const event of parsedEvents) {
+    if (settlementIds.has(event.settlementId)) {
+      throw new TypeError(`duplicate settlement ID '${event.settlementId}'`);
+    }
+    settlementIds.add(event.settlementId);
+    if (event.outcome === 'succeeded') {
+      if (successfulInvocationIds.has(event.invocationId)) {
+        throw new TypeError(`duplicate successful Invocation '${event.invocationId}'`);
+      }
+      successfulInvocationIds.add(event.invocationId);
+    }
+  }
   const grouped = new Map();
-  for (const raw of eventsValue) {
-    const event = parseSettlementMetricEvent(raw);
+  for (const event of parsedEvents) {
     if (!grouped.has(event.skillId)) grouped.set(event.skillId, []);
     grouped.get(event.skillId).push(event);
   }

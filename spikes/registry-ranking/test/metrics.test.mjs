@@ -9,7 +9,7 @@ import {
   parseSettlementMetricEvent,
   rankEligibleSkills,
 } from '../src/metrics.mjs';
-import { renderRegistryReport } from '../src/report.mjs';
+import { buildRegistryReport, renderRegistryReport } from '../src/report.mjs';
 
 const fixtureUrl = new URL('../fixtures/settlements.json', import.meta.url);
 const registryUrl = new URL('../fixtures/verified-billing-registry.json', import.meta.url);
@@ -219,4 +219,30 @@ test('report separates settlement-verifiable metrics from unsupported inferences
     `supply-chain ${'safety'}`,
   ].join('|'), 'i');
   assert.doesNotMatch(report, forbiddenClaims);
+});
+
+test('report rejects duplicate settlement and successful Invocation IDs across Skills', () => {
+  const base = clone(events[9]);
+  assert.throws(
+    () => buildRegistryReport([
+      base,
+      {
+        ...clone(base),
+        skillId: 'another-skill',
+        invocationId: 'another-invocation',
+      },
+    ], verifiedBillingRegistry),
+    /duplicate settlement/i,
+  );
+  assert.throws(
+    () => buildRegistryReport([
+      base,
+      {
+        ...clone(base),
+        skillId: 'another-skill',
+        settlementId: 'another-settlement',
+      },
+    ], verifiedBillingRegistry),
+    /duplicate successful Invocation/i,
+  );
 });
