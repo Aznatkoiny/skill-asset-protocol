@@ -161,7 +161,7 @@ export const DEMO_SKILLS: readonly DemoSkillDefinition[] = [
   {
     stage: "root",
     name: "demo-research-skill",
-    description: "A tiny research Skill used to prove Story provenance on Aeneid.",
+    description: "A tiny research Skill used for wallet-attested registration on Aeneid.",
     artifactPath: fileURLToPath(new URL("../fixtures/demo-base/SKILL.md", import.meta.url)),
   },
   {

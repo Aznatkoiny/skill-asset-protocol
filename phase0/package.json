@@ -3,10 +3,11 @@
   "private": true,
   "type": "module",
   "version": "0.0.0",
-  "description": "Phase 0 (ADR-0006): register a Skill as a Story IP Asset with commercial-remix PIL terms, and declare a Derivative (fork). Provenance + fork-graph on Story Aeneid testnet.",
+  "description": "Phase 0 testnet spike: wallet-attested Skill registration and declared Derivative ancestry on Story Aeneid.",
   "scripts": {
     "check": "node --import tsx src/index.ts check",
     "demo": "node --import tsx src/index.ts demo",
+    "recover-stale-lock": "node --import tsx src/index.ts recover-stale-lock",
     "test": "node --import tsx --test tests/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
