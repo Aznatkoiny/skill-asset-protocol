@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "historicalOverhead": {
+    "manifestPath": "spikes/pi-wielder/evidence/2026-07-15-overhead/manifest.json",
+    "evidenceStatus": "historical_unreproducible",
+    "publicationAllowed": false,
+    "publicText": "A historical 2026-07-15 inference-route run reported latency percentiles, but normalized samples were not retained. Percentiles are suppressed until a new dated reproducible run is authorized and committed."
+  },
+  "historicalSkillLegTransactions": [
+    {
+      "manifestPath": "spikes/pi-wielder/evidence/2026-07-12-skill-settlement/manifest.json",
+      "evidenceStatus": "historical_transaction_receipt_verified",
+      "label": "one successful historical Base Sepolia USDC transfer; the 2026-07-12 repository log labels it as the Skill leg",
+      "doesNotProve": [
+        "current endpoint behavior",
+        "latency",
+        "Royalty-claim split correctness",
+        "Skill execution output"
+      ]
+    }
+  ]
+}

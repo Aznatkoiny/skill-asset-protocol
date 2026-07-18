@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src https://neverhandedover.com; img-src 'self' data:; font-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; upgrade-insecure-requests">
+  <meta name="referrer" content="no-referrer">
+  <title>Skill Asset Protocol — verified accounting demo</title>
+  <meta name="description" content="Testnet-only generated accounting and strict HTTP 402 research demo.">
+  <style>
+    :root { color-scheme: light dark; --paper: #f6f4ee; --ink: #171610; --muted: #5d5a50; --rule: #cbc6b8; --accent: #195fa8; --panel: #ebe7dd; }
+    @media (prefers-color-scheme: dark) { :root { --paper: #171612; --ink: #f0ede3; --muted: #bbb6aa; --rule: #454138; --accent: #79b8f3; --panel: #23211b; } }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--paper); color: var(--ink); font: 17px/1.55 system-ui, sans-serif; }
+    main { max-width: 960px; margin: auto; padding: 48px 24px 96px; }
+    h1, h2, h3 { line-height: 1.15; }
+    h1 { font-size: clamp(2.3rem, 7vw, 4.4rem); max-width: 12ch; margin-bottom: 16px; }
+    h2 { margin-top: 52px; padding-top: 32px; border-top: 1px solid var(--rule); }
+    .lede, .boundary { color: var(--muted); max-width: 70ch; }
+    .testnet { display: inline-block; border: 1px solid currentColor; padding: 6px 10px; font-weight: 700; }
+    label { display: block; margin: 20px 0 8px; font-weight: 700; }
+    select, button { font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--rule); border-radius: 4px; padding: 10px 12px; }
+    select { width: min(100%, 720px); }
+    button { cursor: pointer; font-weight: 700; }
+    button:disabled { cursor: wait; opacity: .65; }
+    .panel { margin-top: 18px; padding: 20px; border: 1px solid var(--rule); background: var(--panel); overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+    .mono, td { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    #live-result[data-live="true"] { border-color: #27823a; }
+    #live-result[data-live="false"] { border-color: #aa3a2a; }
+    #fatal-state { border: 2px solid #aa3a2a; padding: 16px; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="testnet">BASE SEPOLIA TESTNET · PLAY MONEY · NO REAL FUNDS</p>
+      <h1>Generated accounting, bounded evidence.</h1>
+      <p class="lede">A compensation, attribution, and metering research demo for authored AI Skills. It signs no payment, sends no transaction, and performs no deployment or publication action.</p>
+    </header>
+
+    <p id="fatal-state" hidden role="alert"></p>
+
+    <section aria-labelledby="allocation-heading">
+      <h2 id="allocation-heading">Accounting illustration</h2>
+      <p class="lede">Intra-org is the terminal-product spike. Education is deferred. Marketplace is Phase-3 optionality. All rows below come from a generated, hash-verified fixture.</p>
+      <label for="scenario-select">Distribution mode</label>
+      <select id="scenario-select"></select>
+      <div id="allocation-output" class="panel" aria-live="polite"></div>
+    </section>
+
+    <section aria-labelledby="live-heading">
+      <h2 id="live-heading">Strict live HTTP 402 check</h2>
+      <p class="lede">One unpaid POST may be sent only to the fixed Collar endpoint after you click. Redirects are refused. JSON 200/500 responses and malformed offers stay non-live.</p>
+      <button id="check-live-402" type="button">Check fixed live endpoint</button>
+      <div id="live-result" class="panel" role="status" aria-live="polite"></div>
+    </section>
+
+    <section aria-labelledby="evidence-heading">
+      <h2 id="evidence-heading">Evidence boundaries</h2>
+      <div id="evidence-output" class="panel"></div>
+    </section>
+
+    <noscript>This demo requires JavaScript to validate and render its packaged fixture.</noscript>
+  </main>
+  <script type="module" src="./demo-logic.mjs"></script>
+</body>
+</html>

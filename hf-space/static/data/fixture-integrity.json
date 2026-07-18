@@ -1,0 +1,14 @@
+{
+  "files": {
+    "evidence.json": {
+      "bytes": 960,
+      "sha256": "sha256:3d809a9382ea32c9929db4cbdc7c2fd9c3fc7bc0bebd5982ab19faf151106d20"
+    },
+    "public-demo-allocation.json": {
+      "bytes": 11881,
+      "sha256": "sha256:3505befaf75c9c87a05b4f100cc1a34ce3f8f58a639a569faab9058018e57b7e"
+    }
+  },
+  "generatedBy": "hf-space/scripts/package-space-fixtures.mjs",
+  "schemaVersion": 1
+}
