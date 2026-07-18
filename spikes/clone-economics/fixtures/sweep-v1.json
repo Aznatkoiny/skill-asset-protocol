@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "experimentFamily": "clone-economics-high-n-v1",
+  "fixtureSet": "v2",
+  "nValues": [6, 25, 50, 100],
+  "heldoutMinimum": 30,
+  "replicates": [
+    { "replicateId": "r1", "pairOrderSeed": 1701, "distillationSeed": 2701 },
+    { "replicateId": "r2", "pairOrderSeed": 1702, "distillationSeed": 2702 },
+    { "replicateId": "r3", "pairOrderSeed": 1703, "distillationSeed": 2703 }
+  ],
+  "highNDefinition": 100,
+  "targetThreshold": 0.8,
+  "requireAllTargetCriticalGates": true,
+  "acquisitionTreatment": "modeled_unless_x402_receipts_attached",
+  "attemptCostTreatment": "include_every_attempted_provider_call",
+  "publicationRequiresValidTarget": true,
+  "publicationRequiresIndependentDistillationSeeds": true
+}
