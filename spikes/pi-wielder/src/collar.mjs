@@ -323,6 +323,11 @@ export function createCollar({
           && canonicalJson(existing.quote.executionQuote) !== canonicalJson(executionQuote)) {
         throw new Error('paid retry does not match the frozen execution quote');
       }
+      if (existing.payment.settlementReference !== null
+          && (existing.payment.settlementReference !== settlementReference
+            || existing.payment.payer !== payer)) {
+        throw new Error('paid retry does not match the persisted signed payment');
+      }
       // A terminal record is immutable historical authority. Replay it before
       // consulting current catalog or artifact configuration.
       if (TERMINAL.has(existing.execution.state)) {
@@ -354,6 +359,16 @@ export function createCollar({
           };
         }
         throw new Error('legacy v1 nonterminal payment cannot continue');
+      }
+      // Once settlement is authoritative, recovery must reach the
+      // post-settlement identity check so any current-config drift is journaled
+      // as one terminal full-gross hold instead of stranding settled value.
+      if (existing.payment.state === 'settled' && existing.execution.state === 'authorized') {
+        return {
+          kind: 'settled',
+          txHash: existing.payment.txHash,
+          payer: existing.payment.payer,
+        };
       }
       // Before the seller records payment.signed or calls the facilitator, the
       // current execution identity must still match the persisted full quote.

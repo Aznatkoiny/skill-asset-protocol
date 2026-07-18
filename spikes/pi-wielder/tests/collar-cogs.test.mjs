@@ -15,6 +15,7 @@ import { createMockFacilitator } from '../src/facilitator-mock.mjs';
 import {
   createInvocationJournal,
   createReceiptSigner,
+  verifySignedReceipt,
 } from '../src/invocation-journal.mjs';
 import {
   createProxy,
@@ -53,6 +54,78 @@ async function invoke(proxy, execution = undefined) {
     body: JSON.stringify(body),
   });
   return { res, body: await res.json() };
+}
+
+async function settlementCrash({ executionCatalog = EXECUTION_CATALOG, executeSkill }) {
+  const facilitator = createMockFacilitator();
+  let facilitatorCalls = 0;
+  let providerCalls = 0;
+  const countedExecuteSkill = async (...args) => {
+    providerCalls += 1;
+    return executeSkill(...args);
+  };
+  const transport = createMockFacilitatorTransport((url, init) => {
+    facilitatorCalls += 1;
+    return facilitator.request(url, init);
+  });
+  const journal = createInvocationJournal({ signer: createReceiptSigner() });
+  const beforeRestart = createCollar({
+    facilitatorTransport: transport,
+    journal,
+    lifecycleFaults: {
+      afterSettlementRecorded: async () => { throw new Error('injected crash after authoritative settlement'); },
+    },
+    executeSkill: countedExecuteSkill,
+  });
+  const account = throwawayAccount();
+  const sellerUrl = `http://seller.test/invoke/${SKILL_ID}`;
+  const idempotencyKey = `settlement-crash-${crypto.randomUUID()}`;
+  const requestBody = JSON.stringify({ input: 'same frozen request' });
+  const paymentPolicy = paymentPolicyFor(sellerUrl, PAY_TO);
+  await assert.rejects(() => payingFetch(account, sellerUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: requestBody,
+  }, {
+    idempotencyKey,
+    paymentPolicy,
+    fetchImpl: (url, init) => beforeRestart.app.request(url, init),
+  }), (error) => error.code === 'SETTLEMENT_EVIDENCE');
+  const persistedPayment = paymentPolicy.recoverSignedAuthorization({
+    authorizationId: idempotencyKey,
+    requestUrl: sellerUrl,
+    method: 'POST',
+    bodyBytes: requestBody,
+  });
+  const crashedRecord = journal.getByIdempotencyKey(idempotencyKey);
+  assert.equal(crashedRecord.payment.state, 'settled');
+  assert.equal(crashedRecord.execution.state, 'authorized');
+  assert.equal(crashedRecord.accounting, null);
+  assert.equal(crashedRecord.receipt, null);
+
+  const afterRestart = createCollar({
+    facilitatorTransport: transport,
+    journal,
+    executionCatalog,
+    executeSkill: countedExecuteSkill,
+  });
+  const retry = (xPayment = persistedPayment.xPayment) => afterRestart.app.request(sellerUrl, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'Idempotency-Key': idempotencyKey,
+      'X-PAYMENT': xPayment,
+    },
+    body: requestBody,
+  });
+  return {
+    afterRestart,
+    facilitatorCallCount: () => facilitatorCalls,
+    journal,
+    providerCallCount: () => providerCalls,
+    retry,
+    xPayment: persistedPayment.xPayment,
+  };
 }
 
 test('known provider usage is charged before the Royalty pool and binds exact output bytes', async () => {
@@ -139,7 +212,7 @@ test('live approval is rechecked against canonical catalog bytes before adapter 
   assert.equal(constructions, 0);
 });
 
-test('a restarted Collar rejects persisted nonterminal quote drift before facilitator or provider calls', async () => {
+test('a restarted Collar rejects pre-settlement quote drift before facilitator or payment.signed', async () => {
   const facilitator = createMockFacilitator();
   let facilitatorCalls = 0;
   let providerCalls = 0;
@@ -170,6 +243,106 @@ test('a restarted Collar rejects persisted nonterminal quote drift before facili
   assert.equal(facilitatorCalls, 0);
   assert.equal(providerCalls, 0);
   assert.equal(journal.events.some((event) => event.type === 'payment.signed'), false);
+});
+
+test('settled crash recovery converts catalog drift into one terminal full-gross hold', async () => {
+  const changedCatalog = structuredClone(EXECUTION_CATALOG);
+  changedCatalog.models['claude-sonnet-4-6'].outputAtomicPerMillionTokens = '15000001';
+  const prepared = await settlementCrash({
+    executionCatalog: changedCatalog,
+    executeSkill: async () => ({ output: 'must not escape', usage: null }),
+  });
+  const callsAfterCrash = prepared.facilitatorCallCount();
+  const eventsAfterCrash = prepared.journal.events.length;
+  const changedPayment = JSON.parse(Buffer.from(prepared.xPayment, 'base64').toString('utf8'));
+  const persistedNonce = changedPayment.payload.authorization.nonce;
+  changedPayment.payload.authorization.nonce = `${persistedNonce.slice(0, -1)}${
+    persistedNonce.endsWith('0') ? '1' : '0'
+  }`;
+
+  // A settled recovery must still require the exact persisted signed payment,
+  // not merely the same payer under the frozen offer.
+  const rejected = await prepared.retry(Buffer.from(JSON.stringify(changedPayment)).toString('base64'));
+  assert.equal(rejected.status, 409);
+  assert.equal(prepared.providerCallCount(), 0);
+  assert.equal(prepared.facilitatorCallCount(), callsAfterCrash);
+  assert.equal(prepared.journal.events.length, eventsAfterCrash);
+
+  const recovered = await prepared.retry();
+  assert.equal(recovered.status, 500);
+  const recoveredBody = await recovered.json();
+  assert.equal(recoveredBody.output, undefined);
+  assert.equal(verifySignedReceipt(recoveredBody.receipt, {
+    publicKeyPem: prepared.afterRestart.journal.signingPublicKeyPem,
+    keyId: prepared.afterRestart.journal.signingKeyId,
+  }), true);
+  const receipt = recoveredBody.receipt.receipt;
+  assert.equal(receipt.payment.state, 'settled');
+  assert.equal(receipt.execution.state, 'failed');
+  assert.equal(receipt.execution.failureClass, 'CATALOG_DIGEST_DRIFT');
+  assert.equal(receipt.accounting.grossAtomic, '250000');
+  assert.equal(receipt.accounting.executionCogs.status, 'unknown');
+  assert.equal(receipt.accounting.executionCogs.actualAtomic, null);
+  assert.equal(receipt.accounting.royaltyPoolAtomic, '0');
+  assert.deepEqual(receipt.accounting.holderCredits, []);
+  assert.deepEqual(receipt.accounting.ancestorCredits, []);
+  assert.deepEqual(receipt.accounting.journalEntries, [{
+    category: 'unresolved-execution-accounting',
+    debitAccountId: 'wielder:external-gross',
+    creditAccountId: 'hold:execution-accounting-reconciliation',
+    amountAtomic: '250000',
+  }]);
+  assert.equal(prepared.providerCallCount(), 0);
+  assert.equal(prepared.facilitatorCallCount(), callsAfterCrash);
+
+  const eventCount = prepared.journal.events.length;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const replay = await prepared.retry();
+    assert.equal(replay.status, 500);
+    const replayBody = await replay.json();
+    assert.equal(replayBody.replayed, true);
+    assert.deepEqual(replayBody.receipt, recoveredBody.receipt);
+  }
+  assert.equal(prepared.providerCallCount(), 0);
+  assert.equal(prepared.facilitatorCallCount(), callsAfterCrash);
+  assert.equal(prepared.journal.events.length, eventCount);
+  assert.equal(prepared.journal.events.filter((event) => event.type === 'execution.finished').length, 1);
+  assert.equal(prepared.journal.events.filter((event) => event.type === 'receipt.issued').length, 1);
+});
+
+test('settled crash recovery succeeds under unchanged config and replays idempotently', async () => {
+  const prepared = await settlementCrash({
+    executeSkill: async () => {
+      return {
+        output: 'recovered output',
+        usage: {
+          schemaVersion: 2,
+          model: 'claude-sonnet-4-6',
+          inputTokens: 42,
+          outputTokens: 42,
+        },
+      };
+    },
+  });
+  const callsAfterCrash = prepared.facilitatorCallCount();
+
+  const recovered = await prepared.retry();
+  assert.equal(recovered.status, 200);
+  const recoveredBody = await recovered.json();
+  assert.equal(recoveredBody.output, 'recovered output');
+  assert.equal(recoveredBody.receipt.receipt.execution.state, 'succeeded');
+  assert.equal(prepared.providerCallCount(), 1);
+  assert.equal(prepared.facilitatorCallCount(), callsAfterCrash);
+
+  const eventCount = prepared.journal.events.length;
+  const replay = await prepared.retry();
+  assert.equal(replay.status, 200);
+  const replayBody = await replay.json();
+  assert.equal(replayBody.replayed, true);
+  assert.deepEqual(replayBody.receipt, recoveredBody.receipt);
+  assert.equal(prepared.providerCallCount(), 1);
+  assert.equal(prepared.facilitatorCallCount(), callsAfterCrash);
+  assert.equal(prepared.journal.events.length, eventCount);
 });
 
 test('terminal replay precedes current catalog drift checks and never re-executes', async () => {
