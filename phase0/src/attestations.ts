@@ -228,6 +228,54 @@ function assertTrustMap(value: unknown, label: string): asserts value is Readonl
   }
 }
 
+function parseOrganizationSignerAllowList(value: unknown): readonly `0x${string}`[] {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
+    throw new Error("organization signer allow-list must be a real array");
+  }
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+  if (!lengthDescriptor || !("value" in lengthDescriptor) || !Number.isSafeInteger(lengthDescriptor.value)) {
+    throw new Error("organization signer allow-list must have own indexed entries");
+  }
+  const expectedKeys = new Set<string>(["length"]);
+  for (let index = 0; index < lengthDescriptor.value; index += 1) expectedKeys.add(String(index));
+  const ownKeys = Reflect.ownKeys(value);
+  if (ownKeys.some((key) => typeof key !== "string" || !expectedKeys.has(key)) || ownKeys.length !== expectedKeys.size) {
+    throw new Error("organization signer allow-list has unexpected schema properties or inherited entries");
+  }
+
+  const wallets: `0x${string}`[] = [];
+  const seen = new Set<string>();
+  for (let index = 0; index < lengthDescriptor.value; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+      throw new Error("organization signer allow-list must have own indexed entries");
+    }
+    address(descriptor.value, "organization signer allow-list canonical lowercase address");
+    if (seen.has(descriptor.value)) throw new Error("organization signer allow-list addresses must be unique");
+    seen.add(descriptor.value);
+    wallets.push(descriptor.value);
+  }
+  return wallets;
+}
+
+function parseOrganizationSignerTrust(
+  value: unknown,
+): Readonly<Record<string, readonly `0x${string}`[]>> {
+  assertTrustMap(value, "organization signer trust");
+  const parsed: Record<string, readonly `0x${string}`[]> = Object.create(null) as Record<string, readonly `0x${string}`[]>;
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== "string" || !IDENTIFIER.test(key)) {
+      throw new Error("organization signer trust contains a malformed organization identifier");
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+      throw new Error("organization signer trust entries must be own data properties");
+    }
+    parsed[key] = parseOrganizationSignerAllowList(descriptor.value);
+  }
+  return parsed;
+}
+
 function nonempty(value: unknown, label: string): asserts value is string {
   if (typeof value !== "string" || value.trim() !== value || value.length === 0) {
     throw new Error(`${label} must be a nonempty canonical string`);
@@ -537,6 +585,7 @@ export async function verifyOrganizationApproval(
   organizationSigners: Readonly<Record<string, readonly `0x${string}`[]>>,
 ): Promise<void> {
   const approval = parseApproval(approvalValue);
+  const trustedOrganizations = parseOrganizationSignerTrust(organizationSigners);
   const unsigned: UnsignedApproval = {
     schemaVersion: approval.schemaVersion,
     subject: approval.subject,
@@ -546,12 +595,11 @@ export async function verifyOrganizationApproval(
     approvedAt: approval.approvedAt,
   };
   if (approval.statementHash !== organizationStatementHash(unsigned)) throw new Error("organization statement hash mismatch");
-  assertTrustMap(organizationSigners, "organization signer trust");
-  if (!Object.hasOwn(organizationSigners, approval.organizationId)) {
+  if (!Object.hasOwn(trustedOrganizations, approval.organizationId)) {
     throw new Error("organization approver is not allow-listed; organization ID must be an own property of the trust map");
   }
-  const trusted = organizationSigners[approval.organizationId];
-  if (!trusted.includes(approval.approverWallet)) throw new Error("organization approver is not allow-listed");
+  const trusted = trustedOrganizations[approval.organizationId];
+  if (!trusted.some((wallet) => wallet === approval.approverWallet)) throw new Error("organization approver is not allow-listed");
   if (!await verifyMessage({ address: approval.approverWallet, message: canonicalOrganizationStatement(unsigned), signature: approval.signature })) {
     throw new Error("organization signature does not recover the approver wallet");
   }
@@ -683,6 +731,7 @@ export async function reduceAttestationEvents(
     now?: Date;
   } = {},
 ): Promise<AttestationIndex> {
+  const organizationSigners = parseOrganizationSignerTrust(trust.organizationSigners ?? {});
   const verifierNow = trust.now?.getTime();
   if (verifierNow !== undefined && !Number.isFinite(verifierNow)) throw new Error("attestation verifier clock is invalid");
   const subjects: Record<string, RegistrationSubject> = {};
@@ -815,7 +864,7 @@ export async function reduceAttestationEvents(
       if (registration.repositoryActivatedAt === null || approvedAt < registration.repositoryActivatedAt) {
         throw new Error("organization approvedAt must not precede active repository evidence");
       }
-      await verifyOrganizationApproval(event.approval, trust.organizationSigners ?? {});
+      await verifyOrganizationApproval(event.approval, organizationSigners);
       consumedOrganizationStatementHashes.add(event.approval.statementHash);
       consumedOrganizationSignatures.add(event.approval.signature);
       registration.organizationActive = true;

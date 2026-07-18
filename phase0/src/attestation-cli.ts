@@ -6,6 +6,7 @@ import {
   parseAttestationEvent,
   reduceAttestationEvents,
   registrationSubjectsFromManifest,
+  type AttestationConflict,
   type AttestationEvent,
   type AttestationIndex,
   type ForgeObservationV1,
@@ -25,7 +26,11 @@ import {
   type GitReader,
   type SignedRepositoryChallengeFileV1,
 } from "./attestation-git";
-import { FileAttestationStore, type AttestationRepositoryContext } from "./attestation-store";
+import {
+  FileAttestationStore,
+  type AttestationLockMetadata,
+  type AttestationRepositoryContext,
+} from "./attestation-store";
 import { FileRegistrationStore } from "./registrations";
 
 export type AttestationCommand =
@@ -220,7 +225,7 @@ async function loadIndex(runtime: AttestationRuntime): Promise<AttestationIndex>
 
 function statusPayload(index: AttestationIndex, options: AttestationCommandOptions): {
   registrations: unknown[];
-  conflicts: unknown[];
+  conflicts: AttestationConflict[];
 } {
   if (options.artifactHash !== undefined && !/^0x[0-9a-f]{64}$/.test(options.artifactHash)) throw new Error("--artifact-hash must be a lowercase 32-byte hash");
   if (options.registrationId !== undefined && !/^eip155:1315:0x[0-9a-f]{40}$/.test(options.registrationId)) throw new Error("--registration-id must be an Aeneid registration ID");
@@ -277,6 +282,35 @@ function quoteHumanIdentifier(value: string): string {
   return `${quoted}"`;
 }
 
+function renderAttestationConflicts(conflictsValue: readonly AttestationConflict[]): string[] {
+  const conflicts = [...conflictsValue].sort((a, b) => a.conflictId.localeCompare(b.conflictId));
+  const lines = [`conflicts: ${conflicts.length}`];
+  for (const conflict of conflicts) {
+    lines.push(`conflict: ${quoteHumanIdentifier(conflict.conflictId)}`);
+    lines.push(`conflict artifact hash: ${conflict.artifactHash === null ? "(none)" : quoteHumanIdentifier(conflict.artifactHash)}`);
+    lines.push(`conflict status: ${conflict.status}`);
+    lines.push(`conflict reason: ${conflict.reason}`);
+    lines.push(`conflict outcome: ${conflict.outcome ?? "(none)"}`);
+    lines.push(`conflict registrations: ${[...conflict.registrationIds].sort().map(quoteHumanIdentifier).join(", ")}`);
+    lines.push(`conflict events: ${conflict.eventIds.length > 0 ? [...conflict.eventIds].sort().map(quoteHumanIdentifier).join(", ") : "(none)"}`);
+  }
+  return lines;
+}
+
+function renderAppendSuccess(event: AttestationEvent, json: boolean): string[] {
+  const payload = { appended: event.eventId, type: event.type };
+  if (json) return [JSON.stringify(payload, null, 2)];
+  return [`appended: ${quoteHumanIdentifier(event.eventId)}; type: ${quoteHumanIdentifier(event.type)}`];
+}
+
+function renderRecoveredLock(metadata: AttestationLockMetadata, json: boolean): string[] {
+  const payload = { recovered: true, lock: metadata };
+  if (json) return [JSON.stringify(payload, null, 2)];
+  return [
+    `recovered: true; lock pid: ${metadata.pid}; token: ${quoteHumanIdentifier(metadata.token)}; target path: ${quoteHumanIdentifier(metadata.targetPath)}; acquired at: ${quoteHumanIdentifier(metadata.acquiredAt)}`,
+  ];
+}
+
 export function renderAttestationStatus(index: AttestationIndex, options: AttestationCommandOptions = {}): string[] {
   const payload = statusPayload(index, options);
   if (options.json) return [JSON.stringify(payload, null, 2)];
@@ -284,24 +318,14 @@ export function renderAttestationStatus(index: AttestationIndex, options: Attest
   const lines: string[] = [];
   for (const itemValue of payload.registrations) {
     const item = itemValue as ReturnType<typeof displayAttestation> & { registrationId: string };
-    lines.push(`registration: ${item.registrationId}`);
+    lines.push(`registration: ${quoteHumanIdentifier(item.registrationId)}`);
     lines.push(`status: ${item.status}`);
     lines.push(`attestation: ${item.level}`);
     lines.push(`claim: ${item.claim}`);
     lines.push(`safety review: ${item.safetyReviewStatus}`);
     for (const warning of item.warnings) lines.push(`warning: ${warning}`);
   }
-  lines.push(`conflicts: ${payload.conflicts.length}`);
-  for (const conflictValue of payload.conflicts) {
-    const conflict = conflictValue as AttestationIndex["conflicts"][number];
-    lines.push(`conflict: ${quoteHumanIdentifier(conflict.conflictId)}`);
-    lines.push(`conflict artifact hash: ${conflict.artifactHash ?? "(none)"}`);
-    lines.push(`conflict status: ${conflict.status}`);
-    lines.push(`conflict reason: ${conflict.reason}`);
-    lines.push(`conflict outcome: ${conflict.outcome ?? "(none)"}`);
-    lines.push(`conflict registrations: ${[...conflict.registrationIds].sort().join(", ")}`);
-    lines.push(`conflict events: ${conflict.eventIds.length > 0 ? [...conflict.eventIds].sort().map(quoteHumanIdentifier).join(", ") : "(none)"}`);
-  }
+  lines.push(...renderAttestationConflicts(payload.conflicts));
   return lines;
 }
 
@@ -323,10 +347,6 @@ function assertOnlyOptions(options: AttestationCommandOptions, permitted: readon
   }
 }
 
-function outputValue(value: unknown, json: boolean): string[] {
-  return json ? [JSON.stringify(value, null, 2)] : [typeof value === "string" ? value : JSON.stringify(value)];
-}
-
 export async function executeAttestationCommand(
   command: AttestationCommand,
   options: AttestationCommandOptions,
@@ -341,7 +361,9 @@ export async function executeAttestationCommand(
   } else if (command === "attestation-conflicts") {
     assertOnlyOptions(options, ["json"]);
     const conflicts = (await loadIndex(runtime)).conflicts;
-    lines = outputValue({ conflicts }, Boolean(options.json));
+    lines = options.json
+      ? [JSON.stringify({ conflicts }, null, 2)]
+      : renderAttestationConflicts(conflicts);
   } else if (command === "attestation-verify-repository") {
     assertOnlyOptions(options, ["bundle", "json"]);
     if (!options.bundle) throw new Error("attestation-verify-repository requires --bundle <absolute-path>");
@@ -362,27 +384,27 @@ export async function executeAttestationCommand(
       ...context,
     });
     await runtime.store.append(event);
-    lines = outputValue({ appended: event.eventId, type: event.type }, Boolean(options.json));
+    lines = renderAppendSuccess(event, Boolean(options.json));
   } else if (command === "attestation-verify-organization") {
     assertOnlyOptions(options, ["bundle", "json"]);
     if (!options.bundle) throw new Error("attestation-verify-organization requires --bundle <absolute-path>");
     const event = await appendTypedBundle(runtime, options.bundle, "organization_approved");
-    lines = outputValue({ appended: event.eventId, type: event.type }, Boolean(options.json));
+    lines = renderAppendSuccess(event, Boolean(options.json));
   } else if (command === "attestation-append-challenge") {
     assertOnlyOptions(options, ["bundle", "json"]);
     if (!options.bundle) throw new Error("attestation-append-challenge requires --bundle <absolute-path>");
     const event = await appendTypedBundle(runtime, options.bundle, "challenge_opened");
-    lines = outputValue({ appended: event.eventId, type: event.type }, Boolean(options.json));
+    lines = renderAppendSuccess(event, Boolean(options.json));
   } else if (command === "attestation-resolve") {
     assertOnlyOptions(options, ["bundle", "json"]);
     if (!options.bundle) throw new Error("attestation-resolve requires --bundle <absolute-path>");
     const event = await appendTypedBundle(runtime, options.bundle, "challenge_resolved");
-    lines = outputValue({ appended: event.eventId, type: event.type }, Boolean(options.json));
+    lines = renderAppendSuccess(event, Boolean(options.json));
   } else if (command === "attestation-revoke") {
     assertOnlyOptions(options, ["bundle", "json"]);
     if (!options.bundle) throw new Error("attestation-revoke requires --bundle <absolute-path>");
     const event = await appendTypedBundle(runtime, options.bundle, "attestation_revoked");
-    lines = outputValue({ appended: event.eventId, type: event.type }, Boolean(options.json));
+    lines = renderAppendSuccess(event, Boolean(options.json));
   } else {
     assertOnlyOptions(options, ["lockToken", "json"]);
     if (!options.lockToken) throw new Error("attestation-recover-lock requires --lock-token <exact-token>");
@@ -394,7 +416,7 @@ export async function executeAttestationCommand(
       }
     };
     await runtime.store.recoverStaleLock({ expectedToken: options.lockToken, isProcessAlive });
-    lines = outputValue({ recovered: true, lock: metadata }, Boolean(options.json));
+    lines = renderRecoveredLock(metadata, Boolean(options.json));
   }
   for (const line of lines) log(line);
 }

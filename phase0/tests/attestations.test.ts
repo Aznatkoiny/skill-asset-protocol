@@ -224,6 +224,72 @@ test("organization approval rejects inherited signer entries and exotic trust-ma
   );
 });
 
+test("organization approval rejects malformed own signer allow-lists before accepting a valid signature", async () => {
+  const creator = privateKeyToAccount(generatePrivateKey());
+  const approver = privateKeyToAccount(generatePrivateKey());
+  const base = subject(IP_A, creator.address);
+  const repo = await repositoryEvent(base, creator);
+  const unsigned = {
+    schemaVersion: 1 as const,
+    subject: base,
+    organizationId: "example-org",
+    approverWallet: approver.address.toLowerCase() as `0x${string}`,
+    role: "ip_admin" as const,
+    approvedAt: NOW,
+  };
+  const approval = {
+    ...unsigned,
+    statementHash: organizationStatementHash(unsigned),
+    signature: await approver.signMessage({ message: canonicalOrganizationStatement(unsigned) }),
+  };
+  const event: OrganizationApprovedEvent = {
+    type: "organization_approved",
+    eventId: "organization-malformed-root",
+    sequence: 2,
+    occurredAt: NOW,
+    subject: base,
+    approval,
+  };
+
+  const inheritedPrototype = Object.create(Array.prototype) as Record<string, unknown>;
+  inheritedPrototype[0] = unsigned.approverWallet;
+  const inheritedEntry = [] as unknown[];
+  inheritedEntry.length = 1;
+  Object.setPrototypeOf(inheritedEntry, inheritedPrototype);
+  const extraProperty = [unsigned.approverWallet] as unknown[] & { injected?: string };
+  extraProperty.injected = unsigned.approverWallet;
+  const malformedAllowLists: readonly [string, unknown][] = [
+    ["string with a matching substring", unsigned.approverWallet],
+    ["array-like object with includes", { 0: unsigned.approverWallet, length: 1, includes: () => true }],
+    ["array with an inherited matching entry", inheritedEntry],
+    ["array with a malformed address", [unsigned.approverWallet.toUpperCase()]],
+    ["array with a non-string entry", [42]],
+    ["array with a duplicate canonical address", [unsigned.approverWallet, unsigned.approverWallet]],
+    ["array with an extra schema property", extraProperty],
+  ];
+
+  for (const [name, malformed] of malformedAllowLists) {
+    const trust = { "example-org": malformed } as unknown as Record<string, readonly `0x${string}`[]>;
+    await assert.rejects(
+      verifyOrganizationApproval(approval, trust),
+      /organization signer allow-list.*(?:array|canonical lowercase address|unique|own indexed entries|schema properties)/i,
+      name,
+    );
+  }
+
+  const malformedReducerTrust = {
+    "example-org": unsigned.approverWallet,
+  } as unknown as Record<string, readonly `0x${string}`[]>;
+  await assert.rejects(
+    reduceAttestationEvents([repo, event], {
+      baseSubjects: [base],
+      repositoryVerifier: async () => undefined,
+      organizationSigners: malformedReducerTrust,
+    }),
+    /organization signer allow-list.*array/i,
+  );
+});
+
 test("duplicate bytes under different wallets create a deterministic visible conflict", async () => {
   const first = privateKeyToAccount(generatePrivateKey());
   const second = privateKeyToAccount(generatePrivateKey());
@@ -479,17 +545,17 @@ test("human status output lists challenged registrations and every matching conf
   assert.deepEqual(lines, reverseLines);
   assert.deepEqual(
     lines.filter((line) => line.startsWith("registration: ")),
-    [a.registrationId, b.registrationId].sort().map((id) => `registration: ${id}`),
+    [a.registrationId, b.registrationId].sort().map((id) => `registration: "${id}"`),
   );
   assert.equal(lines.filter((line) => line === "status: challenged").length, 2);
   assert.deepEqual(lines.slice(-8), [
     "conflicts: 1",
     `conflict: "${conflictId}"`,
-    `conflict artifact hash: ${a.artifactHash}`,
+    `conflict artifact hash: "${a.artifactHash}"`,
     "conflict status: open",
     "conflict reason: duplicate_bytes",
     "conflict outcome: (none)",
-    `conflict registrations: ${[a.registrationId, b.registrationId].sort().join(", ")}`,
+    `conflict registrations: ${[a.registrationId, b.registrationId].sort().map((id) => `"${id}"`).join(", ")}`,
     "conflict events: (none)",
   ]);
 
@@ -503,7 +569,7 @@ test("human status output lists challenged registrations and every matching conf
   };
   const unsortedArrayLines = renderAttestationStatus(unsortedArrayIndex, { artifactHash: a.artifactHash });
   assert.ok(unsortedArrayLines.includes(
-    `conflict registrations: ${[a.registrationId, b.registrationId].sort().join(", ")}`,
+    `conflict registrations: ${[a.registrationId, b.registrationId].sort().map((id) => `"${id}"`).join(", ")}`,
   ));
   assert.ok(unsortedArrayLines.includes('conflict events: "event-a", "event-z"'));
 

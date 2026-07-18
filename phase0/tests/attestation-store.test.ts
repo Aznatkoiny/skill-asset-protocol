@@ -527,6 +527,44 @@ test("organization approval credentials remain consumed after close and reopen",
   assert.deepEqual(await readFile(f.path), beforeReplay);
 });
 
+test("store replay rejects a malformed injected organization signer root before append", async (t) => {
+  const f = await repositoryFixture(t);
+  const malformedOrganizationSigners = {
+    "example-org": f.approver.address.toLowerCase(),
+  } as unknown as Record<string, readonly `0x${string}`[]>;
+  const validStore = new FileAttestationStore(f.path, f.options);
+  await validStore.append(f.repositoryEvent);
+  const store = new FileAttestationStore(f.path, {
+    ...f.options,
+    organizationSigners: malformedOrganizationSigners,
+  });
+  const before = await readFile(f.path);
+  const unsignedApproval = {
+    schemaVersion: 1 as const,
+    subject: f.base,
+    organizationId: "example-org",
+    approverWallet: f.approver.address.toLowerCase() as `0x${string}`,
+    role: "ip_admin" as const,
+    approvedAt: "2026-07-18T12:30:00.000Z",
+  };
+  const approval = {
+    ...unsignedApproval,
+    statementHash: organizationStatementHash(unsignedApproval),
+    signature: await f.approver.signMessage({ message: canonicalOrganizationStatement(unsignedApproval) }),
+  };
+  const organization: OrganizationApprovedEvent = {
+    type: "organization_approved",
+    eventId: "organization-malformed-root",
+    sequence: 2,
+    occurredAt: "2026-07-18T13:00:00.000Z",
+    subject: f.base,
+    approval,
+  };
+
+  await assert.rejects(store.append(organization), /organization signer allow-list.*array/i);
+  assert.deepEqual(await readFile(f.path), before);
+});
+
 test("store replay applies the injected verifier clock deterministically", async (t) => {
   const f = await fixture(t);
   const clocked = new FileAttestationStore(f.path, {
