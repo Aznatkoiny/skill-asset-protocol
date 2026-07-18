@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync } from 'node:crypto';
 import test from 'node:test';
 
+import { receiptSequenceScope } from '../src/receipt-ledger.mjs';
+
 import {
   buildInvocationReceipt,
   buildStatement,
@@ -12,6 +14,7 @@ import {
   renderJsonl,
   signReceipt,
   signStatement,
+  statementHash,
   verifyReceipt,
   verifyStatement,
 } from '../src/statements.mjs';
@@ -30,10 +33,13 @@ function successRecords(sequence = 1, suffix = '001') {
     skillVersionHash: SKILL_HASH,
     creatorId: 'sam',
     wielderId: 'megacorp-internal-agent',
+    initiatingPrincipalId: 'jordan',
+    principalAttestationId: `attestation-${suffix}`,
     beneficiaryId: 'megacorp',
     costCenter: 'platform-engineering',
     policyId: 'policy-megacorp-ledger-recon',
     policyVersion: 1,
+    policyHash: `sha256:${'2'.repeat(64)}`,
     maxExecutionCostAtomic: '1000000',
     protocolFeeAtomic: '25000',
     refundReserveAtomic: '25000',
@@ -61,12 +67,17 @@ function successRecords(sequence = 1, suffix = '001') {
     reservationId: reservation.reservationId,
     skillId: quote.skillId,
     skillVersionHash: quote.skillVersionHash,
+    skillRegistrationId: 'registration-ledger-recon-v1',
     creatorId: 'sam',
     wielderId: quote.wielderId,
+    initiatingPrincipalId: quote.initiatingPrincipalId,
+    principalAttestationId: quote.principalAttestationId,
+    principalAttestationHash: `sha256:${'3'.repeat(64)}`,
     beneficiaryId: 'megacorp',
     costCenter: quote.costCenter,
     policyId: quote.policyId,
     policyVersion: 1,
+    policyHash: quote.policyHash,
     period: '2026-07',
     currency: 'USD',
     atomicScale: 6,
@@ -100,6 +111,9 @@ function successRecords(sequence = 1, suffix = '001') {
       { category: 'invocation-award', debitAccountId: 'employer:invocation-gross', creditAccountId: 'employee:sam', amountAtomic: '2000000' },
     ],
     receiptSequence: sequence,
+    receiptSequenceScope: receiptSequenceScope({
+      employerId: 'megacorp', creatorId: 'sam', currency: 'USD', atomicScale: 6,
+    }),
   };
   const award = {
     schemaVersion: 1,
@@ -167,6 +181,33 @@ function signedSuccess(signers, sequence = 1, suffix = '001') {
   }), signers.receipt.privateKey);
 }
 
+function signedSuccessInPeriod(signers, sequence, suffix, period, occurredAt) {
+  const records = successRecords(sequence, suffix);
+  return signReceipt(buildInvocationReceipt({
+    invocation: {
+      ...records.invocation,
+      period,
+      authorizedAt: occurredAt,
+      startedAt: occurredAt,
+      finalizedAt: occurredAt,
+    },
+    reservation: {
+      ...records.reservation,
+      authorizedAt: occurredAt,
+      startedAt: occurredAt,
+      finalizedAt: occurredAt,
+    },
+    award: {
+      ...records.award,
+      period,
+      measuredAt: occurredAt,
+      earnedAt: occurredAt,
+    },
+    employerId: 'megacorp',
+    receiptSignerId: 'collar-receipt-key-2026-07',
+  }), signers.receipt.privateKey);
+}
+
 function expectedMerkleRoot(receipts) {
   const digest = (bytes) => createHash('sha256').update(bytes).digest();
   if (receipts.length === 0) {
@@ -222,7 +263,7 @@ test('employer and employee verify identical exact receipt bytes through a trust
       index === 3 ? { ...entry, creditAccountId: 'employee:attacker' } : entry
     )),
   };
-  assert.throws(() => signReceipt(wrongJournal, signers.receipt.privateKey), /shared atomic allocation/);
+  assert.throws(() => signReceipt(wrongJournal, signers.receipt.privateKey), /shared kernel allocation/);
 });
 
 test('unresolved receipt claims neither zero COGS nor release nor award', () => {
@@ -350,6 +391,206 @@ test('payable advances, reversal semantics, and payments determine payable closi
   }), /payable reversal exceeds advanced amount/);
 });
 
+test('August can authenticate a July award without recounting July economics', () => {
+  const signers = signerFixture();
+  const julyReceipt = signedSuccess(signers, 1, 'july');
+  const julyHash = receiptHash(julyReceipt);
+  const julyUnsigned = buildStatement({
+    statementId: 'statement-2026-07', employerId: 'megacorp', creatorId: 'sam',
+    period: '2026-07', currency: 'USD', atomicScale: 6, openingPayableAtomic: '0',
+    receipts: [julyReceipt], payableAdvances: [], reversals: [], payments: [],
+    statementSignerId: 'collar-statement-key-2026-07',
+  });
+  const july = signStatement(julyUnsigned, signers.statement.privateKey);
+
+  const augustUnsigned = buildStatement({
+    statementId: 'statement-2026-08', employerId: 'megacorp', creatorId: 'sam',
+    period: '2026-08', currency: 'USD', atomicScale: 6,
+    openingPayableAtomic: july.closingPayableAtomic,
+    receipts: [], historicalReceipts: [julyReceipt], priorStatement: july,
+    payableAdvances: [{
+      advanceId: 'advance-august', receiptHash: julyHash, amountAtomic: '1000000',
+      advancedAt: '2026-08-01T00:00:00.000Z',
+    }],
+    reversals: [{
+      reversalId: 'reversal-august', receiptHash: julyHash, amountAtomic: '100000',
+      balanceEffect: 'payable', reason: 'duplicate_advance',
+      occurredAt: '2026-08-02T00:00:00.000Z',
+    }],
+    payments: [{
+      paymentId: 'payment-august', amountAtomic: '250000',
+      paidAt: '2026-08-03T00:00:00.000Z', railReference: 'simulated-august-payroll',
+    }],
+    statementSignerId: 'collar-statement-key-2026-07',
+  });
+  assert.equal(augustUnsigned.priorStatementHash, statementHash(july));
+  assert.equal(augustUnsigned.priorClosingPayableAtomic, '0');
+  assert.equal(augustUnsigned.lastRecognizedReceiptSequence, 1);
+  assert.deepEqual(augustUnsigned.historicalReceiptHashes, [julyHash]);
+  assert.equal(augustUnsigned.reservationTotalAtomic, '0');
+  assert.equal(augustUnsigned.releaseTotalAtomic, '0');
+  assert.equal(augustUnsigned.chargeTotalAtomic, '0');
+  assert.equal(augustUnsigned.earnedAwardTotalAtomic, '0');
+  assert.equal(augustUnsigned.closingPayableAtomic, '650000');
+  const august = signStatement(augustUnsigned, signers.statement.privateKey);
+  assert.doesNotThrow(() => verifyStatement(august, {
+    signedReceipts: [],
+    historicalSignedReceipts: [julyReceipt],
+    priorStatements: [{ signedStatement: july, signedReceipts: [julyReceipt] }],
+    trustedReceiptSigners: signers.receiptTrust,
+    trustedStatementSigners: signers.statementTrust,
+  }));
+  assert.throws(() => buildStatement({
+    ...{
+      statementId: 'bad-opening', employerId: 'megacorp', creatorId: 'sam',
+      period: '2026-08', currency: 'USD', atomicScale: 6, openingPayableAtomic: '1',
+      receipts: [], historicalReceipts: [julyReceipt], priorStatement: july,
+      payableAdvances: [], reversals: [], payments: [],
+      statementSignerId: 'collar-statement-key-2026-07',
+    },
+  }), /opening payable must equal authenticated prior closing payable/);
+  assert.throws(() => buildStatement({
+    statementId: 'missing-chain', employerId: 'megacorp', creatorId: 'sam',
+    period: '2026-08', currency: 'USD', atomicScale: 6, openingPayableAtomic: '0',
+    receipts: [], historicalReceipts: [julyReceipt], priorStatement: null,
+    payableAdvances: [{
+      advanceId: 'advance-without-chain', receiptHash: julyHash, amountAtomic: '1',
+      advancedAt: '2026-08-01T00:00:00.000Z',
+    }],
+    reversals: [], payments: [], statementSignerId: 'collar-statement-key-2026-07',
+  }), /historical receipt is not authenticated by the prior statement chain/);
+
+  for (const duplicate of [
+    { payableAdvances: [{ advanceId: 'advance-august', receiptHash: julyHash, amountAtomic: '1', advancedAt: '2026-09-01T00:00:00.000Z' }], reversals: [], payments: [] },
+    { payableAdvances: [], reversals: [{ reversalId: 'reversal-august', receiptHash: julyHash, amountAtomic: '1', balanceEffect: 'payable', reason: 'duplicate', occurredAt: '2026-09-01T00:00:00.000Z' }], payments: [] },
+    { payableAdvances: [], reversals: [], payments: [{ paymentId: 'payment-august', amountAtomic: '1', paidAt: '2026-09-01T00:00:00.000Z', railReference: 'duplicate' }] },
+  ]) {
+    assert.throws(() => buildStatement({
+      statementId: 'statement-2026-09', employerId: 'megacorp', creatorId: 'sam',
+      period: '2026-09', currency: 'USD', atomicScale: 6,
+      openingPayableAtomic: august.closingPayableAtomic,
+      receipts: [], historicalReceipts: [julyReceipt], priorStatement: august,
+      statementSignerId: 'collar-statement-key-2026-07',
+      ...duplicate,
+    }), /ID already appeared in a prior statement/);
+  }
+
+  assert.throws(() => buildStatement({
+    statementId: 'renamed-payment-replay', employerId: 'megacorp', creatorId: 'sam',
+    period: '2026-09', currency: 'USD', atomicScale: 6,
+    openingPayableAtomic: august.closingPayableAtomic,
+    receipts: [], historicalReceipts: [julyReceipt], priorStatement: august,
+    payableAdvances: [], reversals: [],
+    payments: [{
+      paymentId: 'renamed-payment-id', amountAtomic: '1',
+      paidAt: '2026-09-01T00:00:00.000Z',
+      railReference: 'simulated-august-payroll',
+    }],
+    statementSignerId: 'collar-statement-key-2026-07',
+  }), /payment railReference ID already appeared/);
+});
+
+test('signed receipt cursor rejects cross-period gaps and survives receipt-free months', () => {
+  const signers = signerFixture();
+  const julyReceipt = signedSuccess(signers, 1, 'cursor-july');
+  const july = signStatement(buildStatement({
+    statementId: 'cursor-2026-07', employerId: 'megacorp', creatorId: 'sam',
+    period: '2026-07', currency: 'USD', atomicScale: 6, openingPayableAtomic: '0',
+    receipts: [julyReceipt], payableAdvances: [], reversals: [], payments: [],
+    statementSignerId: 'collar-statement-key-2026-07',
+  }), signers.statement.privateKey);
+  assert.equal(july.lastRecognizedReceiptSequence, 1);
+
+  const august = signStatement(buildStatement({
+    statementId: 'cursor-2026-08', employerId: 'megacorp', creatorId: 'sam',
+    period: '2026-08', currency: 'USD', atomicScale: 6,
+    openingPayableAtomic: july.closingPayableAtomic,
+    receipts: [], historicalReceipts: [], priorStatement: july,
+    payableAdvances: [], reversals: [], payments: [],
+    statementSignerId: 'collar-statement-key-2026-07',
+  }), signers.statement.privateKey);
+  assert.equal(august.firstReceiptSequence, null);
+  assert.equal(august.lastReceiptSequence, null);
+  assert.equal(august.lastRecognizedReceiptSequence, 1);
+
+  const septemberReceipt = signedSuccessInPeriod(
+    signers,
+    2,
+    'cursor-september',
+    '2026-09',
+    '2026-09-01T00:01:00.000Z',
+  );
+  const september = signStatement(buildStatement({
+    statementId: 'cursor-2026-09', employerId: 'megacorp', creatorId: 'sam',
+    period: '2026-09', currency: 'USD', atomicScale: 6,
+    openingPayableAtomic: august.closingPayableAtomic,
+    receipts: [septemberReceipt], historicalReceipts: [], priorStatement: august,
+    payableAdvances: [], reversals: [], payments: [],
+    statementSignerId: 'collar-statement-key-2026-07',
+  }), signers.statement.privateKey);
+  assert.equal(september.lastRecognizedReceiptSequence, 2);
+  assert.doesNotThrow(() => verifyStatement(september, {
+    signedReceipts: [septemberReceipt],
+    priorStatements: [
+      { signedStatement: july, signedReceipts: [julyReceipt] },
+      { signedStatement: august, signedReceipts: [] },
+    ],
+    trustedReceiptSigners: signers.receiptTrust,
+    trustedStatementSigners: signers.statementTrust,
+  }));
+
+  const skipped = signedSuccessInPeriod(
+    signers,
+    3,
+    'cursor-skipped',
+    '2026-09',
+    '2026-09-02T00:01:00.000Z',
+  );
+  assert.throws(() => buildStatement({
+    statementId: 'cursor-gap', employerId: 'megacorp', creatorId: 'sam',
+    period: '2026-09', currency: 'USD', atomicScale: 6,
+    openingPayableAtomic: august.closingPayableAtomic,
+    receipts: [skipped], historicalReceipts: [], priorStatement: august,
+    payableAdvances: [], reversals: [], payments: [],
+    statementSignerId: 'collar-statement-key-2026-07',
+  }), /sequence gap across periods: expected 2, received 3/);
+});
+
+test('statement economic events must occur in their signed statement period', () => {
+  const signers = signerFixture();
+  const receipt = signedSuccess(signers);
+  const hash = receiptHash(receipt);
+  const base = {
+    statementId: 'period-bound-events', employerId: 'megacorp', creatorId: 'sam',
+    period: '2026-07', currency: 'USD', atomicScale: 6, openingPayableAtomic: '0',
+    receipts: [receipt], statementSignerId: 'collar-statement-key-2026-07',
+  };
+  assert.throws(() => buildStatement({
+    ...base,
+    payableAdvances: [{
+      advanceId: 'advance-outside', receiptHash: hash, amountAtomic: '1',
+      advancedAt: '2026-08-01T00:00:00.000Z',
+    }],
+    reversals: [], payments: [],
+  }), /advance advancedAt must fall within statement period/);
+  assert.throws(() => buildStatement({
+    ...base, payableAdvances: [],
+    reversals: [{
+      reversalId: 'reversal-outside', receiptHash: hash, amountAtomic: '1',
+      balanceEffect: 'earned_only', reason: 'outside-period',
+      occurredAt: '2026-08-01T00:00:00.000Z',
+    }],
+    payments: [],
+  }), /reversal occurredAt must fall within statement period/);
+  assert.throws(() => buildStatement({
+    ...base, payableAdvances: [], reversals: [],
+    payments: [{
+      paymentId: 'payment-outside', amountAtomic: '0',
+      paidAt: '2026-08-01T00:00:00.000Z', railReference: 'outside-period-ref',
+    }],
+  }), /payment paidAt must fall within statement period/);
+});
+
 test('statement sequence continuity and domain-separated Merkle rules are deterministic', () => {
   const signers = signerFixture();
   const receipt1 = signedSuccess(signers, 1, '001');
@@ -408,6 +649,7 @@ test('whole-statement and receipt trust roots reject tampering and attacker resi
     ['openingPayableAtomic', { openingPayableAtomic: '1' }],
     ['firstReceiptSequence', { firstReceiptSequence: 2 }],
     ['lastReceiptSequence', { lastReceiptSequence: 2 }],
+    ['lastRecognizedReceiptSequence', { lastRecognizedReceiptSequence: 2 }],
     ['receiptHashes', { receiptHashes: [`sha256:${'0'.repeat(64)}`] }],
     ['receiptMerkleRoot', { receiptMerkleRoot: `sha256:${'0'.repeat(64)}` }],
     ['reservationTotalAtomic', { reservationTotalAtomic: '1' }],
@@ -438,7 +680,7 @@ test('whole-statement and receipt trust roots reject tampering and attacker resi
   for (const [label, mutation] of mutations) {
     assert.throws(
       () => verifyStatement({ ...signed, ...mutation }, options),
-      /signature|recompute|trusted/,
+      /signature|recompute|trusted|period|cursor|sequence/,
       label,
     );
   }

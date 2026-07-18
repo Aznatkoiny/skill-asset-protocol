@@ -4,6 +4,9 @@ import {
   verify as cryptoVerify,
 } from 'node:crypto';
 
+import { validateInternalJournalEntries } from '../../../prototype/atomic-money.mjs';
+import { receiptSequenceScope } from './receipt-ledger.mjs';
+
 import {
   cloneFrozen,
   deepFreeze,
@@ -17,9 +20,11 @@ const JOURNAL_ENTRY_KEYS = [
   'category', 'debitAccountId', 'creditAccountId', 'amountAtomic',
 ];
 const RECEIPT_KEYS = [
-  'schemaVersion', 'receiptId', 'sequence', 'receiptType', 'invocationId',
+  'schemaVersion', 'receiptId', 'sequence', 'receiptSequenceScope', 'receiptType', 'invocationId',
   'reservationId', 'employerId', 'creatorId', 'skillId', 'skillVersionHash',
-  'policyId', 'policyVersion', 'period', 'currency', 'atomicScale',
+  'skillRegistrationId', 'initiatingPrincipalId', 'principalAttestationId',
+  'principalAttestationHash', 'policyId', 'policyVersion', 'policyHash',
+  'period', 'currency', 'atomicScale',
   'invocationState', 'reservationState', 'executionAttemptId', 'reservedAtomic',
   'consumedAtomic', 'releasedAtomic', 'heldReservationAtomic',
   'executionCostStatus', 'executionCostAtomic', 'outputHash', 'failureClass',
@@ -34,14 +39,22 @@ const ADVANCE_KEYS = ['advanceId', 'receiptHash', 'amountAtomic', 'advancedAt'];
 const REVERSAL_KEYS = [
   'reversalId', 'receiptHash', 'amountAtomic', 'balanceEffect', 'reason', 'occurredAt',
 ];
+const AWARD_ACTIVITY_KEYS = [
+  'receiptHash', 'earnedAtomic', 'advancedAtomic', 'earnedReversedAtomic',
+  'payableReversedAtomic',
+];
 const STATEMENT_KEYS = [
   'schemaVersion', 'statementId', 'employerId', 'creatorId', 'period', 'currency',
-  'atomicScale', 'openingPayableAtomic', 'firstReceiptSequence',
-  'lastReceiptSequence', 'receiptHashes', 'receiptMerkleRoot',
+  'atomicScale', 'openingPayableAtomic', 'priorStatementHash',
+  'priorClosingPayableAtomic', 'firstReceiptSequence', 'lastReceiptSequence',
+  'lastRecognizedReceiptSequence',
+  'receiptHashes', 'receiptMerkleRoot', 'historicalReceiptHashes',
   'reservationTotalAtomic', 'releaseTotalAtomic', 'chargeTotalAtomic',
   'earnedAwardTotalAtomic', 'payableAdvances', 'payableAdvanceTotalAtomic',
   'reversals', 'reversalTotalAtomic', 'payableReversalTotalAtomic', 'payments',
-  'paymentTotalAtomic', 'closingPayableAtomic', 'statementSignerId',
+  'paymentTotalAtomic', 'cumulativeAdvanceIds', 'cumulativeReversalIds',
+  'cumulativePaymentIds', 'cumulativePaymentRailReferences', 'awardActivity',
+  'closingPayableAtomic', 'statementSignerId',
 ];
 const SIGNED_STATEMENT_KEYS = [...STATEMENT_KEYS, 'signature'];
 const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/;
@@ -114,8 +127,9 @@ function validateReceiptPayload(input) {
   if (input.schemaVersion !== 1) throw new Error('receipt schemaVersion must equal 1');
   for (const key of [
     'receiptId', 'receiptType', 'invocationId', 'reservationId', 'employerId',
-    'creatorId', 'skillId', 'policyId', 'period', 'currency', 'invocationState',
-    'reservationState', 'receiptSignerId',
+    'creatorId', 'skillId', 'skillRegistrationId', 'initiatingPrincipalId',
+    'principalAttestationId', 'policyId', 'period', 'currency', 'invocationState',
+    'reservationState', 'receiptSignerId', 'receiptSequenceScope',
   ]) requireString(input[key], key);
   if (!Number.isSafeInteger(input.sequence) || input.sequence < 1) {
     throw new Error('receipt sequence must be a positive integer');
@@ -128,6 +142,16 @@ function validateReceiptPayload(input) {
   }
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(input.period)) throw new Error('receipt period must be YYYY-MM');
   if (!SHA256_PATTERN.test(input.skillVersionHash)) throw new Error('receipt Skill hash is invalid');
+  if (!SHA256_PATTERN.test(input.policyHash)) throw new Error('receipt policyHash is invalid');
+  if (!SHA256_PATTERN.test(input.principalAttestationHash)) {
+    throw new Error('receipt principalAttestationHash is invalid');
+  }
+  if (input.receiptSequenceScope !== receiptSequenceScope({
+    employerId: input.employerId,
+    creatorId: input.creatorId,
+    currency: input.currency,
+    atomicScale: input.atomicScale,
+  })) throw new Error('receipt sequence scope does not match receipt identity');
   parseUtc(input.occurredAt, 'receipt occurredAt');
   for (const key of [
     'reservedAtomic', 'consumedAtomic', 'releasedAtomic', 'heldReservationAtomic',
@@ -170,20 +194,18 @@ function validateReceiptPayload(input) {
     if (journalTotal !== consumed || journalEntries.length !== 4) {
       throw new Error('receipt journal entries do not conserve consumed gross');
     }
-    const expectedJournal = [
-      ['execution-cogs', 'provider:execution', input.executionCostAtomic],
-      ['protocol-fee', 'protocol:treasury', input.protocolFeeAtomic],
-      ['refund-reserve', 'reserve:refund', input.refundReserveAtomic],
-      ['invocation-award', `employee:${input.creatorId}`, input.invocationAwardAtomic],
-    ];
-    for (const [index, [category, creditAccountId, amountAtomic]] of expectedJournal.entries()) {
-      const entry = journalEntries[index];
-      if (entry.category !== category
-          || entry.creditAccountId !== creditAccountId
-          || entry.amountAtomic !== amountAtomic) {
-        throw new Error('receipt journal entries do not match the shared atomic allocation');
-      }
-    }
+    validateInternalJournalEntries({
+      kind: 'succeeded',
+      grossAtomic: consumed,
+      executionCostAtomic: toAtomic(input.executionCostAtomic),
+      protocolFeeAtomic: toAtomic(input.protocolFeeAtomic),
+      refundReserveAtomic: toAtomic(input.refundReserveAtomic),
+      recipientId: input.creatorId,
+      employerId: input.employerId,
+      journalEntries: journalEntries.map((entry) => ({
+        ...entry, amountAtomic: toAtomic(entry.amountAtomic),
+      })),
+    });
   } else if (input.invocationState === 'failed') {
     if (input.receiptType !== 'internal_invocation_finalized'
         || input.reservationState !== 'released'
@@ -196,10 +218,18 @@ function validateReceiptPayload(input) {
         || input.refundReserveAtomic !== '0'
         || input.invocationAwardAtomic !== '0'
         || input.awardState !== null
-        || journalEntries.length !== 0
+        || journalEntries.length !== 1
         || consumed !== toAtomic(input.executionCostAtomic)) {
       throw new Error('invalid failed Invocation receipt state');
     }
+    validateInternalJournalEntries({
+      kind: 'failed_after_start',
+      grossAtomic: consumed,
+      executionCostAtomic: toAtomic(input.executionCostAtomic),
+      journalEntries: journalEntries.map((entry) => ({
+        ...entry, amountAtomic: toAtomic(entry.amountAtomic),
+      })),
+    });
   } else if (input.invocationState === 'unresolved') {
     if (input.receiptType !== 'internal_invocation_finalized'
         || input.reservationState !== 'held_unresolved'
@@ -282,6 +312,7 @@ export function buildInvocationReceipt({
     schemaVersion: 1,
     receiptId: `receipt-${invocation.invocationId}`,
     sequence: invocation.receiptSequence,
+    receiptSequenceScope: invocation.receiptSequenceScope,
     receiptType: cancelled ? 'internal_invocation_cancelled' : 'internal_invocation_finalized',
     invocationId: invocation.invocationId,
     reservationId: reservation.reservationId,
@@ -289,8 +320,13 @@ export function buildInvocationReceipt({
     creatorId: invocation.creatorId,
     skillId: invocation.skillId,
     skillVersionHash: invocation.skillVersionHash,
+    skillRegistrationId: invocation.skillRegistrationId,
+    initiatingPrincipalId: invocation.initiatingPrincipalId,
+    principalAttestationId: invocation.principalAttestationId,
+    principalAttestationHash: invocation.principalAttestationHash,
     policyId: invocation.policyId,
     policyVersion: invocation.policyVersion,
+    policyHash: invocation.policyHash,
     period: invocation.period,
     currency: invocation.currency,
     atomicScale: invocation.atomicScale,
@@ -330,6 +366,19 @@ export function signReceipt(receipt, privateKey) {
     ...validated,
     signature: cryptoSign(null, canonicalReceiptBytes(validated), privateKey).toString('base64'),
   });
+}
+
+export function signReceiptWithCapability(receipt, capability) {
+  const validated = validateReceiptPayload(receipt);
+  if (!capability || typeof capability !== 'object'
+      || capability.signerId !== validated.receiptSignerId
+      || typeof capability.sign !== 'function') {
+    throw new Error('receipt signer capability does not match receiptSignerId');
+  }
+  const signature = capability.sign(canonicalReceiptBytes(validated));
+  const signed = { ...validated, signature };
+  validateSignedReceiptShape(signed);
+  return cloneFrozen(signed);
 }
 
 function validateSignedReceiptShape(signedReceipt) {
@@ -435,7 +484,7 @@ function validateReversal(reversal, index) {
   return cloneFrozen(reversal);
 }
 
-function statementReceiptRows(receipts, identity) {
+function statementReceiptRows(receipts, identity, { enforceContinuity = true } = {}) {
   if (!Array.isArray(receipts)) throw new Error('receipts must be an array');
   const rows = receipts.map((signed) => ({ signed, receipt: validateSignedReceiptShape(signed) }));
   rows.sort((left, right) => left.receipt.sequence - right.receipt.sequence);
@@ -443,7 +492,7 @@ function statementReceiptRows(receipts, identity) {
   const seenHashes = new Set();
   let expected = rows.length === 0 ? null : rows[0].receipt.sequence;
   for (const row of rows) {
-    if (row.receipt.sequence !== expected) {
+    if (enforceContinuity && row.receipt.sequence !== expected) {
       throw new Error(`statement sequence gap: expected ${expected}, received ${row.receipt.sequence}`);
     }
     expected += 1;
@@ -461,6 +510,40 @@ function statementReceiptRows(receipts, identity) {
   return rows;
 }
 
+function sortedStrings(values) {
+  return [...values].sort((left, right) => {
+    if (left < right) return -1;
+    if (left > right) return 1;
+    return 0;
+  });
+}
+
+function validateAwardActivity(row, index) {
+  requireExactKeys(row, AWARD_ACTIVITY_KEYS, `award activity ${index}`);
+  if (!SHA256_PATTERN.test(row.receiptHash)) throw new Error('award activity receiptHash is invalid');
+  for (const key of [
+    'earnedAtomic', 'advancedAtomic', 'earnedReversedAtomic', 'payableReversedAtomic',
+  ]) toAtomic(row[key]);
+  return cloneFrozen(row);
+}
+
+function cumulativeIds(priorValues, currentValues, label) {
+  const prior = Array.isArray(priorValues) ? priorValues : [];
+  const seen = new Set(prior);
+  for (const id of currentValues) {
+    if (seen.has(id)) throw new Error(`${label} ID already appeared in a prior statement: ${id}`);
+    seen.add(id);
+  }
+  return sortedStrings(seen);
+}
+
+function assertTimestampInPeriod(timestamp, period, label) {
+  parseUtc(timestamp, label);
+  if (timestamp.slice(0, 7) !== period) {
+    throw new Error(`${label} must fall within statement period ${period}`);
+  }
+}
+
 export function buildStatement({
   statementId,
   employerId,
@@ -470,6 +553,8 @@ export function buildStatement({
   atomicScale,
   openingPayableAtomic,
   receipts,
+  historicalReceipts = [],
+  priorStatement = null,
   payableAdvances,
   reversals,
   payments,
@@ -486,11 +571,48 @@ export function buildStatement({
     throw new Error('statement atomicScale must be an integer from 0 through 18');
   }
   const opening = toAtomic(openingPayableAtomic);
+  let priorPayload = null;
+  let priorHash = null;
+  if (priorStatement !== null) {
+    priorPayload = validateSignedStatementShape(priorStatement);
+    priorHash = statementHash(priorStatement);
+    for (const key of ['employerId', 'creatorId', 'currency', 'atomicScale']) {
+      if (priorPayload[key] !== { employerId, creatorId, currency, atomicScale }[key]) {
+        throw new Error(`prior statement ${key} does not match current statement`);
+      }
+    }
+    if (priorPayload.period >= period) throw new Error('prior statement period must precede current period');
+    if (openingPayableAtomic !== priorPayload.closingPayableAtomic) {
+      throw new Error('opening payable must equal authenticated prior closing payable');
+    }
+  }
+
   const rows = statementReceiptRows(receipts, {
     employerId, creatorId, period, currency, atomicScale,
   });
+  const priorReceiptCursor = priorPayload?.lastRecognizedReceiptSequence ?? 0;
+  if (rows.length > 0 && rows[0].receipt.sequence !== priorReceiptCursor + 1) {
+    throw new Error(
+      `statement sequence gap across periods: expected ${priorReceiptCursor + 1}, received ${rows[0].receipt.sequence}`,
+    );
+  }
+  const lastRecognizedReceiptSequence = rows.length === 0
+    ? priorReceiptCursor
+    : rows.at(-1).receipt.sequence;
+  const historicalRows = statementReceiptRows(historicalReceipts, {
+    employerId, creatorId, currency, atomicScale,
+  }, { enforceContinuity: false });
+  for (const row of historicalRows) {
+    if (row.receipt.period >= period) {
+      throw new Error('historical receipt period must precede current statement period');
+    }
+  }
   const sortedReceipts = rows.map((row) => row.signed);
   const hashes = rows.map((row) => receiptHash(row.signed));
+  const historicalHashes = sortedStrings(historicalRows.map((row) => receiptHash(row.signed)));
+  if (new Set([...hashes, ...historicalHashes]).size !== hashes.length + historicalHashes.length) {
+    throw new Error('receipt cannot be both current and historical');
+  }
   const reservationTotal = rows.reduce(
     (sum, row) => sum + toAtomic(row.receipt.reservedAtomic), 0n,
   );
@@ -505,29 +627,64 @@ export function buildStatement({
       ? sum + toAtomic(row.receipt.invocationAwardAtomic)
       : sum
   ), 0n);
-  const awardsByHash = new Map(rows.map((row) => [
-    receiptHash(row.signed),
-    {
+
+  const awardsByHash = new Map();
+  for (const activity of priorPayload?.awardActivity ?? []) {
+    awardsByHash.set(activity.receiptHash, {
+      amount: toAtomic(activity.earnedAtomic),
+      advance: toAtomic(activity.advancedAtomic),
+      earnedReversal: toAtomic(activity.earnedReversedAtomic),
+      payableReversal: toAtomic(activity.payableReversedAtomic),
+    });
+  }
+  for (const row of rows) {
+    const hash = receiptHash(row.signed);
+    if (awardsByHash.has(hash)) throw new Error('current receipt was already recognized by prior statement');
+    awardsByHash.set(hash, {
       amount: ['earned', 'payable', 'paid'].includes(row.receipt.awardState)
         ? toAtomic(row.receipt.invocationAwardAtomic)
         : 0n,
       advance: 0n,
       earnedReversal: 0n,
       payableReversal: 0n,
-    },
-  ]));
+    });
+  }
+  const historicalSet = new Set(historicalHashes);
+  for (const row of historicalRows) {
+    const hash = receiptHash(row.signed);
+    const activity = awardsByHash.get(hash);
+    if (!priorPayload || !activity) {
+      throw new Error('historical receipt is not authenticated by the prior statement chain');
+    }
+    const receiptEarned = ['earned', 'payable', 'paid'].includes(row.receipt.awardState)
+      ? toAtomic(row.receipt.invocationAwardAtomic)
+      : 0n;
+    if (receiptEarned !== activity.amount) {
+      throw new Error('historical receipt award does not match prior statement activity');
+    }
+  }
 
   const advances = uniqueSorted(payableAdvances, 'advanceId', 'payable advances', validateAdvance);
   for (const advance of advances) {
+    assertTimestampInPeriod(advance.advancedAt, period, 'advance advancedAt');
+  }
+  for (const advance of advances) {
     const award = awardsByHash.get(advance.receiptHash);
-    if (!award) throw new Error('payable advance references an unknown receipt');
+    if (!award || (!hashes.includes(advance.receiptHash) && !historicalSet.has(advance.receiptHash))) {
+      throw new Error('payable advance references an unauthenticated current or historical receipt');
+    }
     award.advance += toAtomic(advance.amountAtomic);
     if (award.advance > award.amount) throw new Error('payable advance exceeds earned award');
   }
   const reversalRows = uniqueSorted(reversals, 'reversalId', 'reversals', validateReversal);
   for (const reversal of reversalRows) {
+    assertTimestampInPeriod(reversal.occurredAt, period, 'reversal occurredAt');
+  }
+  for (const reversal of reversalRows) {
     const award = awardsByHash.get(reversal.receiptHash);
-    if (!award) throw new Error('reversal references an unknown receipt');
+    if (!award || (!hashes.includes(reversal.receiptHash) && !historicalSet.has(reversal.receiptHash))) {
+      throw new Error('reversal references an unauthenticated current or historical receipt');
+    }
     if (reversal.balanceEffect === 'earned_only') {
       award.earnedReversal += toAtomic(reversal.amountAtomic);
       if (award.advance + award.earnedReversal > award.amount) {
@@ -541,6 +698,32 @@ export function buildStatement({
     }
   }
   const paymentRows = uniqueSorted(payments, 'paymentId', 'payments', validatePayment);
+  for (const payment of paymentRows) {
+    assertTimestampInPeriod(payment.paidAt, period, 'payment paidAt');
+  }
+  if (new Set(paymentRows.map((row) => row.railReference)).size !== paymentRows.length) {
+    throw new Error('duplicate payment railReference in statement');
+  }
+  const cumulativeAdvanceIds = cumulativeIds(
+    priorPayload?.cumulativeAdvanceIds,
+    advances.map((row) => row.advanceId),
+    'payable advance',
+  );
+  const cumulativeReversalIds = cumulativeIds(
+    priorPayload?.cumulativeReversalIds,
+    reversalRows.map((row) => row.reversalId),
+    'reversal',
+  );
+  const cumulativePaymentIds = cumulativeIds(
+    priorPayload?.cumulativePaymentIds,
+    paymentRows.map((row) => row.paymentId),
+    'payment',
+  );
+  const cumulativePaymentRailReferences = cumulativeIds(
+    priorPayload?.cumulativePaymentRailReferences,
+    paymentRows.map((row) => row.railReference),
+    'payment railReference',
+  );
   const payableAdvanceTotal = advances.reduce((sum, row) => sum + toAtomic(row.amountAtomic), 0n);
   const reversalTotal = reversalRows.reduce((sum, row) => sum + toAtomic(row.amountAtomic), 0n);
   const payableReversalTotal = reversalRows.reduce((sum, row) => (
@@ -550,6 +733,16 @@ export function buildStatement({
   const payableBeforePayment = opening + payableAdvanceTotal - payableReversalTotal;
   if (paymentTotal > payableBeforePayment) throw new Error('payments exceed payable balance');
   const closing = payableBeforePayment - paymentTotal;
+  const awardActivity = sortedStrings(awardsByHash.keys()).map((hash) => {
+    const value = awardsByHash.get(hash);
+    return deepFreeze({
+      receiptHash: hash,
+      earnedAtomic: fromAtomic(value.amount),
+      advancedAtomic: fromAtomic(value.advance),
+      earnedReversedAtomic: fromAtomic(value.earnedReversal),
+      payableReversedAtomic: fromAtomic(value.payableReversal),
+    });
+  });
 
   return validateStatementPayload({
     schemaVersion: 1,
@@ -560,10 +753,14 @@ export function buildStatement({
     currency,
     atomicScale,
     openingPayableAtomic,
+    priorStatementHash: priorHash,
+    priorClosingPayableAtomic: priorPayload?.closingPayableAtomic ?? null,
     firstReceiptSequence: rows.length === 0 ? null : rows[0].receipt.sequence,
     lastReceiptSequence: rows.length === 0 ? null : rows.at(-1).receipt.sequence,
+    lastRecognizedReceiptSequence,
     receiptHashes: hashes,
     receiptMerkleRoot: receiptMerkleRoot(sortedReceipts),
+    historicalReceiptHashes: historicalHashes,
     reservationTotalAtomic: fromAtomic(reservationTotal),
     releaseTotalAtomic: fromAtomic(releaseTotal),
     chargeTotalAtomic: fromAtomic(chargeTotal),
@@ -575,6 +772,11 @@ export function buildStatement({
     payableReversalTotalAtomic: fromAtomic(payableReversalTotal),
     payments: paymentRows,
     paymentTotalAtomic: fromAtomic(paymentTotal),
+    cumulativeAdvanceIds,
+    cumulativeReversalIds,
+    cumulativePaymentIds,
+    cumulativePaymentRailReferences,
+    awardActivity,
     closingPayableAtomic: fromAtomic(closing),
     statementSignerId,
   });
@@ -589,14 +791,38 @@ function validateStatementPayload(input) {
   if (!Number.isSafeInteger(input.atomicScale) || input.atomicScale < 0 || input.atomicScale > 18) {
     throw new Error('statement atomicScale must be an integer from 0 through 18');
   }
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(input.period)) throw new Error('statement period must be YYYY-MM');
+  const noPrior = input.priorStatementHash === null && input.priorClosingPayableAtomic === null;
+  const hasPrior = SHA256_PATTERN.test(input.priorStatementHash)
+    && typeof input.priorClosingPayableAtomic === 'string';
+  if (!noPrior && !hasPrior) throw new Error('statement prior chain fields are invalid');
+  if (input.priorClosingPayableAtomic !== null) toAtomic(input.priorClosingPayableAtomic);
   const bothNull = input.firstReceiptSequence === null && input.lastReceiptSequence === null;
   const bothIntegers = Number.isSafeInteger(input.firstReceiptSequence)
     && Number.isSafeInteger(input.lastReceiptSequence)
     && input.firstReceiptSequence >= 1
     && input.lastReceiptSequence >= input.firstReceiptSequence;
   if (!bothNull && !bothIntegers) throw new Error('statement receipt sequence bounds are invalid');
+  if (!Number.isSafeInteger(input.lastRecognizedReceiptSequence)
+      || input.lastRecognizedReceiptSequence < 0) {
+    throw new Error('statement lastRecognizedReceiptSequence must be a non-negative integer');
+  }
+  if (bothIntegers && input.lastRecognizedReceiptSequence !== input.lastReceiptSequence) {
+    throw new Error('statement receipt cursor must equal the current last receipt sequence');
+  }
+  if (input.priorStatementHash === null) {
+    const expectedGenesisCursor = bothNull ? 0 : input.lastReceiptSequence;
+    if (input.lastRecognizedReceiptSequence !== expectedGenesisCursor
+        || (bothIntegers && input.firstReceiptSequence !== 1)) {
+      throw new Error('genesis statement receipt sequence must begin at 1');
+    }
+  }
   if (!Array.isArray(input.receiptHashes) || input.receiptHashes.some((hash) => !SHA256_PATTERN.test(hash))) {
     throw new Error('statement receiptHashes are invalid');
+  }
+  if (!Array.isArray(input.historicalReceiptHashes)
+      || input.historicalReceiptHashes.some((hash) => !SHA256_PATTERN.test(hash))) {
+    throw new Error('statement historicalReceiptHashes are invalid');
   }
   if (!SHA256_PATTERN.test(input.receiptMerkleRoot)) throw new Error('statement receiptMerkleRoot is invalid');
   for (const key of [
@@ -608,6 +834,44 @@ function validateStatementPayload(input) {
   uniqueSorted(input.payableAdvances, 'advanceId', 'payable advances', validateAdvance);
   uniqueSorted(input.reversals, 'reversalId', 'reversals', validateReversal);
   uniqueSorted(input.payments, 'paymentId', 'payments', validatePayment);
+  for (const advance of input.payableAdvances) {
+    assertTimestampInPeriod(advance.advancedAt, input.period, 'advance advancedAt');
+  }
+  for (const reversal of input.reversals) {
+    assertTimestampInPeriod(reversal.occurredAt, input.period, 'reversal occurredAt');
+  }
+  for (const payment of input.payments) {
+    assertTimestampInPeriod(payment.paidAt, input.period, 'payment paidAt');
+  }
+  if (new Set(input.payments.map((row) => row.railReference)).size !== input.payments.length) {
+    throw new Error('duplicate payment railReference in statement');
+  }
+  for (const [values, label] of [
+    [input.cumulativeAdvanceIds, 'cumulativeAdvanceIds'],
+    [input.cumulativeReversalIds, 'cumulativeReversalIds'],
+    [input.cumulativePaymentIds, 'cumulativePaymentIds'],
+    [input.cumulativePaymentRailReferences, 'cumulativePaymentRailReferences'],
+  ]) {
+    if (!Array.isArray(values)) throw new Error(`${label} must be an array`);
+    for (const value of values) {
+      if (label === 'cumulativePaymentRailReferences') {
+        requireString(value, `${label} entry`);
+      } else {
+        requireSortableId(value, `${label} entry`);
+      }
+    }
+    if (new Set(values).size !== values.length
+        || JSON.stringify(values) !== JSON.stringify(sortedStrings(values))) {
+      throw new Error(`${label} must be unique and code-unit sorted`);
+    }
+  }
+  if (!Array.isArray(input.awardActivity)) throw new Error('awardActivity must be an array');
+  const activity = input.awardActivity.map(validateAwardActivity);
+  if (new Set(activity.map((row) => row.receiptHash)).size !== activity.length
+      || JSON.stringify(activity.map((row) => row.receiptHash))
+        !== JSON.stringify(sortedStrings(activity.map((row) => row.receiptHash)))) {
+    throw new Error('awardActivity must have unique code-unit-sorted receipt hashes');
+  }
   return cloneFrozen(input);
 }
 
@@ -624,13 +888,30 @@ export function signStatement(unsignedStatement, privateKey) {
   });
 }
 
-export function verifyStatement(signedStatement, {
+function validateSignedStatementShape(signedStatement) {
+  requireExactKeys(signedStatement, SIGNED_STATEMENT_KEYS, 'signed statement');
+  const statement = validateStatementPayload(ordered(signedStatement, STATEMENT_KEYS));
+  decodeSignature(signedStatement.signature, 'statement');
+  return statement;
+}
+
+function canonicalSignedStatementBytes(signedStatement) {
+  validateSignedStatementShape(signedStatement);
+  return canonicalBytes(signedStatement, SIGNED_STATEMENT_KEYS);
+}
+
+export function statementHash(signedStatement) {
+  return taggedHash(canonicalSignedStatementBytes(signedStatement));
+}
+
+function verifyOneStatement(signedStatement, {
   signedReceipts,
+  historicalSignedReceipts,
+  priorStatement,
   trustedReceiptSigners,
   trustedStatementSigners,
 }) {
-  requireExactKeys(signedStatement, SIGNED_STATEMENT_KEYS, 'signed statement');
-  const statement = validateStatementPayload(ordered(signedStatement, STATEMENT_KEYS));
+  const statement = validateSignedStatementShape(signedStatement);
   const key = trustedKey(
     trustedStatementSigners,
     statement.statementSignerId,
@@ -642,7 +923,7 @@ export function verifyStatement(signedStatement, {
     key,
     decodeSignature(signedStatement.signature, 'statement'),
   )) throw new Error('statement signature verification failed');
-  for (const receipt of signedReceipts) {
+  for (const receipt of [...signedReceipts, ...historicalSignedReceipts]) {
     verifyReceipt(receipt, { trustedReceiptSigners });
   }
   const recomputed = buildStatement({
@@ -654,6 +935,8 @@ export function verifyStatement(signedStatement, {
     atomicScale: statement.atomicScale,
     openingPayableAtomic: statement.openingPayableAtomic,
     receipts: signedReceipts,
+    historicalReceipts: historicalSignedReceipts,
+    priorStatement,
     payableAdvances: statement.payableAdvances,
     reversals: statement.reversals,
     payments: statement.payments,
@@ -664,6 +947,37 @@ export function verifyStatement(signedStatement, {
     throw new Error('statement does not match deterministic economic recomputation');
   }
   return statement;
+}
+
+export function verifyStatement(signedStatement, {
+  signedReceipts,
+  historicalSignedReceipts = [],
+  priorStatements = [],
+  trustedReceiptSigners,
+  trustedStatementSigners,
+}) {
+  if (!Array.isArray(priorStatements)) throw new Error('priorStatements must be an array');
+  let prior = null;
+  for (const [index, entry] of priorStatements.entries()) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`prior statement entry ${index} must be an object`);
+    }
+    verifyOneStatement(entry.signedStatement, {
+      signedReceipts: entry.signedReceipts ?? [],
+      historicalSignedReceipts: entry.historicalSignedReceipts ?? [],
+      priorStatement: prior,
+      trustedReceiptSigners,
+      trustedStatementSigners,
+    });
+    prior = entry.signedStatement;
+  }
+  return verifyOneStatement(signedStatement, {
+    signedReceipts,
+    historicalSignedReceipts,
+    priorStatement: prior,
+    trustedReceiptSigners,
+    trustedStatementSigners,
+  });
 }
 
 function stableJson(value) {

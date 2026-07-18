@@ -1,11 +1,15 @@
 import { sign as cryptoSign, verify as cryptoVerify } from 'node:crypto';
 
-import { allocateInternalGross } from '../../../prototype/atomic-money.mjs';
+import {
+  allocateInternalFailureGross,
+  allocateInternalGross,
+} from '../../../prototype/atomic-money.mjs';
 import {
   cloneFrozen,
   deepFreeze,
   fromAtomic,
   parseUtc,
+  policyHash,
   requireExactKeys,
   sumAtomic,
   toAtomic,
@@ -14,12 +18,14 @@ import {
 } from './schema.mjs';
 
 const BUDGET_AUTHORIZATION_KEYS = [
-  'schemaVersion', 'budgetId', 'policyId', 'policyVersion', 'period', 'currency',
+  'schemaVersion', 'budgetId', 'policyId', 'policyVersion', 'policyHash',
+  'period', 'currency',
   'atomicScale', 'allocatedAtomic', 'effectiveAt', 'expiresAt', 'signerId',
 ];
 const SIGNED_BUDGET_AUTHORIZATION_KEYS = [...BUDGET_AUTHORIZATION_KEYS, 'signature'];
 const BUDGET_STATE_KEYS = [
-  'schemaVersion', 'budgetId', 'policyId', 'policyVersion', 'period', 'currency',
+  'schemaVersion', 'budgetId', 'policyId', 'policyVersion', 'policyHash',
+  'period', 'currency',
   'atomicScale', 'authorization', 'policy', 'allocatedAtomic', 'reservedAtomic',
   'consumedAtomic', 'releasedAtomic', 'revision',
 ];
@@ -54,7 +60,7 @@ function decodeSignature(value) {
 function validateUnsignedAuthorization(input) {
   requireExactKeys(input, BUDGET_AUTHORIZATION_KEYS, 'budget authorization');
   if (input.schemaVersion !== 1) throw new Error('budget authorization schemaVersion must equal 1');
-  for (const key of ['budgetId', 'policyId', 'currency', 'signerId']) {
+  for (const key of ['budgetId', 'policyId', 'policyHash', 'currency', 'signerId']) {
     requireNonEmpty(input[key], key);
   }
   if (!Number.isSafeInteger(input.policyVersion) || input.policyVersion < 1) {
@@ -102,6 +108,9 @@ export function createBudget(signedBudget, { trustedFinanceSigners, policy: poli
   if (unsigned.policyId !== policy.policyId || unsigned.policyVersion !== policy.version) {
     throw new Error('budget authorization policy binding does not match effective policy');
   }
+  if (unsigned.policyHash !== policyHash(policy)) {
+    throw new Error('budget authorization policyHash does not match canonical policy');
+  }
   if (unsigned.currency !== policy.currency || unsigned.atomicScale !== policy.atomicScale) {
     throw new Error('budget authorization denomination does not match policy');
   }
@@ -130,6 +139,7 @@ export function createBudget(signedBudget, { trustedFinanceSigners, policy: poli
     budgetId: unsigned.budgetId,
     policyId: unsigned.policyId,
     policyVersion: unsigned.policyVersion,
+    policyHash: unsigned.policyHash,
     period: unsigned.period,
     currency: unsigned.currency,
     atomicScale: unsigned.atomicScale,
@@ -334,6 +344,7 @@ export function finalizeReservation(budgetInput, reservationInput, actual) {
     protocolFeeAtomic: fee,
     refundReserveAtomic: reserve,
     recipientId: actual.recipientId,
+    employerId: reservation.quote.beneficiaryId,
   }));
   if (allocation.invocationAwardAtomic !== maximumAward) {
     throw new Error('kernel Invocation award does not equal the authorized maximum award');
@@ -373,6 +384,7 @@ export function releaseReservation(budgetInput, reservationInput, options) {
   requireTransitionRevisions(budget, reservation, options);
   parseUtc(options.now, 'now');
   const cost = toAtomic(options.executionCostAtomic);
+  let allocation = null;
   if (options.reason === 'cancelled_before_start') {
     if (reservation.state !== 'reserved') throw new Error('reservation must be reserved');
     if (options.executionAttemptId !== null || cost !== 0n) {
@@ -386,6 +398,7 @@ export function releaseReservation(budgetInput, reservationInput, options) {
     if (cost > toAtomic(reservation.quote.maxExecutionCostAtomic)) {
       throw new Error('execution cost exceeds quote maximum');
     }
+    allocation = deepFreeze(allocateInternalFailureGross({ executionCostAtomic: cost }));
   } else {
     throw new Error('unsupported reservation release reason');
   }
@@ -402,13 +415,16 @@ export function releaseReservation(budgetInput, reservationInput, options) {
     revision: reservation.revision + 1,
     finalizedAt: options.now,
   });
+  const journalEntries = allocation ? serializeJournalEntries(allocation.journalEntries) : [];
   return deepFreeze({
     budget: nextBudget,
     reservation: nextReservation,
+    allocation,
     event: event('budget_released', nextReservation, nextBudget, options.now, {
       reason: options.reason,
       executionCostAtomic: options.executionCostAtomic,
       releasedAtomic: fromAtomic(released),
+      journalEntries,
     }),
   });
 }

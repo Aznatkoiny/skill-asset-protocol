@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 export const AWARD_STATES = deepFreeze([
   'measured',
   'vesting_pending',
@@ -20,10 +22,12 @@ export const INVOCATION_STATES = deepFreeze([
 const POLICY_KEYS = [
   'schemaVersion', 'policyId', 'version', 'status', 'currency', 'atomicScale',
   'employerId', 'effectiveAt', 'expiresAt', 'permittedSkillIds',
-  'permittedCreatorIds', 'permittedWielderIds', 'permittedCostCenters',
+  'permittedCreatorIds', 'permittedWielderIds', 'permittedInitiatingPrincipalIds',
+  'permittedCostCenters',
   'maxQuoteAtomic', 'awardRule', 'maxAwardPerInvocationAtomic',
   'maxAwardPerPeriodAtomic', 'selfInvocation', 'permittedManagerSignerIds',
-  'permittedCredentialAuthorizerIds', 'permittedFinanceSignerIds', 'vestingRule',
+  'permittedCredentialAuthorizerIds', 'permittedIdentitySignerIds',
+  'permittedFinanceSignerIds', 'vestingRule',
   'paymentSchedule', 'terminationTreatment', 'paymentRail',
 ];
 
@@ -31,12 +35,25 @@ const AWARD_RULE_KEYS = ['type', 'awardRateBps', 'rateBase', 'rounding'];
 
 const QUOTE_KEYS = [
   'schemaVersion', 'quoteId', 'invocationId', 'idempotencyKey', 'skillId',
-  'skillVersionHash', 'creatorId', 'wielderId', 'beneficiaryId', 'costCenter',
-  'policyId', 'policyVersion', 'maxExecutionCostAtomic', 'protocolFeeAtomic',
+  'skillVersionHash', 'creatorId', 'wielderId', 'initiatingPrincipalId',
+  'principalAttestationId', 'beneficiaryId', 'costCenter', 'policyId',
+  'policyVersion', 'policyHash', 'maxExecutionCostAtomic', 'protocolFeeAtomic',
   'refundReserveAtomic', 'maxInvocationAwardAtomic', 'maxGrossAtomic', 'expiresAt',
 ];
 
 const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/;
+
+const POLICY_SET_KEYS = new Set([
+  'permittedSkillIds', 'permittedCreatorIds', 'permittedWielderIds',
+  'permittedInitiatingPrincipalIds', 'permittedCostCenters',
+  'permittedManagerSignerIds', 'permittedCredentialAuthorizerIds',
+  'permittedIdentitySignerIds', 'permittedFinanceSignerIds',
+]);
+
+const SKILL_REGISTRATION_KEYS = [
+  'schemaVersion', 'registrationId', 'skillId', 'skillVersionHash', 'creatorId',
+  'employerId', 'status', 'effectiveAt', 'expiresAt',
+];
 
 export function deepFreeze(value) {
   if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return value;
@@ -65,6 +82,37 @@ export function fromAtomic(value) {
 export function sumAtomic(values) {
   if (!Array.isArray(values)) throw new Error('atomic values must be an array');
   return values.reduce((sum, value) => sum + toAtomic(value), 0n);
+}
+
+function codeUnitSort(values) {
+  return [...values].sort((left, right) => {
+    if (left < right) return -1;
+    if (left > right) return 1;
+    return 0;
+  });
+}
+
+export function canonicalPolicyBytes(policy) {
+  requireExactKeys(policy, POLICY_KEYS, 'policy');
+  requireExactKeys(policy.awardRule, AWARD_RULE_KEYS, 'awardRule');
+  const canonical = {};
+  for (const key of POLICY_KEYS) {
+    if (key === 'awardRule') {
+      canonical[key] = Object.fromEntries(
+        AWARD_RULE_KEYS.map((ruleKey) => [ruleKey, policy.awardRule[ruleKey]]),
+      );
+    } else if (POLICY_SET_KEYS.has(key)) {
+      if (!Array.isArray(policy[key])) throw new Error(`${key} must be an array`);
+      canonical[key] = codeUnitSort(policy[key]);
+    } else {
+      canonical[key] = policy[key];
+    }
+  }
+  return new TextEncoder().encode(JSON.stringify(canonical));
+}
+
+export function policyHash(policy) {
+  return `sha256:${createHash('sha256').update(canonicalPolicyBytes(policy)).digest('hex')}`;
 }
 
 function requirePlainObject(value, label) {
@@ -146,9 +194,13 @@ export function validatePolicy(input, now) {
 
   for (const key of [
     'permittedSkillIds', 'permittedCreatorIds', 'permittedWielderIds',
-    'permittedCostCenters', 'permittedManagerSignerIds',
-    'permittedCredentialAuthorizerIds', 'permittedFinanceSignerIds',
+    'permittedInitiatingPrincipalIds', 'permittedCostCenters',
+    'permittedManagerSignerIds', 'permittedCredentialAuthorizerIds',
+    'permittedIdentitySignerIds', 'permittedFinanceSignerIds',
   ]) requireStringSet(input[key], key);
+  if (input.permittedCreatorIds.includes(input.employerId)) {
+    throw new Error('policy employer cannot be a permitted employee-Creator award recipient');
+  }
 
   toAtomic(input.maxQuoteAtomic);
   toAtomic(input.maxAwardPerInvocationAtomic);
@@ -191,7 +243,8 @@ export function validateQuote(input, policyInput, now) {
   const policy = validatePolicy(policyInput, now);
   if (input.schemaVersion !== 1) throw new Error('quote schemaVersion must equal 1');
   for (const key of ['quoteId', 'invocationId', 'idempotencyKey', 'skillId', 'creatorId',
-    'wielderId', 'beneficiaryId', 'costCenter', 'policyId']) {
+    'wielderId', 'initiatingPrincipalId', 'principalAttestationId', 'beneficiaryId',
+    'costCenter', 'policyId']) {
     requireString(input[key], key);
   }
   if (!SHA256_PATTERN.test(input.skillVersionHash)) {
@@ -200,9 +253,17 @@ export function validateQuote(input, policyInput, now) {
   if (input.policyId !== policy.policyId || input.policyVersion !== policy.version) {
     throw new Error('quote policy binding does not match effective policy');
   }
+  if (input.policyHash !== policyHash(policy)) {
+    throw new Error('quote policyHash does not match canonical effective policy');
+  }
   assertPermitted(input.skillId, policy.permittedSkillIds, 'Skill');
   assertPermitted(input.creatorId, policy.permittedCreatorIds, 'Creator');
   assertPermitted(input.wielderId, policy.permittedWielderIds, 'Wielder');
+  assertPermitted(
+    input.initiatingPrincipalId,
+    policy.permittedInitiatingPrincipalIds,
+    'initiating principal',
+  );
   assertPermitted(input.costCenter, policy.permittedCostCenters, 'cost center');
   if (input.beneficiaryId !== policy.employerId) {
     throw new Error('Beneficiary must equal the policy employer');
@@ -223,11 +284,48 @@ export function validateQuote(input, policyInput, now) {
   if (toAtomic(input.maxInvocationAwardAtomic) > toAtomic(policy.maxAwardPerInvocationAtomic)) {
     throw new Error('maxInvocationAwardAtomic exceeds policy cap');
   }
+  if (toAtomic(input.maxInvocationAwardAtomic) > 0n
+      && (input.creatorId === policy.employerId || input.creatorId === input.beneficiaryId)) {
+    throw new Error('employer or Beneficiary cannot receive a positive employee Invocation award');
+  }
   const expiry = parseUtc(input.expiresAt, 'quote expiresAt');
   const at = nowMillis(now);
   if (at >= expiry) throw new Error('quote expired');
   if (expiry > parseUtc(policy.expiresAt, 'policy expiresAt')) {
     throw new Error('quote expiry exceeds policy expiry');
+  }
+  return cloneFrozen(input);
+}
+
+export function skillRegistrationKey(skillId, skillVersionHash) {
+  requireString(skillId, 'Skill registration skillId');
+  if (!SHA256_PATTERN.test(skillVersionHash)) {
+    throw new Error('Skill registration version hash must be a lowercase SHA-256 hash');
+  }
+  return `${skillId}@${skillVersionHash}`;
+}
+
+export function validateSkillRegistration(input, now, { allowInactive = false } = {}) {
+  requireExactKeys(input, SKILL_REGISTRATION_KEYS, 'Skill registration');
+  if (input.schemaVersion !== 1) throw new Error('Skill registration schemaVersion must equal 1');
+  for (const key of ['registrationId', 'skillId', 'creatorId', 'employerId']) {
+    requireString(input[key], `Skill registration ${key}`);
+  }
+  skillRegistrationKey(input.skillId, input.skillVersionHash);
+  if (!['active', 'revoked'].includes(input.status)) {
+    throw new Error('Skill registration status must be active or revoked');
+  }
+  if (input.creatorId === input.employerId) {
+    throw new Error('Skill registration employer cannot be the employee-Creator');
+  }
+  const effectiveAt = parseUtc(input.effectiveAt, 'Skill registration effectiveAt');
+  const expiresAt = parseUtc(input.expiresAt, 'Skill registration expiresAt');
+  if (expiresAt <= effectiveAt) throw new Error('Skill registration expiresAt must follow effectiveAt');
+  const at = nowMillis(now);
+  if (!allowInactive) {
+    if (input.status !== 'active') throw new Error('Skill registration is revoked');
+    if (at < effectiveAt) throw new Error('Skill registration is not yet effective');
+    if (at >= expiresAt) throw new Error('Skill registration expired');
   }
   return cloneFrozen(input);
 }

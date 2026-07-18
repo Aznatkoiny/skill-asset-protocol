@@ -1,15 +1,17 @@
-import { sign as cryptoSign, verify as cryptoVerify } from 'node:crypto';
+import { createHash, sign as cryptoSign, verify as cryptoVerify } from 'node:crypto';
 
 import {
   cloneFrozen,
   parseUtc,
+  policyHash,
   requireExactKeys,
 } from './schema.mjs';
 
 const CREDENTIAL_KEYS = [
   'schemaVersion', 'credentialAuthorizerId', 'invocationId', 'reservationId',
-  'idempotencyKey', 'skillId', 'skillVersionHash', 'policyId', 'policyVersion',
-  'nonce', 'issuedAt', 'expiresAt',
+  'idempotencyKey', 'skillId', 'skillVersionHash', 'creatorId', 'wielderId',
+  'initiatingPrincipalId', 'principalAttestationId', 'principalAttestationHash',
+  'policyId', 'policyVersion', 'policyHash', 'nonce', 'issuedAt', 'expiresAt',
 ];
 const SIGNED_CREDENTIAL_KEYS = [...CREDENTIAL_KEYS, 'signature'];
 const MANAGER_APPROVAL_KEYS = [
@@ -17,6 +19,13 @@ const MANAGER_APPROVAL_KEYS = [
   'policyId', 'policyVersion', 'issuedAt', 'expiresAt',
 ];
 const SIGNED_MANAGER_APPROVAL_KEYS = [...MANAGER_APPROVAL_KEYS, 'signature'];
+const PRINCIPAL_ATTESTATION_KEYS = [
+  'schemaVersion', 'attestationId', 'identitySignerId', 'principalId',
+  'invocationId', 'idempotencyKey', 'skillId', 'skillVersionHash', 'creatorId',
+  'wielderId', 'beneficiaryId', 'policyId', 'policyVersion', 'policyHash', 'nonce',
+  'issuedAt', 'expiresAt',
+];
+const SIGNED_PRINCIPAL_ATTESTATION_KEYS = [...PRINCIPAL_ATTESTATION_KEYS, 'signature'];
 const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
 function ordered(source, keys) {
@@ -47,13 +56,18 @@ function validateCredentialPayload(input) {
   if (input.schemaVersion !== 1) throw new Error('credential schemaVersion must equal 1');
   for (const key of [
     'credentialAuthorizerId', 'invocationId', 'reservationId', 'idempotencyKey',
-    'skillId', 'policyId',
+    'skillId', 'creatorId', 'wielderId', 'initiatingPrincipalId',
+    'principalAttestationId', 'policyId',
   ]) requireString(input[key], key);
   if (!SHA256_PATTERN.test(input.skillVersionHash)) {
     throw new Error('credential skillVersionHash must be a lowercase SHA-256 hash');
   }
   if (!Number.isSafeInteger(input.policyVersion) || input.policyVersion < 1) {
     throw new Error('credential policyVersion must be a positive integer');
+  }
+  if (!SHA256_PATTERN.test(input.policyHash)) throw new Error('credential policyHash is invalid');
+  if (!SHA256_PATTERN.test(input.principalAttestationHash)) {
+    throw new Error('credential principalAttestationHash is invalid');
   }
   if (typeof input.nonce !== 'string' || !/^[0-9a-f]{64}$/.test(input.nonce)) {
     throw new Error('credential nonce must be lowercase 64-character hex without 0x');
@@ -78,12 +92,7 @@ export function signCredential(payload, privateKey) {
 }
 
 export function verifyCredential(signed, trustedPublicKey, now) {
-  requireExactKeys(signed, SIGNED_CREDENTIAL_KEYS, 'signed credential');
-  const payload = validateCredentialPayload(ordered(signed, CREDENTIAL_KEYS));
-  const signature = decodeSignature(signed.signature, 'credential');
-  if (!cryptoVerify(null, canonicalCredentialBytes(payload), trustedPublicKey, signature)) {
-    throw new Error('credential signature verification failed');
-  }
+  const payload = verifyCredentialSignature(signed, trustedPublicKey);
   const at = parseUtc(now, 'now');
   if (at < parseUtc(payload.issuedAt, 'credential issuedAt')) {
     throw new Error('credential is not yet valid');
@@ -91,6 +100,140 @@ export function verifyCredential(signed, trustedPublicKey, now) {
   if (at >= parseUtc(payload.expiresAt, 'credential expiresAt')) {
     throw new Error('credential expired');
   }
+  return payload;
+}
+
+export function verifyCredentialSignature(signed, trustedPublicKey) {
+  requireExactKeys(signed, SIGNED_CREDENTIAL_KEYS, 'signed credential');
+  const payload = validateCredentialPayload(ordered(signed, CREDENTIAL_KEYS));
+  const signature = decodeSignature(signed.signature, 'credential');
+  if (!cryptoVerify(null, canonicalCredentialBytes(payload), trustedPublicKey, signature)) {
+    throw new Error('credential signature verification failed');
+  }
+  return payload;
+}
+
+function validatePrincipalAttestationPayload(input) {
+  requireExactKeys(input, PRINCIPAL_ATTESTATION_KEYS, 'initiating-principal attestation');
+  if (input.schemaVersion !== 1) {
+    throw new Error('initiating-principal attestation schemaVersion must equal 1');
+  }
+  for (const key of [
+    'attestationId', 'identitySignerId', 'principalId', 'invocationId',
+    'idempotencyKey', 'skillId', 'creatorId', 'wielderId', 'beneficiaryId', 'policyId',
+  ]) requireString(input[key], key);
+  if (!SHA256_PATTERN.test(input.skillVersionHash)) {
+    throw new Error('initiating-principal attestation Skill hash is invalid');
+  }
+  if (!SHA256_PATTERN.test(input.policyHash)) {
+    throw new Error('initiating-principal attestation policyHash is invalid');
+  }
+  if (!Number.isSafeInteger(input.policyVersion) || input.policyVersion < 1) {
+    throw new Error('initiating-principal attestation policyVersion must be positive');
+  }
+  if (typeof input.nonce !== 'string' || !/^[0-9a-f]{64}$/.test(input.nonce)) {
+    throw new Error('initiating-principal attestation nonce must be lowercase 64-character hex');
+  }
+  const issuedAt = parseUtc(input.issuedAt, 'initiating-principal attestation issuedAt');
+  const expiresAt = parseUtc(input.expiresAt, 'initiating-principal attestation expiresAt');
+  if (expiresAt <= issuedAt) {
+    throw new Error('initiating-principal attestation expiresAt must follow issuedAt');
+  }
+  return cloneFrozen(input);
+}
+
+export function canonicalPrincipalAttestationBytes(payload) {
+  const validated = validatePrincipalAttestationPayload(payload);
+  return bytes(validated, PRINCIPAL_ATTESTATION_KEYS);
+}
+
+export function signPrincipalAttestation(payload, privateKey) {
+  const validated = validatePrincipalAttestationPayload(payload);
+  return cloneFrozen({
+    ...validated,
+    signature: cryptoSign(
+      null,
+      canonicalPrincipalAttestationBytes(validated),
+      privateKey,
+    ).toString('base64'),
+  });
+}
+
+export function principalAttestationHash(signed) {
+  requireExactKeys(
+    signed,
+    SIGNED_PRINCIPAL_ATTESTATION_KEYS,
+    'signed initiating-principal attestation',
+  );
+  validatePrincipalAttestationPayload(ordered(signed, PRINCIPAL_ATTESTATION_KEYS));
+  decodeSignature(signed.signature, 'initiating-principal attestation');
+  return `sha256:${createHash('sha256')
+    .update(bytes(signed, SIGNED_PRINCIPAL_ATTESTATION_KEYS))
+    .digest('hex')}`;
+}
+
+export function verifyPrincipalAttestation(signed, {
+  policy,
+  quote,
+  identitySigners,
+  now,
+}) {
+  requireExactKeys(
+    signed,
+    SIGNED_PRINCIPAL_ATTESTATION_KEYS,
+    'signed initiating-principal attestation',
+  );
+  const payload = validatePrincipalAttestationPayload(
+    ordered(signed, PRINCIPAL_ATTESTATION_KEYS),
+  );
+  if (!policy.permittedIdentitySignerIds.includes(payload.identitySignerId)) {
+    throw new Error('identity signer is not permitted by policy');
+  }
+  const key = identitySigners[payload.identitySignerId];
+  if (typeof key !== 'string' || key.length === 0) {
+    throw new Error('identity signer is not provisioned');
+  }
+  if (!policy.permittedInitiatingPrincipalIds.includes(payload.principalId)) {
+    throw new Error('initiating principal is not permitted by policy');
+  }
+  const bindings = {
+    attestationId: quote.principalAttestationId,
+    principalId: quote.initiatingPrincipalId,
+    invocationId: quote.invocationId,
+    idempotencyKey: quote.idempotencyKey,
+    skillId: quote.skillId,
+    skillVersionHash: quote.skillVersionHash,
+    creatorId: quote.creatorId,
+    wielderId: quote.wielderId,
+    beneficiaryId: quote.beneficiaryId,
+    policyId: quote.policyId,
+    policyVersion: quote.policyVersion,
+    policyHash: quote.policyHash,
+  };
+  for (const [keyName, expected] of Object.entries(bindings)) {
+    if (payload[keyName] !== expected) {
+      throw new Error(`initiating-principal attestation ${keyName} binding does not match quote`);
+    }
+  }
+  if (payload.policyHash !== policyHash(policy)) {
+    throw new Error('initiating-principal attestation policyHash is stale');
+  }
+  const at = parseUtc(now, 'now');
+  if (at < parseUtc(payload.issuedAt, 'attestation issuedAt')) {
+    throw new Error('initiating-principal attestation is not yet valid');
+  }
+  if (at >= parseUtc(payload.expiresAt, 'attestation expiresAt')) {
+    throw new Error('initiating-principal attestation expired');
+  }
+  if (parseUtc(payload.expiresAt, 'attestation expiresAt') > parseUtc(quote.expiresAt, 'quote expiresAt')) {
+    throw new Error('initiating-principal attestation expiry exceeds quote');
+  }
+  if (!cryptoVerify(
+    null,
+    canonicalPrincipalAttestationBytes(payload),
+    key,
+    decodeSignature(signed.signature, 'initiating-principal attestation'),
+  )) throw new Error('initiating-principal attestation signature verification failed');
   return payload;
 }
 
@@ -164,5 +307,6 @@ export function verifyManagerApproval(approval, {
 
 export const CREDENTIAL_SCHEMAS = cloneFrozen({
   InternalExecutionCredentialV1: CREDENTIAL_KEYS,
+  InitiatingPrincipalAttestationV1: PRINCIPAL_ATTESTATION_KEYS,
   ManagerApprovalV1: MANAGER_APPROVAL_KEYS,
 });

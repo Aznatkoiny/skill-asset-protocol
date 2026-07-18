@@ -22,6 +22,8 @@ The accounting flow is:
 
 ```text
 signed employer budget authorization
+  -> resolve an active engine-provisioned Skill-version registration
+  -> verify a trusted, nonce-bound initiating-principal attestation
   -> atomically reserve quote maximum
   -> return exact unsigned Execution-credential payload
   -> caller signs that persisted payload
@@ -30,7 +32,8 @@ signed employer budget authorization
   -> shared atomic-money kernel partitions actual gross
   -> release unused reservation
   -> record employee-Creator Invocation award
-  -> sign one receipt and one full economic statement
+  -> atomically sign and commit terminal state plus one scoped receipt
+  -> sign one full economic statement
 ```
 
 The successful example reserves `3.050000 USD`, records `0.700000 USD` execution
@@ -40,10 +43,10 @@ reported COGS, the quote-final fee and reserve, and the authorized maximum award
 persisted atomic amounts are non-negative decimal strings. Arithmetic converts them
 to `bigint`; no floating-point value participates in money arithmetic.
 
-The gross partition is imported from
-`prototype/atomic-money.mjs#allocateInternalGross`. This spike does not implement a
-second fee, remainder, or account-allocation formula. It consumes the kernel-returned
-account-identified journal entries.
+Successful gross partitioning and known-failure COGS allocation are imported from
+`prototype/atomic-money.mjs`. This spike does not implement a second fee, remainder,
+or account-allocation formula. A known failure records exactly one shared-kernel
+`execution-cogs` double-entry; cancellation and unresolved holds remain journal-free.
 
 The result requires an authorized internal **Wielder**, but no external Wielder. It
 creates neither an external **Royalty claim** credit nor a circular employer
@@ -62,8 +65,20 @@ Version 1 accepts only the immutable 100% residual award rule:
 
 Variable award rates and any destination for non-award residual are not implemented.
 Policy and budget authorization are immutable, effective-dated, expiry-bounded, and
-denomination-neutral. A self Invocation is exactly one whose `creatorId` equals its
-`wielderId`; its manager approval is a separate signed object, never a quote field.
+denomination-neutral. Canonical policy bytes are hashed into the budget authorization,
+quote, Execution credential, Invocation, award, and receipt, so changing a policy
+under the same ID and version fails closed. A self Invocation is exactly one whose
+trusted initiating principal equals its `creatorId`; the shared agent Wielder is not
+treated as the human principal. Its manager approval is a separate signed object,
+never a quote field.
+
+The engine is provisioned with an immutable `(skillId, skillVersionHash)` registration
+map that binds the canonical Creator and employer. Missing, expired, revoked,
+wrong-Creator, or wrong-employer registrations fail before reservation and are
+rechecked before Execution. Callers cannot inject registration mappings, clocks,
+public keys, or receipt-signing capabilities into lifecycle requests. The initiating
+principal is separately attested by a provisioned identity signer; its nonce and exact
+Invocation bindings prevent replay even when many employees share one agent Wielder.
 
 The store is a serialized, single-process CAS demonstration. It is not a distributed
 database lock. The engine uses exact global, budget, Invocation, reservation, and
@@ -80,6 +95,9 @@ The tested pre-execution rejection set includes:
 - malformed atomic amount, Skill hash, quote total, or credential nonce;
 - unauthorized Skill, Creator, Wielder, Beneficiary, cost center, signer, or
   authorizer;
+- missing, revoked, expired, or mismatched Skill-version registration;
+- untrusted, altered, expired, mismatched, or replayed initiating-principal
+  attestation;
 - unknown, embedded, or untrusted public-key material;
 - insufficient remaining budget or exceeded per-Invocation or period award cap;
 - stale budget/engine/record revision, duplicate idempotency key, nonce, reservation,
@@ -113,19 +131,27 @@ reconciliation of an unresolved hold is a human-only future gate.
 ## Receipts and statements
 
 Every terminal success, known failure, unresolved Execution, or pre-execution
-cancellation receives one independent, monotonic receipt sequence. A trusted receipt
-key ID selects the provisioned verification key; receipts and requests cannot inject
-key material. Receipt canonical bytes bind the Invocation, reservation, Skill hash,
-effective policy, outcome, atomic totals, kernel journal entries, and absence of an
-external settlement.
+cancellation receives one monotonic receipt sequence scoped by employer, Creator,
+denomination, and atomic scale. Terminal state, signed receipt, receipt hash, and
+scoped sequence advancement commit in one serialized transaction. A terminal retry
+returns the same persisted receipt without calling the executor again; a signing or
+commit failure leaves no terminal state or receipt. A trusted receipt key ID selects
+the provisioned verification key; receipts and lifecycle requests cannot inject key
+material. Receipt canonical bytes bind the Invocation, reservation, Skill registration,
+initiating-principal attestation, Skill hash, canonical policy hash, outcome, atomic
+totals, kernel journal entries, and absence of an external settlement.
 
 Employer and employee verify the same signed receipt bytes. They also verify a
 separate whole-statement signature that binds:
 
 - identity, denomination, period, and payable opening balance;
-- ordered receipt hashes and contiguous sequence bounds;
+- prior statement hash and authenticated prior closing balance;
+- ordered receipt hashes, current sequence bounds, and a cumulative scoped receipt
+  cursor that survives receipt-free periods;
 - reservation, release, charge, and earned-award audit totals;
 - the complete payable-advance, reversal, and payment arrays;
+- cumulative event IDs and payment rail references, preventing renamed cross-period
+  replay;
 - payable and non-payable reversal semantics; and
 - the closing payable balance.
 
@@ -133,13 +159,16 @@ An earned-but-unpaid award is not yet payable. It affects
 `earnedAwardTotalAtomic`, but does not enter `closingPayableAtomic` until a separately
 authenticated payable-advance record is present. A reversal declares whether it
 changes only earned accounting or an already-advanced payable balance. Payments
-cannot exceed the authenticated payable balance.
+cannot exceed the authenticated payable balance. Advance, reversal, and payment
+timestamps must fall within the signed statement period. A later statement may cite
+an authenticated historical receipt for an advance, reversal, or payment without
+recounting that receipt's prior-period economics.
 
 The receipt inclusion root uses domain-separated binary SHA-256 leaves and internal
 nodes. Odd levels duplicate the last node. The empty set has a fixed
-domain-separated root. This is an inclusion root, not a completeness proof; sequence
-continuity, the signed ordered hash list, and employer/employee comparison supply the
-completeness signal. Individually signed receipts do not authenticate a mutable
+domain-separated root. This is an inclusion root, not a completeness proof; the
+cross-period receipt cursor, signed ordered hash list, and employer/employee comparison
+supply the completeness signal. Individually signed receipts do not authenticate a mutable
 statement shell—the trusted whole-statement signature and deterministic recomputation
 are both required.
 

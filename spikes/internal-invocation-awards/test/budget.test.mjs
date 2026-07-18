@@ -14,7 +14,9 @@ import {
   startReservationExecution,
 } from '../src/budget.mjs';
 import {
+  canonicalPolicyBytes,
   parseExecutorOutcome,
+  policyHash,
   sumAtomic,
   toAtomic,
   validatePolicy,
@@ -35,6 +37,7 @@ const ACTIVE_POLICY = {
   permittedSkillIds: ['ledger-recon'],
   permittedCreatorIds: ['sam'],
   permittedWielderIds: ['megacorp-internal-agent'],
+  permittedInitiatingPrincipalIds: ['sam', 'jordan'],
   permittedCostCenters: ['platform-engineering'],
   maxQuoteAtomic: '4000000',
   awardRule: {
@@ -48,6 +51,7 @@ const ACTIVE_POLICY = {
   selfInvocation: 'manager_approval_required',
   permittedManagerSignerIds: ['manager-alex'],
   permittedCredentialAuthorizerIds: ['megacorp-collar-authorizer'],
+  permittedIdentitySignerIds: ['megacorp-identity'],
   permittedFinanceSignerIds: ['megacorp-finance'],
   vestingRule: 'none',
   paymentSchedule: 'monthly_in_arrears',
@@ -64,10 +68,13 @@ const QUOTE = {
   skillVersionHash: `sha256:${'1'.repeat(64)}`,
   creatorId: 'sam',
   wielderId: 'megacorp-internal-agent',
+  initiatingPrincipalId: 'jordan',
+  principalAttestationId: 'principal-attestation-inv-001',
   beneficiaryId: 'megacorp',
   costCenter: 'platform-engineering',
   policyId: ACTIVE_POLICY.policyId,
   policyVersion: 1,
+  policyHash: policyHash(ACTIVE_POLICY),
   maxExecutionCostAtomic: '1000000',
   protocolFeeAtomic: '25000',
   refundReserveAtomic: '25000',
@@ -107,6 +114,14 @@ test('policy validation is effective-dated, exact, recursively frozen, and denom
   );
   assert.throws(() => validatePolicy({ ...ACTIVE_POLICY, surprise: true }, NOW), /unknown key surprise/);
   assert.equal(validatePolicy({ ...ACTIVE_POLICY, currency: 'EUR', atomicScale: 2 }, NOW).currency, 'EUR');
+});
+
+test('canonical policy bytes hash every field under the same ID and version', () => {
+  const hash = policyHash(ACTIVE_POLICY);
+  assert.match(hash, /^sha256:[0-9a-f]{64}$/);
+  assert.ok(canonicalPolicyBytes(ACTIVE_POLICY) instanceof Uint8Array);
+  assert.notEqual(hash, policyHash({ ...ACTIVE_POLICY, paymentRail: 'another_employer_rail' }));
+  assert.equal(hash, policyHash(structuredClone(ACTIVE_POLICY)));
 });
 
 test('quote validation binds exact maximums and keeps manager approval separate', () => {
@@ -156,6 +171,7 @@ const UNSIGNED_BUDGET_AUTHORIZATION = {
   budgetId: 'budget-megacorp-2026-07',
   policyId: ACTIVE_POLICY.policyId,
   policyVersion: 1,
+  policyHash: policyHash(ACTIVE_POLICY),
   period: '2026-07',
   currency: 'USD',
   atomicScale: 6,
@@ -318,6 +334,18 @@ test('insufficient budget, exact failed COGS, cancellation, and unresolved holds
   assert.equal(failed.budget.consumedAtomic, '700000');
   assert.equal(failed.budget.releasedAtomic, '2350000');
   assert.equal(failed.budget.reservedAtomic, '0');
+  assert.deepEqual(failed.allocation.journalEntries, [{
+    category: 'execution-cogs',
+    debitAccountId: 'employer:invocation-gross',
+    creditAccountId: 'provider:execution',
+    amountAtomic: 700_000n,
+  }]);
+  assert.deepEqual(failed.event.journalEntries, [{
+    category: 'execution-cogs',
+    debitAccountId: 'employer:invocation-gross',
+    creditAccountId: 'provider:execution',
+    amountAtomic: '700000',
+  }]);
 
   const cancelReserved = reserveBudget(verifiedBudget(), QUOTE, {
     expectedRevision: 0, reservationId: 'res-cancel', now: NOW,
@@ -328,6 +356,8 @@ test('insufficient budget, exact failed COGS, cancellation, and unresolved holds
   });
   assert.equal(cancelled.budget.releasedAtomic, '3050000');
   assert.equal(cancelled.budget.consumedAtomic, '0');
+  assert.equal(cancelled.allocation, null);
+  assert.deepEqual(cancelled.event.journalEntries, []);
 
   const heldReserved = reserveBudget(verifiedBudget(), QUOTE, {
     expectedRevision: 0, reservationId: 'res-held', now: NOW,

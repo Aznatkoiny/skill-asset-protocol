@@ -1,21 +1,21 @@
 import assert from 'node:assert/strict';
-import { generateKeyPairSync } from 'node:crypto';
+import { generateKeyPairSync, sign as cryptoSign } from 'node:crypto';
 
 import { signBudget } from './src/budget.mjs';
-import { signCredential } from './src/credentials.mjs';
+import { signCredential, signPrincipalAttestation } from './src/credentials.mjs';
 import {
   authorizeInternalInvocation,
   createEngineState,
   executeAuthorizedInvocation,
 } from './src/engine.mjs';
 import {
-  buildInvocationReceipt,
   buildStatement,
-  signReceipt,
+  receiptHash,
   signStatement,
   verifyReceipt,
   verifyStatement,
 } from './src/statements.mjs';
+import { policyHash, skillRegistrationKey } from './src/schema.mjs';
 import { InMemoryEngineStore } from './src/store.mjs';
 
 const NOW = '2026-07-17T00:01:00.000Z';
@@ -31,6 +31,7 @@ globalThis.fetch = async () => {
 const finance = generateKeyPairSync('ed25519');
 const authorizer = generateKeyPairSync('ed25519');
 const manager = generateKeyPairSync('ed25519');
+const identity = generateKeyPairSync('ed25519');
 const receiptSigner = generateKeyPairSync('ed25519');
 const statementSigner = generateKeyPairSync('ed25519');
 
@@ -47,6 +48,7 @@ const policy = {
   permittedSkillIds: ['ledger-recon'],
   permittedCreatorIds: ['sam'],
   permittedWielderIds: ['megacorp-internal-agent'],
+  permittedInitiatingPrincipalIds: ['jordan'],
   permittedCostCenters: ['platform-engineering'],
   maxQuoteAtomic: '4000000',
   awardRule: {
@@ -60,6 +62,7 @@ const policy = {
   selfInvocation: 'manager_approval_required',
   permittedManagerSignerIds: ['manager-alex'],
   permittedCredentialAuthorizerIds: ['megacorp-collar-authorizer'],
+  permittedIdentitySignerIds: ['megacorp-identity'],
   permittedFinanceSignerIds: ['megacorp-finance'],
   vestingRule: 'none',
   paymentSchedule: 'monthly_in_arrears',
@@ -72,6 +75,7 @@ const signedBudget = signBudget({
   budgetId: 'budget-megacorp-2026-07',
   policyId: POLICY_ID,
   policyVersion: 1,
+  policyHash: policyHash(policy),
   period: '2026-07',
   currency: 'USD',
   atomicScale: 6,
@@ -90,10 +94,13 @@ const quote = {
   skillVersionHash: `sha256:${'1'.repeat(64)}`,
   creatorId: 'sam',
   wielderId: 'megacorp-internal-agent',
+  initiatingPrincipalId: 'jordan',
+  principalAttestationId: 'principal-attestation-inv-001',
   beneficiaryId: 'megacorp',
   costCenter: 'platform-engineering',
   policyId: POLICY_ID,
   policyVersion: 1,
+  policyHash: policyHash(policy),
   maxExecutionCostAtomic: '1000000',
   protocolFeeAtomic: '25000',
   refundReserveAtomic: '25000',
@@ -105,6 +112,19 @@ const quote = {
 const store = new InMemoryEngineStore(createEngineState({
   signedBudget,
   policies: { [`${POLICY_ID}@1`]: policy },
+  skillRegistrations: {
+    [skillRegistrationKey(quote.skillId, quote.skillVersionHash)]: {
+      schemaVersion: 1,
+      registrationId: 'registration-ledger-recon-v1',
+      skillId: quote.skillId,
+      skillVersionHash: quote.skillVersionHash,
+      creatorId: quote.creatorId,
+      employerId: 'megacorp',
+      status: 'active',
+      effectiveAt: '2026-07-17T00:00:00.000Z',
+      expiresAt: '2026-08-01T00:00:00.000Z',
+    },
+  },
   financeSigners: {
     'megacorp-finance': finance.publicKey.export({ type: 'spki', format: 'pem' }),
   },
@@ -114,8 +134,38 @@ const store = new InMemoryEngineStore(createEngineState({
   credentialAuthorizers: {
     'megacorp-collar-authorizer': authorizer.publicKey.export({ type: 'spki', format: 'pem' }),
   },
-  now: NOW,
+  identitySigners: {
+    'megacorp-identity': identity.publicKey.export({ type: 'spki', format: 'pem' }),
+  },
+  receiptSigners: {
+    [RECEIPT_SIGNER_ID]: receiptSigner.publicKey.export({ type: 'spki', format: 'pem' }),
+  },
+  clock: () => NOW,
+  receiptSigner: {
+    signerId: RECEIPT_SIGNER_ID,
+    sign: (bytes) => cryptoSign(null, bytes, receiptSigner.privateKey).toString('base64'),
+  },
 }));
+
+const initiatingPrincipalAttestation = signPrincipalAttestation({
+  schemaVersion: 1,
+  attestationId: quote.principalAttestationId,
+  identitySignerId: 'megacorp-identity',
+  principalId: quote.initiatingPrincipalId,
+  invocationId: quote.invocationId,
+  idempotencyKey: quote.idempotencyKey,
+  skillId: quote.skillId,
+  skillVersionHash: quote.skillVersionHash,
+  creatorId: quote.creatorId,
+  wielderId: quote.wielderId,
+  beneficiaryId: quote.beneficiaryId,
+  policyId: quote.policyId,
+  policyVersion: quote.policyVersion,
+  policyHash: quote.policyHash,
+  nonce: '2'.padStart(64, '0'),
+  issuedAt: NOW,
+  expiresAt: quote.expiresAt,
+}, identity.privateKey);
 
 const authorized = await authorizeInternalInvocation({
   store,
@@ -127,8 +177,8 @@ const authorized = await authorizeInternalInvocation({
   credentialIssuedAt: NOW,
   credentialExpiresAt: '2026-07-17T00:10:00.000Z',
   credentialAuthorizerId: 'megacorp-collar-authorizer',
+  principalAttestation: initiatingPrincipalAttestation,
   managerApproval: null,
-  now: NOW,
 });
 assert.equal(authorized.reservation.state, 'reserved');
 assert.equal(authorized.reservation.reservedAtomic, '3050000');
@@ -144,7 +194,6 @@ const completed = await executeAuthorizedInvocation({
     executionCostAtomic: '700000',
     outputHash: `sha256:${'a'.repeat(64)}`,
   }),
-  now: NOW,
 });
 assert.equal(completed.invocation.state, 'succeeded');
 assert.equal(completed.budget.consumedAtomic, '2750000');
@@ -156,13 +205,8 @@ assert.doesNotThrow(() => JSON.stringify(completed));
 const receiptTrust = {
   [RECEIPT_SIGNER_ID]: receiptSigner.publicKey.export({ type: 'spki', format: 'pem' }),
 };
-const signedReceipt = signReceipt(buildInvocationReceipt({
-  invocation: completed.invocation,
-  reservation: completed.reservation,
-  award: completed.award,
-  employerId: 'megacorp',
-  receiptSignerId: RECEIPT_SIGNER_ID,
-}), receiptSigner.privateKey);
+const signedReceipt = completed.receipt;
+assert.equal(completed.receiptHash, receiptHash(signedReceipt));
 const employerReceipt = verifyReceipt(signedReceipt, { trustedReceiptSigners: receiptTrust });
 const employeeReceipt = verifyReceipt(signedReceipt, { trustedReceiptSigners: receiptTrust });
 assert.deepEqual(employerReceipt, employeeReceipt);
