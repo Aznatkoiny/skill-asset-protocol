@@ -109,6 +109,9 @@ export async function loadLocalCheckoutMap(input: {
   }
   let parsed: unknown;
   try {
+    if (await fs.realpath(configPath) !== configPath) {
+      throw new Error("repository snapshot mapping path must be canonical");
+    }
     const metadata = await configHandle.stat();
     if (metadata.isSymbolicLink() || !metadata.isFile()) throw new Error("repository snapshot mapping must be a non-symlink regular file");
     if ((metadata.mode & 0o777) !== 0o600) throw new Error("repository snapshot mapping must have mode 0600");

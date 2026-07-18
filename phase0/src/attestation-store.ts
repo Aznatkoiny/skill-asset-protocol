@@ -69,6 +69,13 @@ function object(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function deepFreeze<T>(value: T): T {
+  if (typeof value !== "object" || value === null || Object.isFrozen(value)) return value;
+  Object.freeze(value);
+  for (const item of Object.values(value as Record<string, unknown>)) deepFreeze(item);
+  return value;
+}
+
 function parseLock(value: unknown): AttestationLockMetadata {
   const owner = object(value, "attestation store lock");
   const expected = ["schemaVersion", "pid", "token", "targetPath", "acquiredAt"];
@@ -114,7 +121,15 @@ export class FileAttestationStore {
     if (!Array.isArray(options.baseSubjects)) throw new Error("attestation store requires verifier-provided base subjects");
     this.path = path;
     this.lockPath = `${path}.lock`;
-    this.options = options;
+    this.options = {
+      ...options,
+      baseSubjects: deepFreeze(structuredClone(options.baseSubjects)),
+      organizationSigners: options.organizationSigners
+        ? deepFreeze(structuredClone(options.organizationSigners))
+        : undefined,
+      adminSigners: options.adminSigners ? deepFreeze(structuredClone(options.adminSigners)) : undefined,
+      forgeSigners: options.forgeSigners ? deepFreeze(structuredClone(options.forgeSigners)) : undefined,
+    };
   }
 
   async load(): Promise<AttestationEvent[]> {
@@ -218,11 +233,17 @@ export class FileAttestationStore {
         return await handle.readFile("utf8");
       } finally { await handle.close(); }
     }); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { events: [], bytes: "" };
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        await this.validateEvents([]);
+        return { events: [], bytes: "" };
+      }
       if ((error as NodeJS.ErrnoException).code === "ELOOP") throw new Error("attestation log must not be a symlink", { cause: error });
       throw error;
     }
-    if (bytes === "") return { events: [], bytes };
+    if (bytes === "") {
+      await this.validateEvents([]);
+      return { events: [], bytes };
+    }
     if (!bytes.endsWith("\n")) throw new Error("attestation log has a malformed trailing fragment");
     const lines = bytes.slice(0, -1).split("\n");
     if (lines.some((line) => line.length === 0)) throw new Error("attestation log contains an empty or malformed line");
