@@ -95,6 +95,10 @@ async function cancelQuietly(readerOrBody, reason) {
   try { await readerOrBody?.cancel?.(reason); } catch { /* bounded failure already owns the result */ }
 }
 
+export function cancelResponseBody(source, reason) {
+  void cancelQuietly(source?.body, reason);
+}
+
 export async function readBodyBytes(source, {
   maxBytes,
   tooLargeCode,

@@ -20,6 +20,7 @@ import { loadAccount } from './wallet.mjs';
 import { createLedger, renderLedger } from './ledger.mjs';
 import { receiptKeyId, verifySignedReceipt } from './invocation-journal.mjs';
 import {
+  cancelResponseBody,
   readBodyBytes,
   readJsonBody,
   RuntimeBoundaryError,
@@ -507,11 +508,13 @@ export async function payingFetch(account, url, init, options = {}) {
     settlement = decodeSettlementHeader(res.headers.get('X-PAYMENT-RESPONSE'));
     paymentPolicy.acceptSettlement(idempotencyKey, settlement);
   } catch {
-    paymentPolicy.markUnresolved(idempotencyKey, { reasonCode: 'SETTLEMENT_EVIDENCE_INVALID' });
-    throw paymentError(
+    const error = paymentError(
       'SETTLEMENT_EVIDENCE',
       'retry settlement evidence is missing, malformed, or mismatched; upstream output withheld',
     );
+    cancelResponseBody(res, error);
+    paymentPolicy.markUnresolved(idempotencyKey, { reasonCode: 'SETTLEMENT_EVIDENCE_INVALID' });
+    throw error;
   }
   const reportedFacilitatorMs = Number(res.headers.get('X-402-FACILITATOR-MS'));
   const msFacilitator = Number.isFinite(reportedFacilitatorMs) && reportedFacilitatorMs >= 0

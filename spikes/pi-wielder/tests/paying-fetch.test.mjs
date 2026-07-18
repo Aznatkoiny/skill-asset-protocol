@@ -627,6 +627,38 @@ test('missing, malformed, unknown-key, and mismatched settlement evidence withho
   }
 });
 
+test('missing or mismatched paid settlement evidence cancels the withheld output body', async () => {
+  for (const evidence of ['missing', 'mismatched']) {
+    const { account, paymentPolicy } = setup();
+    let fetches = 0;
+    let cancelled = false;
+    await assert.rejects(() => payingFetch(account, URL, { method: 'POST', body: BODY }, {
+      fetchImpl: async (_url, init) => {
+        fetches += 1;
+        if (fetches === 1) return challenge();
+        const headers = evidence === 'mismatched'
+          ? {
+            'X-PAYMENT-RESPONSE': Buffer.from(JSON.stringify(
+              settlementFor(init, { value: '250001' }),
+            )).toString('base64'),
+          }
+          : {};
+        return new Response(new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{"secretOutput":"must stay withheld"}'));
+          },
+          cancel() { cancelled = true; },
+        }), { status: 200, headers });
+      },
+      idempotencyKey: `idem-cancel-bad-settlement-${evidence}`,
+      paymentPolicy,
+    }), (error) => error.code === 'SETTLEMENT_EVIDENCE');
+    assert.equal(cancelled, true, evidence);
+    assert.equal(paymentPolicy.snapshot().reservedAtomic, '250000', evidence);
+    assert.equal(paymentPolicy.snapshot().authorizations[0].state, 'unresolved', evidence);
+  }
+});
+
 test('a settled HTTP 500 consumes spend and returns exactly the documented paid result', async () => {
   const { account, paymentPolicy, signatureCount } = setup();
   let fetches = 0;

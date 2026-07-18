@@ -193,6 +193,24 @@ test('synthetic pricing blocks live adapter construction even when live mode is 
   assert.equal(constructions, 0);
 });
 
+test('Collar live-provider gate accepts only the exact boolean true', () => {
+  let constructions = 0;
+  for (const allowLiveProvider of [false, 1, 'true', {}, []]) {
+    assert.throws(() => createCollar({
+      facilitatorTransport: createMockFacilitatorTransport(async () => {
+        throw new Error('must not fetch');
+      }),
+      mockLlm: false,
+      allowLiveProvider,
+      liveExecutorFactory: () => {
+        constructions += 1;
+        return async () => ({ output: '', usage: null });
+      },
+    }), (error) => error.code === 'LIVE_PRICING_UNAPPROVED');
+  }
+  assert.equal(constructions, 0);
+});
+
 test('live approval is rechecked against canonical catalog bytes before adapter construction', () => {
   const catalog = structuredClone(EXECUTION_CATALOG);
   Object.assign(catalog, {

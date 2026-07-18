@@ -9,6 +9,7 @@ import crypto from 'node:crypto';
 
 import { formatUsdc, parseUsdc } from '../../../prototype/atomic-money.mjs';
 import {
+  cancelResponseBody,
   readBodyBytes,
   readJsonBody,
   RuntimeBoundaryError,
@@ -233,18 +234,39 @@ export function x402Paywall({
   cappedLimit(pendingOfferTtlMs, 'pendingOfferTtlMs', DEFAULT_PENDING_OFFER_TTL_MS);
   if (typeof now !== 'function') throw new TypeError('now must be a trusted clock function');
   const pendingOffers = new Map();
+  const authorizationClaims = new Map();
+  const authorizationClaimByIdempotencyKey = new Map();
   const locallyUnresolvedSettlements = new Set();
   const transientAdmissions = new Set();
 
   const activeKeyCount = () => new Set([
     ...pendingOffers.keys(),
+    ...authorizationClaimByIdempotencyKey.keys(),
     ...locallyUnresolvedSettlements,
     ...transientAdmissions,
   ]).size;
 
+  const releaseAuthorizationClaim = (authorizationIdentity, claim) => {
+    if (authorizationClaims.get(authorizationIdentity) === claim) {
+      authorizationClaims.delete(authorizationIdentity);
+    }
+    if (authorizationClaimByIdempotencyKey.get(claim.idempotencyKey)
+        === authorizationIdentity) {
+      authorizationClaimByIdempotencyKey.delete(claim.idempotencyKey);
+    }
+  };
+
+  const claimForIdempotencyKey = (idempotencyKey) => {
+    const authorizationIdentity = authorizationClaimByIdempotencyKey.get(idempotencyKey);
+    if (!authorizationIdentity) return null;
+    const claim = authorizationClaims.get(authorizationIdentity);
+    return claim ? { authorizationIdentity, claim } : null;
+  };
+
   const reserveTransientAdmission = (idempotencyKey) => {
     if (transientAdmissions.has(idempotencyKey)) return false;
     const alreadyTracked = pendingOffers.has(idempotencyKey)
+      || authorizationClaimByIdempotencyKey.has(idempotencyKey)
       || locallyUnresolvedSettlements.has(idempotencyKey);
     if (!alreadyTracked && activeKeyCount() >= maxPendingOffers) return false;
     transientAdmissions.add(idempotencyKey);
@@ -275,6 +297,11 @@ export function x402Paywall({
     }
     for (const [key, offer] of pendingOffers) {
       if (offer.expiresAtMs <= requestNowMs) pendingOffers.delete(key);
+    }
+    for (const [authorizationIdentity, claim] of authorizationClaims) {
+      if (claim.state === 'consumed' && claim.expiresAtMs <= requestNowMs) {
+        releaseAuthorizationClaim(authorizationIdentity, claim);
+      }
     }
     const paymentHeader = c.req.header('X-PAYMENT');
     let requestBodyBytes;
@@ -313,6 +340,7 @@ export function x402Paywall({
       .digest('hex')}`;
 
     let transientAdmission = false;
+    let activeAuthorizationClaim = null;
     const capacityResponse = () => {
       const response = c.json({
         error: 'pending x402 offer capacity is exhausted',
@@ -364,6 +392,16 @@ export function x402Paywall({
     } else {
       if (locallyUnresolvedSettlements.has(idempotencyKey)) return unresolvedResponse();
       if (paymentHeader) return c.json({ error: 'paid retry has no prior frozen x402 offer' }, 409);
+      const outstandingAuthorization = claimForIdempotencyKey(idempotencyKey);
+      if (outstandingAuthorization) {
+        if (outstandingAuthorization.claim.state === 'consumed') {
+          return c.json({
+            error: 'payment authorization was already consumed; response replay is unavailable',
+            code: 'PAYMENT_AUTHORIZATION_CONSUMED',
+          }, 409);
+        }
+        return unresolvedResponse();
+      }
       if (!reserveTransientAdmission(idempotencyKey)) return capacityResponse();
       transientAdmission = true;
       try {
@@ -486,6 +524,100 @@ export function x402Paywall({
         code: 'VERIFIED_PAYMENT_MISMATCH',
       }, 409);
     }
+    const authorizationIdentity = [
+      NETWORK, USDC_ADDRESS, payer, settlementReference,
+    ].join(':');
+    const ownerAuthorizationIdentity = authorizationClaimByIdempotencyKey.get(idempotencyKey);
+    let authorizationClaim = authorizationClaims.get(authorizationIdentity) ?? null;
+    if (authorizationClaim && authorizationClaim.idempotencyKey !== idempotencyKey) {
+      return c.json({
+        error: 'payment authorization is already claimed by a different Idempotency-Key',
+        code: 'PAYMENT_AUTHORIZATION_CLAIMED',
+      }, 409);
+    }
+    if ((ownerAuthorizationIdentity && ownerAuthorizationIdentity !== authorizationIdentity)
+        || (authorizationClaim && authorizationClaim.paymentHash !== paymentHash)) {
+      return c.json({
+        error: 'Idempotency-Key already binds a different payment authorization',
+        code: 'PAYMENT_AUTHORIZATION_MISMATCH',
+      }, 409);
+    }
+    if (authorizationClaim?.state === 'consumed' && !authorizationClaim.authoritative) {
+      return c.json({
+        error: 'payment authorization was already consumed; response replay is unavailable',
+        code: 'PAYMENT_AUTHORIZATION_CONSUMED',
+      }, 409);
+    }
+    if (!authorizationClaim) {
+      authorizationClaim = {
+        idempotencyKey,
+        paymentHash,
+        state: 'processing',
+        phase: 'verification',
+        authoritative: false,
+        expiresAtMs: null,
+      };
+      // Both indexes are populated synchronously before the first facilitator
+      // await. One authorization cannot race under another key, and one key
+      // cannot accumulate many ambiguous authorization identities.
+      authorizationClaims.set(authorizationIdentity, authorizationClaim);
+      authorizationClaimByIdempotencyKey.set(idempotencyKey, authorizationIdentity);
+      activeAuthorizationClaim = {
+        authorizationIdentity,
+        claim: authorizationClaim,
+        priorState: null,
+      };
+    } else {
+      if (authorizationClaim.state === 'processing') {
+        return c.json({
+          error: 'payment authorization is already being processed',
+          code: 'PAYMENT_AUTHORIZATION_IN_PROGRESS',
+        }, 409);
+      }
+      activeAuthorizationClaim = {
+        authorizationIdentity,
+        claim: authorizationClaim,
+        priorState: authorizationClaim.state,
+      };
+      authorizationClaim.state = 'processing';
+    }
+
+    const retainAuthorizationClaim = (phase) => {
+      authorizationClaim.state = 'unresolved';
+      authorizationClaim.phase = phase;
+    };
+    const beginAuthorizationExecution = () => {
+      authorizationClaim.state = 'executing';
+      authorizationClaim.phase = 'execution';
+      authorizationClaim.expiresAtMs = null;
+    };
+    const consumeAuthorizationClaim = () => {
+      let completionNowMs = requestNowMs;
+      try {
+        const candidateNowMs = now();
+        if (Number.isSafeInteger(candidateNowMs) && candidateNowMs >= requestNowMs) {
+          completionNowMs = candidateNowMs;
+        }
+      } catch {
+        // The validated request clock remains the conservative fallback.
+      }
+      authorizationClaim.state = 'consumed';
+      authorizationClaim.phase = 'consumed';
+      authorizationClaim.expiresAtMs = completionNowMs
+        <= Number.MAX_SAFE_INTEGER - pendingOfferTtlMs
+        ? completionNowMs + pendingOfferTtlMs
+        : Number.MAX_SAFE_INTEGER;
+    };
+    const rejectAndReleaseAuthorization = async (reason) => {
+      try {
+        await lifecycle.onRejected?.({ idempotencyKey, reason, settlementReference, payer });
+      } catch {
+        retainAuthorizationClaim('rejection_persistence');
+        return false;
+      }
+      releaseAuthorizationClaim(authorizationIdentity, authorizationClaim);
+      return true;
+    };
     let paymentVerified = frozen.verifiedPaymentHash === paymentHash;
     const verifyPayment = async () => {
       facilitatorStarted ??= performance.now();
@@ -502,20 +634,32 @@ export function x402Paywall({
     if (frozen.verificationRequired && !paymentVerified) {
       const verify = await verifyPayment();
       if (verify === null) {
+        retainAuthorizationClaim('verification');
         return c.json({ error: 'payment verification unresolved', settlementReference }, 503);
       }
-      if (!verify?.isValid) {
+      if (verify?.isValid !== true) {
+        const reason = 'payment verification failed';
+        // Verification precedes onSigned and therefore precedes durable
+        // Invocation authority. An explicit facilitator rejection proves that
+        // settlement did not begin, so this process-local claim is safe to
+        // release without asking a journal to reject a record that does not
+        // exist yet.
+        releaseAuthorizationClaim(authorizationIdentity, authorizationClaim);
         return c.json({
           x402Version: X402_VERSION,
-          error: 'payment verification failed',
+          error: reason,
           accepts: [requirements],
         }, 402);
       }
       paymentVerified = true;
-      if (pendingOffers.get(idempotencyKey) === frozen) {
-        frozen.verifiedPaymentHash = paymentHash;
+      authorizationClaim.phase = 'verified';
+      const pendingOffer = pendingOffers.get(idempotencyKey);
+      if (pendingOffer) {
+        pendingOffer.verifiedPaymentHash = paymentHash;
+        pendingOffer.verificationRequired = false;
       }
     }
+    if (paymentVerified) authorizationClaim.phase = 'verified';
     let priorDecision = null;
     try {
       priorDecision = await lifecycle.onSigned?.({
@@ -527,27 +671,42 @@ export function x402Paywall({
         verifiedPaymentHash: paymentHash,
       });
     } catch {
+      retainAuthorizationClaim('signed_authority');
       return c.json({ error: 'paid retry conflicts with authoritative Invocation state' }, 409);
     }
     const authoritativeSigned = priorDecision?.kind === 'signed';
+    if (priorDecision?.kind) authorizationClaim.authoritative = true;
     const retainLocalUnresolved = () => {
       // This key already owns either a pending or transient admission, so
       // converting it to unresolved cannot raise the hard unique-key count.
       locallyUnresolvedSettlements.add(idempotencyKey);
+      retainAuthorizationClaim('settlement');
       if (authoritativeSigned) pendingOffers.delete(idempotencyKey);
     };
 
+    if (activeAuthorizationClaim.priorState === 'consumed'
+        && !['terminal', 'settled', 'payment_unresolved', 'execution_unresolved']
+          .includes(priorDecision?.kind)) {
+      retainAuthorizationClaim('execution_authority');
+      return c.json({
+        error: 'consumed payment requires trusted terminal replay authority',
+      }, 503);
+    }
+
     if (locallyUnresolvedSettlements.has(idempotencyKey)
         && !['terminal', 'settled'].includes(priorDecision?.kind)) {
+      retainAuthorizationClaim('settlement');
       return unresolvedResponse(settlementReference);
     }
 
     if (priorDecision?.kind === 'terminal') {
       if (!terminalReplayIsTrusted(priorDecision, payer)) {
+        retainAuthorizationClaim('terminal_authority');
         return c.json({ error: 'terminal replay lacks a settled or refunded transaction' }, 503);
       }
       locallyUnresolvedSettlements.delete(idempotencyKey);
       pendingOffers.delete(idempotencyKey);
+      consumeAuthorizationClaim();
       const body = {
         replayed: true,
         receipt: priorDecision.receipt,
@@ -566,18 +725,21 @@ export function x402Paywall({
       return replay;
     }
     if (priorDecision?.kind === 'payment_unresolved') {
+      retainAuthorizationClaim('settlement');
       return c.json({
         error: 'payment settlement unresolved; trusted reconciliation is required',
         settlementReference,
       }, 503);
     }
     if (priorDecision?.kind === 'execution_unresolved') {
+      retainAuthorizationClaim('execution');
       return c.json({
         error: 'execution outcome unresolved; trusted executor reconciliation is required',
         executionAttemptId: priorDecision.executionAttemptId,
       }, 503);
     }
 
+    authorizationClaim.phase = 'pre_settlement';
     try {
       await lifecycle.beforeSettlement?.({
         context: c,
@@ -589,6 +751,7 @@ export function x402Paywall({
         verifiedPaymentHash: paymentHash,
       });
     } catch (error) {
+      retainAuthorizationClaim('pre_settlement');
       const known = ['PROVIDER_SPEND_CAP', 'PROVIDER_ATTEMPT_IN_PROGRESS'].includes(error?.code);
       return c.json({
         error: known ? error.message : 'pre-settlement authorization failed',
@@ -601,6 +764,7 @@ export function x402Paywall({
     if (priorDecision?.kind === 'settled') {
       if (!validTxHash(priorDecision.txHash)
           || String(priorDecision.payer ?? '').toLowerCase() !== payer) {
+        retainAuthorizationClaim('settlement_authority');
         return c.json({ error: 'persisted settlement proof does not match the signed payer' }, 503);
       }
       locallyUnresolvedSettlements.delete(idempotencyKey);
@@ -624,9 +788,13 @@ export function x402Paywall({
           });
           return c.json({ error: 'payment verification unresolved', settlementReference }, 503);
         }
-        if (!verify?.isValid) {
+        if (verify?.isValid !== true) {
           const reason = 'payment verification failed';
-          await lifecycle.onRejected?.({ idempotencyKey, reason, settlementReference, payer });
+          if (!await rejectAndReleaseAuthorization(reason)) {
+            return c.json({
+              error: 'payment rejection conflicts with authoritative Invocation state',
+            }, 409);
+          }
           return c.json({
             x402Version: X402_VERSION,
             error: reason,
@@ -635,6 +803,7 @@ export function x402Paywall({
         }
         paymentVerified = true;
       }
+      authorizationClaim.phase = 'settlement';
       try {
         facilitatorStarted ??= performance.now();
         settle = await postJson(transport, 'settle', facilitatorBody, {
@@ -666,7 +835,12 @@ export function x402Paywall({
         return c.json({ error: 'payment settlement unresolved', settlementReference }, 503);
       }
       const reason = 'payment settlement failed';
-      await lifecycle.onRejected?.({ idempotencyKey, reason, settlementReference, payer });
+      if (!await rejectAndReleaseAuthorization(reason)) {
+        return c.json({
+          error: 'payment rejection conflicts with authoritative Invocation state',
+        }, 409);
+      }
+      locallyUnresolvedSettlements.delete(idempotencyKey);
       if (authoritativeSigned) pendingOffers.delete(idempotencyKey);
       return c.json({
         x402Version: X402_VERSION,
@@ -718,6 +892,13 @@ export function x402Paywall({
       if (authoritativeSigned) pendingOffers.delete(idempotencyKey);
     }
 
+    if (['signed', 'settled'].includes(priorDecision?.kind)) {
+      authorizationClaim.authoritative = true;
+    }
+    // Claim consumption precedes the handler. A provider or response failure
+    // can never reopen the same monetary authorization for another execution.
+    beginAuthorizationExecution();
+
     c.set('x402', {
       idempotencyKey,
       settlementReference,
@@ -729,6 +910,7 @@ export function x402Paywall({
       legacySchemaVersion: priorDecision?.legacySchemaVersion ?? null,
     });
     await next();
+    consumeAuthorizationClaim();
     c.res.headers.set('X-PAYMENT-RESPONSE', jsonToB64(paymentResponseEvidence({
       idempotencyKey,
       requirements,
@@ -738,6 +920,17 @@ export function x402Paywall({
     })));
     c.res.headers.set('X-402-FACILITATOR-MS', facilitatorMs.toFixed(1));
     } finally {
+      if (activeAuthorizationClaim
+          && authorizationClaims.get(activeAuthorizationClaim.authorizationIdentity)
+            === activeAuthorizationClaim.claim
+          && ['processing', 'executing'].includes(activeAuthorizationClaim.claim.state)) {
+        if (activeAuthorizationClaim.claim.state === 'executing') {
+          consumeAuthorizationClaim();
+        } else {
+          activeAuthorizationClaim.claim.state = 'unresolved';
+          activeAuthorizationClaim.claim.phase = 'unexpected_failure';
+        }
+      }
       if (transientAdmission) transientAdmissions.delete(idempotencyKey);
     }
   };
@@ -765,7 +958,12 @@ async function postJson(transport, operation, body, {
       body: JSON.stringify(body),
     });
     if (!response?.ok) {
-      throw new RuntimeBoundaryError('FACILITATOR_HTTP', 'facilitator returned an unsuccessful status');
+      const error = new RuntimeBoundaryError(
+        'FACILITATOR_HTTP',
+        'facilitator returned an unsuccessful status',
+      );
+      cancelResponseBody(response, error);
+      throw error;
     }
     return readJsonBody(response, {
       maxBytes: maxResponseBytes,

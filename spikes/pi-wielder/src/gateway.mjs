@@ -72,6 +72,17 @@ export const GATEWAY_EXECUTION_CATALOG = deepFreeze({
 });
 
 const LIVE_PROVIDERS = new Set(['anthropic', 'openai']);
+const GATEWAY_MESSAGE_ROLES = new Set(['assistant', 'developer', 'system', 'tool', 'user']);
+const GATEWAY_SYSTEM_MESSAGE_ROLES = new Set(['developer', 'system']);
+const GATEWAY_TEXT_PART_TYPES = new Set(['input_text', 'output_text', 'text']);
+const MAX_GATEWAY_PARTICIPANT_NAME_CHARACTERS = 64;
+const MAX_GATEWAY_TOOL_CALL_ID_CHARACTERS = 256;
+const GATEWAY_FUNCTION_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+const GATEWAY_REQUEST_KEYS = new Set([
+  'frequency_penalty', 'max_completion_tokens', 'max_tokens', 'messages', 'model',
+  'presence_penalty', 'response_format', 'seed', 'stop', 'stream', 'temperature',
+  'tool_choice', 'tools', 'top_p', 'user',
+]);
 
 class GatewayBoundaryError extends Error {
   constructor(code, message, status) {
@@ -99,6 +110,205 @@ function positiveLimit(value, label) {
 
 function gatewayFailure(code, message, status) {
   throw new GatewayBoundaryError(code, message, status);
+}
+
+function plainJsonObject(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function hasOnlyKeys(value, allowed) {
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function boundedString(value, maximumCharacters) {
+  return typeof value === 'string' && value.length > 0 && value.length <= maximumCharacters;
+}
+
+function supportedMessageContent(content) {
+  if (typeof content === 'string') return true;
+  return Array.isArray(content)
+    && content.length > 0
+    && content.every((part) => plainJsonObject(part)
+      && hasOnlyKeys(part, new Set(['text', 'type']))
+      && GATEWAY_TEXT_PART_TYPES.has(part.type)
+      && typeof part.text === 'string');
+}
+
+function supportedToolArguments(value) {
+  return typeof value === 'string';
+}
+
+function supportedAssistantToolCalls(message) {
+  if (!Object.hasOwn(message, 'tool_calls')) return null;
+  if (!Array.isArray(message.tool_calls) || message.tool_calls.length === 0) return false;
+  return message.tool_calls.every((toolCall) => plainJsonObject(toolCall)
+    && hasOnlyKeys(toolCall, new Set(['function', 'id', 'type']))
+    && boundedString(toolCall.id, MAX_GATEWAY_TOOL_CALL_ID_CHARACTERS)
+    && toolCall.type === 'function'
+    && plainJsonObject(toolCall.function)
+    && hasOnlyKeys(toolCall.function, new Set(['arguments', 'name']))
+    && typeof toolCall.function.name === 'string'
+    && GATEWAY_FUNCTION_NAME.test(toolCall.function.name)
+    && supportedToolArguments(toolCall.function.arguments));
+}
+
+function assertGatewayMessages(body) {
+  if (!Object.hasOwn(body, 'messages')
+      || !Array.isArray(body.messages)
+      || body.messages.length === 0) {
+    gatewayFailure('REQUEST_SCHEMA', 'gateway request is invalid', 400);
+  }
+  for (const message of body.messages) {
+    if (!plainJsonObject(message)
+        || !Object.hasOwn(message, 'role')
+        || !GATEWAY_MESSAGE_ROLES.has(message.role)
+        || !Object.hasOwn(message, 'content')) {
+      gatewayFailure('REQUEST_SCHEMA', 'gateway request is invalid', 400);
+    }
+    const allowedKeys = new Set(['content', 'name', 'role']);
+    if (message.role === 'assistant') allowedKeys.add('tool_calls');
+    if (message.role === 'tool') allowedKeys.add('tool_call_id');
+    if (!hasOnlyKeys(message, allowedKeys)
+        || (Object.hasOwn(message, 'name')
+          && !boundedString(message.name, MAX_GATEWAY_PARTICIPANT_NAME_CHARACTERS))) {
+      gatewayFailure('REQUEST_SCHEMA', 'gateway request is invalid', 400);
+    }
+    const assistantToolCalls = message.role === 'assistant'
+      ? supportedAssistantToolCalls(message)
+      : null;
+    const contentIsSupported = supportedMessageContent(message.content)
+      || (message.role === 'assistant' && message.content === null && assistantToolCalls === true);
+    if (!contentIsSupported
+        || assistantToolCalls === false
+        || (message.role === 'tool'
+          && (!Object.hasOwn(message, 'tool_call_id')
+            || !boundedString(message.tool_call_id, MAX_GATEWAY_TOOL_CALL_ID_CHARACTERS)))) {
+      gatewayFailure('REQUEST_SCHEMA', 'gateway request is invalid', 400);
+    }
+  }
+}
+
+function assertGatewayTools(body) {
+  if (!Object.hasOwn(body, 'tools')) return;
+  if (!Array.isArray(body.tools)) {
+    gatewayFailure('REQUEST_SCHEMA', 'gateway request is invalid', 400);
+  }
+  for (const tool of body.tools) {
+    if (!plainJsonObject(tool)
+        || !hasOnlyKeys(tool, new Set(['function', 'type']))
+        || tool.type !== 'function'
+        || !Object.hasOwn(tool, 'function')
+        || !plainJsonObject(tool.function)
+        || !hasOnlyKeys(tool.function, new Set(['description', 'name', 'parameters', 'strict']))
+        || !Object.hasOwn(tool.function, 'name')
+        || typeof tool.function.name !== 'string'
+        || !GATEWAY_FUNCTION_NAME.test(tool.function.name)
+        || (Object.hasOwn(tool.function, 'description')
+          && typeof tool.function.description !== 'string')
+        || (Object.hasOwn(tool.function, 'parameters')
+          && !plainJsonObject(tool.function.parameters))
+        || (Object.hasOwn(tool.function, 'strict')
+          && typeof tool.function.strict !== 'boolean')) {
+      gatewayFailure('REQUEST_SCHEMA', 'gateway request is invalid', 400);
+    }
+  }
+}
+
+function finiteNumberInRange(value, minimum, maximum) {
+  return typeof value === 'number'
+    && Number.isFinite(value)
+    && value >= minimum
+    && value <= maximum;
+}
+
+function supportedStop(value) {
+  if (typeof value === 'string') return value.length > 0;
+  return Array.isArray(value)
+    && value.length > 0
+    && value.length <= 4
+    && value.every((stop) => typeof stop === 'string' && stop.length > 0);
+}
+
+function supportedResponseFormat(value) {
+  if (!plainJsonObject(value) || typeof value.type !== 'string') return false;
+  if (value.type === 'text' || value.type === 'json_object') {
+    return hasOnlyKeys(value, new Set(['type']));
+  }
+  if (value.type !== 'json_schema'
+      || !hasOnlyKeys(value, new Set(['json_schema', 'type']))
+      || !plainJsonObject(value.json_schema)
+      || !hasOnlyKeys(value.json_schema, new Set(['description', 'name', 'schema', 'strict']))
+      || !GATEWAY_FUNCTION_NAME.test(value.json_schema.name ?? '')
+      || !Object.hasOwn(value.json_schema, 'schema')
+      || !plainJsonObject(value.json_schema.schema)
+      || (Object.hasOwn(value.json_schema, 'description')
+        && typeof value.json_schema.description !== 'string')
+      || (Object.hasOwn(value.json_schema, 'strict')
+        && typeof value.json_schema.strict !== 'boolean')) {
+    return false;
+  }
+  return true;
+}
+
+function supportedToolChoice(body) {
+  if (!Object.hasOwn(body, 'tool_choice')) return true;
+  const choice = body.tool_choice;
+  if (typeof choice === 'string') {
+    if (!new Set(['auto', 'none', 'required']).has(choice)) return false;
+    return choice !== 'required' || body.tools?.length > 0;
+  }
+  if (!plainJsonObject(choice)
+      || !hasOnlyKeys(choice, new Set(['function', 'type']))
+      || choice.type !== 'function'
+      || !plainJsonObject(choice.function)
+      || !hasOnlyKeys(choice.function, new Set(['name']))
+      || !GATEWAY_FUNCTION_NAME.test(choice.function.name ?? '')) {
+    return false;
+  }
+  return body.tools?.some((tool) => tool.function.name === choice.function.name) === true;
+}
+
+function anthropicToolArgumentsAreObjects(body) {
+  for (const message of body.messages) {
+    for (const toolCall of message.tool_calls ?? []) {
+      let parsed;
+      try { parsed = JSON.parse(toolCall.function.arguments); } catch { return false; }
+      if (!plainJsonObject(parsed)) return false;
+    }
+  }
+  return true;
+}
+
+function assertGatewayProviderOptions(body, provider) {
+  if (!hasOnlyKeys(body, GATEWAY_REQUEST_KEYS)
+      || (Object.hasOwn(body, 'stream') && typeof body.stream !== 'boolean')
+      || (Object.hasOwn(body, 'temperature')
+        && (provider !== 'openai' || !finiteNumberInRange(body.temperature, 0, 2)))
+      || (Object.hasOwn(body, 'top_p')
+        && (provider !== 'openai' || !finiteNumberInRange(body.top_p, 0, 1)))
+      || (Object.hasOwn(body, 'stop') && !supportedStop(body.stop))
+      || !supportedToolChoice(body)
+      || (provider === 'anthropic'
+        && Object.hasOwn(body, 'tool_choice')
+        && body.tool_choice !== 'none'
+        && !(body.tools?.length > 0))
+      || (provider === 'anthropic' && !anthropicToolArgumentsAreObjects(body))
+      || (Object.hasOwn(body, 'presence_penalty')
+        && (provider !== 'openai' || !finiteNumberInRange(body.presence_penalty, -2, 2)))
+      || (Object.hasOwn(body, 'frequency_penalty')
+        && (provider !== 'openai' || !finiteNumberInRange(body.frequency_penalty, -2, 2)))
+      || (Object.hasOwn(body, 'response_format')
+        && (provider !== 'openai' || !supportedResponseFormat(body.response_format)))
+      || (Object.hasOwn(body, 'seed')
+        && (provider !== 'openai' || !Number.isSafeInteger(body.seed)))
+      || (Object.hasOwn(body, 'user')
+        && (provider !== 'openai' || !boundedString(body.user, 256)))
+      || (provider === 'anthropic'
+        && body.tools?.some((tool) => Object.hasOwn(tool.function, 'strict')))) {
+    gatewayFailure('REQUEST_SCHEMA', 'gateway request is invalid', 400);
+  }
 }
 
 function priceForProvider(provider) {
@@ -226,13 +436,16 @@ function requestPlan(c, catalog) {
   const cached = c.get('gatewayRequestPlan');
   if (cached) return cached;
   const body = gatewayRequestBody(c);
-  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+  if (!plainJsonObject(body)) {
     gatewayFailure('REQUEST_SCHEMA', 'gateway request is invalid', 400);
   }
   if (typeof body.model !== 'string' || !Object.hasOwn(catalog.models, body.model)) {
     gatewayFailure('MODEL_NOT_ALLOWED', 'gateway model is not allowed', 400);
   }
+  assertGatewayMessages(body);
+  assertGatewayTools(body);
   const policy = catalog.models[body.model];
+  assertGatewayProviderOptions(body, policy.provider);
   const hasLegacyLimit = Object.hasOwn(body, 'max_tokens');
   const hasCurrentLimit = Object.hasOwn(body, 'max_completion_tokens');
   if (hasLegacyLimit && hasCurrentLimit) {
@@ -271,9 +484,9 @@ function requestPlan(c, catalog) {
 
 function gatewayRequestBody(c) {
   const cached = c.get('gatewayRequestBody');
-  if (cached) return cached;
+  if (cached !== undefined) return cached;
   let body;
-  try { body = JSON.parse(x402RequestBodyText(c)); } catch { body = {}; }
+  try { body = JSON.parse(x402RequestBodyText(c)); } catch { body = null; }
   c.set('gatewayRequestBody', body);
   return body;
 }
@@ -455,7 +668,7 @@ function toAnthropicMessages(oaiMessages = []) {
     else out.push({ role, content: [...blocks] });
   };
   for (const m of oaiMessages) {
-    if (m.role === 'system') continue;
+    if (GATEWAY_SYSTEM_MESSAGE_ROLES.has(m.role)) continue;
     if (m.role === 'tool') {
       push('user', [{ type: 'tool_result', tool_use_id: m.tool_call_id, content: contentToText(m.content) }]);
     } else if (m.role === 'assistant') {
@@ -530,12 +743,25 @@ function validateProviderUsage(plan, inputTokens, outputTokens) {
 
 function anthropicRequest(plan, apiKey) {
   const body = plan.body;
-  const system = (body.messages ?? []).filter((m) => m.role === 'system').map((m) => contentToText(m.content)).join('\n') || undefined;
+  const system = (body.messages ?? [])
+    .filter((message) => GATEWAY_SYSTEM_MESSAGE_ROLES.has(message.role))
+    .map((message) => contentToText(message.content))
+    .join('\n') || undefined;
   const tools = (body.tools ?? []).map((t) => ({
     name: t.function.name,
     description: t.function.description ?? '',
     input_schema: t.function.parameters ?? { type: 'object', properties: {} },
   }));
+  const toolChoice = !Object.hasOwn(body, 'tool_choice') || body.tool_choice === 'none'
+    ? null
+    : body.tool_choice === 'required'
+      ? { type: 'any' }
+      : body.tool_choice === 'auto'
+        ? { type: 'auto' }
+        : { type: 'tool', name: body.tool_choice.function.name };
+  const stopSequences = !Object.hasOwn(body, 'stop')
+    ? null
+    : typeof body.stop === 'string' ? [body.stop] : body.stop;
   return {
     url: 'https://api.anthropic.com/v1/messages',
     init: {
@@ -549,9 +775,11 @@ function anthropicRequest(plan, apiKey) {
       body: JSON.stringify({
         model: plan.model,
         max_tokens: plan.maxOutputTokens,
+        ...(stopSequences ? { stop_sequences: stopSequences } : {}),
         system,
         messages: toAnthropicMessages(body.messages),
-        ...(tools.length ? { tools } : {}),
+        ...(tools.length && body.tool_choice !== 'none' ? { tools } : {}),
+        ...(toolChoice ? { tool_choice: toolChoice } : {}),
       }),
     },
   };
@@ -566,6 +794,12 @@ function openAiRequest(plan, apiKey) {
   const forwarded = Object.fromEntries(allowedFields
     .filter((field) => Object.hasOwn(body, field))
     .map((field) => [field, body[field]]));
+  forwarded.messages = body.messages.map((message) => ({
+    ...message,
+    ...(Array.isArray(message.content)
+      ? { content: message.content.map((part) => ({ type: 'text', text: part.text })) }
+      : {}),
+  }));
   return {
     url: 'https://api.openai.com/v1/chat/completions',
     init: {

@@ -39,6 +39,7 @@ import {
   createInvocationJournal,
 } from './invocation-journal.mjs';
 import {
+  cancelResponseBody,
   readJsonBody,
   RuntimeBoundaryError,
   withWallClockDeadline,
@@ -201,7 +202,7 @@ export function createCollar({
     });
   }
   if (!executor) {
-    if (!allowLiveProvider) {
+    if (allowLiveProvider !== true) {
       throw new ExecutionEconomicsError(
         'LIVE_PRICING_UNAPPROVED',
         'live provider execution requires an explicit gate',
@@ -977,7 +978,12 @@ export function createAnthropicExecutor({
           }),
         });
         if (!response?.ok) {
-          throw new RuntimeBoundaryError('UPSTREAM_PROVIDER_ERROR', 'provider request failed');
+          const error = new RuntimeBoundaryError(
+            'UPSTREAM_PROVIDER_ERROR',
+            'provider request failed',
+          );
+          cancelResponseBody(response, error);
+          throw error;
         }
         if (!(response instanceof Response)) {
           throw new RuntimeBoundaryError(

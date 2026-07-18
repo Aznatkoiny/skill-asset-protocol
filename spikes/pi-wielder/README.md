@@ -59,6 +59,14 @@ key receives `503 PENDING_OFFER_CAPACITY` when all 128 pending slots are active;
 existing active key can still retrieve its exact frozen challenge. Expired unpaid slots
 are the only offer state reclaimed by this admission control.
 
+The standalone, non-authoritative paywall can consume an authorization only once. Before
+verification it atomically claims the fixed network, asset, payer, and nonce for one
+Idempotency-Key, with the exact payment-header hash bound to that owner. Cross-key and
+alternate-encoding replays fail before another facilitator or handler call; a successful
+claim remains in the same bounded TTL-scoped admission state. It cannot replay lost
+output; durable terminal replay belongs to the Collar journal. Facilitator verification
+succeeds only for the exact boolean `true`.
+
 The caller's method, body bytes, and headers are captured once before the unpaid
 request. Method and body bytes bind the policy hash and signed recovery; captured
 headers are reused for the unpaid and paid requests but are not signed or covered by
@@ -178,7 +186,7 @@ npm test
 npm run e2e
 ```
 
-Expected current results are 222 offline unit/integration tests and 41 offline e2e
+Expected current results are 235 offline unit/integration tests and 41 offline e2e
 checks. Counts can increase as regressions are added; zero failures is the contract.
 The e2e labels all timing output synthetic and uses in-process Hono requests only.
 
@@ -230,6 +238,13 @@ body consumption and cannot be configured above 30 seconds. Caller abort signals
 composed into child signals; an internal timeout never aborts the caller's controller.
 Redirects remain disabled.
 
+Before returning a gateway offer, the reseller validates a closed OpenAI-compatible
+request contract: allowed model, non-empty canonical message roles and text parts,
+function tools/calls/results, output-token bound, and provider-specific option types and
+ranges. Malformed JSON, unknown fields, and unsupported shapes receive a stable `400`
+without facilitator settlement or provider work. Anthropic options are either translated
+explicitly or rejected; unsupported tool `strict` semantics are never silently dropped.
+
 Timeout state follows the durable money boundary: an unpaid timeout creates no
 reservation; a signed retry or facilitator ambiguity stays `unresolved` with budget
 held; and a provider timeout after settlement finalizes a sanitized failed receipt,
@@ -237,6 +252,8 @@ unknown COGS, one full-gross reconciliation hold, no output, and no Royalty cred
 Raw transport and provider errors are not returned or journaled. The manual Pi tool
 has no caller-selected Skill route: it invokes only the fixed, encoded
 `optimizing-claude-code-prompts` path.
+Withheld paid output and unsuccessful facilitator or provider response bodies are
+cancelled without being consumed or exposed.
 
 Live model execution requires the exact combination of `MOCK_LLM=0`,
 `ALLOW_LIVE_PROVIDER=1`, a `human_verified` immutable catalog, its exact operator-approved

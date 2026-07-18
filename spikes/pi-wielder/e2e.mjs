@@ -75,7 +75,10 @@ async function viaProxy(path, body, label = null) {
 
 console.log('unpaid requests are challenged:');
 for (const [name, app, url, body] of [
-  ['gateway', gateway, 'http://gateway.test/v1/chat/completions', { model: 'gpt-x' }],
+  ['gateway', gateway, 'http://gateway.test/v1/chat/completions', {
+    model: 'gpt-x',
+    messages: [{ role: 'user', content: 'challenge only' }],
+  }],
   ['collar', collar.app, `http://collar.test/invoke/${SKILL_ID}`, { input: 'x' }],
 ]) {
   const response = await app.request(url, {

@@ -944,13 +944,19 @@ test('failed facilitator verification creates no authority and leaks no detail',
   assert.equal(executionCalls, 0);
 });
 
-test('Anthropic error response bodies are never copied into the failed receipt', async () => {
+test('Anthropic error response bodies are cancelled and never copied into the failed receipt', async () => {
   const responseSecret = 'sk-ant-secret-inside-upstream-body';
+  let cancelled = false;
   const executeSkill = createAnthropicExecutor({
     apiKey: 'test-only-key',
     fetchImpl: async (url) => {
       assert.equal(url, 'https://api.anthropic.com/v1/messages');
-      return new Response(JSON.stringify({ error: responseSecret }), {
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(JSON.stringify({ error: responseSecret })));
+        },
+        cancel() { cancelled = true; },
+      }), {
         status: 500,
         headers: { 'content-type': 'application/json' },
       });
@@ -965,6 +971,7 @@ test('Anthropic error response bodies are never copied into the failed receipt',
   });
   assert.equal(result.res.status, 500);
   const text = await result.res.text();
+  assert.equal(cancelled, true);
   assert.doesNotMatch(text, new RegExp(responseSecret));
   assert.match(text, /Skill execution failed after settlement/);
 });

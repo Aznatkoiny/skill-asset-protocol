@@ -104,7 +104,9 @@ verify and settle, and 30 seconds for provider execution/upstream response reads
 gateway's provider deadline covers both the fetch and the streamed response read,
 cannot be configured above 30 seconds, composes the request abort signal, and refuses
 redirects. Provider HTTP failures never consume or expose the raw response body; all
-public failures are stable and sanitized.
+public failures are stable and sanitized. Unsuccessful facilitator and provider bodies,
+plus paid output withheld for invalid settlement evidence, are cancelled without being
+read or exposed.
 An unpaid timeout remains unreserved. Any timeout after the signature keeps the payment
 unresolved/held until trusted reconciliation. A provider timeout after settlement
 returns no output and finalizes a signed failed receipt with unknown COGS and the full
@@ -118,6 +120,14 @@ unpaid entries are reclaimed. After facilitator verification, the exact payment-
 digest and all signed, unresolved, settled, refunded, execution, and terminal state
 remain in the append-only journal and are never capacity-pruned. A replay must match that
 digest; legacy journal entries without one are sent back through facilitator verification.
+
+The standalone gateway has no durable response authority. Before verification it claims
+the fixed network, asset, payer, and nonce for exactly one Idempotency-Key and binds the
+exact verified payment-header hash to that owner. Cross-key, concurrent, and alternate-
+encoding reuse fails before a second verification, settlement, or provider execution;
+a successful claim stays in bounded TTL-scoped admission state. Do not treat this as
+response replay. The authoritative Collar journal remains the only terminal replay path.
+Facilitator verification accepts only the exact boolean `true`.
 
 A restart after `402` but before successful verification intentionally loses that
 non-authoritative offer. A paid retry carrying the old key then gets `409` before any
@@ -213,7 +223,11 @@ set. A reviewed integration must inject a `human_verified` catalog and its exact
 The gateway enforces its catalog's exact model allowlist, output bound, and conservative
 input bound before offering payment. That input bound treats each raw request byte as at
 most one provider token and reserves another 1,024 tokens for provider-side chat
-framing. Provider requests refuse redirects, use one absolute fetch-plus-body deadline,
+framing. The pre-offer schema is closed: messages, text parts, function tools/calls/results,
+and provider-specific options must match the documented Pi/OpenAI shapes. Unknown or
+malformed fields fail with `400` before facilitator or provider activity. Anthropic
+options are translated explicitly; unsupported `strict` tool semantics are rejected.
+Provider requests refuse redirects, use one absolute fetch-plus-body deadline,
 whose configurable value cannot exceed 30 seconds, and stream responses through a hard
 1 MiB cap. Automated verification stays on the mock facilitator and mock model and uses
 no real funds.

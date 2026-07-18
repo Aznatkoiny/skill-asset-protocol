@@ -130,6 +130,291 @@ test('challenge and retry emit one ordered lifecycle under one idempotency key',
   assert.equal(result.amountDisplay, '0.250000');
 });
 
+test('a non-authoritative paywall consumes one exact paid authorization only once per offer', async () => {
+  const facilitator = createMockFacilitator();
+  let verifyCalls = 0;
+  let settleCalls = 0;
+  let executions = 0;
+  const transport = createMockFacilitatorTransport(async (url, init) => {
+    const operation = new URL(url).pathname;
+    if (operation === '/verify') verifyCalls += 1;
+    if (operation === '/settle') settleCalls += 1;
+    return facilitator.request(url, init);
+  });
+  const app = resourceApp({
+    facilitatorTransport: transport,
+    handler: (c) => {
+      executions += 1;
+      return c.json({ ok: true });
+    },
+  });
+  const idempotencyKey = 'idem-local-authorization-consumed-once';
+  const first = await payingFetch(throwawayAccount(), 'http://seller.test/resource', {
+    method: 'POST', body: '{}',
+  }, {
+    idempotencyKey,
+    fetchImpl: (url, init) => app.request(url, init),
+  });
+  assert.equal(first.res.status, 200);
+
+  const replay = await app.request('http://seller.test/resource', {
+    method: 'POST',
+    headers: { 'Idempotency-Key': idempotencyKey, 'X-PAYMENT': first.xPayment },
+    body: '{}',
+  });
+  assert.equal(replay.status, 409);
+  assert.deepEqual(await replay.json(), {
+    error: 'payment authorization was already consumed; response replay is unavailable',
+    code: 'PAYMENT_AUTHORIZATION_CONSUMED',
+  });
+  assert.equal(verifyCalls, 1);
+  assert.equal(settleCalls, 1);
+  assert.equal(executions, 1);
+});
+
+test('one payment authorization cannot execute again under a different idempotency key', async () => {
+  const fixedNow = Date.now();
+  const facilitator = createMockFacilitator();
+  let verifyCalls = 0;
+  let settleCalls = 0;
+  let executions = 0;
+  const transport = createMockFacilitatorTransport(async (url, init) => {
+    const operation = new URL(url).pathname;
+    if (operation === '/verify') verifyCalls += 1;
+    if (operation === '/settle') settleCalls += 1;
+    return facilitator.request(url, init);
+  });
+  const app = resourceApp({
+    facilitatorTransport: transport,
+    now: () => fixedNow,
+    handler: (c) => {
+      executions += 1;
+      return c.json({ ok: true });
+    },
+  });
+  const first = await payingFetch(throwawayAccount(), 'http://seller.test/resource', {
+    method: 'POST', body: '{}',
+  }, {
+    idempotencyKey: 'authorization-owner',
+    fetchImpl: (url, init) => app.request(url, init),
+  });
+  assert.equal(first.res.status, 200);
+
+  const secondOffer = await app.request('http://seller.test/resource', {
+    method: 'POST',
+    headers: { 'Idempotency-Key': 'authorization-replay' },
+    body: '{}',
+  });
+  assert.equal(secondOffer.status, 402);
+  const replay = await app.request('http://seller.test/resource', {
+    method: 'POST',
+    headers: {
+      'Idempotency-Key': 'authorization-replay',
+      'X-PAYMENT': first.xPayment,
+    },
+    body: '{}',
+  });
+
+  assert.equal(replay.status, 409);
+  assert.deepEqual(await replay.json(), {
+    error: 'payment authorization is already claimed by a different Idempotency-Key',
+    code: 'PAYMENT_AUTHORIZATION_CLAIMED',
+  });
+
+  const originalEnvelope = JSON.parse(Buffer.from(first.xPayment, 'base64').toString('utf8'));
+  const originalAuthorization = originalEnvelope.payload.authorization;
+  const reorderedPayment = Buffer.from(JSON.stringify({
+    network: originalEnvelope.network,
+    payload: {
+      authorization: {
+        nonce: originalAuthorization.nonce,
+        validBefore: originalAuthorization.validBefore,
+        validAfter: originalAuthorization.validAfter,
+        value: originalAuthorization.value,
+        to: originalAuthorization.to,
+        from: originalAuthorization.from,
+      },
+      signature: originalEnvelope.payload.signature,
+    },
+    scheme: originalEnvelope.scheme,
+    x402Version: originalEnvelope.x402Version,
+  })).toString('base64');
+  assert.notEqual(reorderedPayment, first.xPayment);
+  const reorderedOffer = await app.request('http://seller.test/resource', {
+    method: 'POST',
+    headers: { 'Idempotency-Key': 'authorization-reordered-replay' },
+    body: '{}',
+  });
+  assert.equal(reorderedOffer.status, 402);
+  const reorderedReplay = await app.request('http://seller.test/resource', {
+    method: 'POST',
+    headers: {
+      'Idempotency-Key': 'authorization-reordered-replay',
+      'X-PAYMENT': reorderedPayment,
+    },
+    body: '{}',
+  });
+  assert.equal(reorderedReplay.status, 409);
+  assert.deepEqual(await reorderedReplay.json(), {
+    error: 'payment authorization is already claimed by a different Idempotency-Key',
+    code: 'PAYMENT_AUTHORIZATION_CLAIMED',
+  });
+  assert.equal(verifyCalls, 1);
+  assert.equal(settleCalls, 1);
+  assert.equal(executions, 1);
+});
+
+test('concurrent cross-key replay loses the authorization claim before facilitator verification', {
+  timeout: 5_000,
+}, async () => {
+  let clockMs = Date.now();
+  const facilitator = createMockFacilitator();
+  let releaseFirstVerification;
+  let firstVerificationStarted;
+  const firstStarted = new Promise((resolve) => { firstVerificationStarted = resolve; });
+  const firstRelease = new Promise((resolve) => { releaseFirstVerification = resolve; });
+  let releaseHandler;
+  let handlerStarted;
+  const handlerStart = new Promise((resolve) => { handlerStarted = resolve; });
+  const handlerRelease = new Promise((resolve) => { releaseHandler = resolve; });
+  let verifyCalls = 0;
+  let settleCalls = 0;
+  let executions = 0;
+  const transport = createMockFacilitatorTransport(async (url, init) => {
+    const operation = new URL(url).pathname;
+    if (operation === '/verify') {
+      verifyCalls += 1;
+      if (verifyCalls === 1) {
+        firstVerificationStarted();
+        await firstRelease;
+      }
+    }
+    if (operation === '/settle') settleCalls += 1;
+    return facilitator.request(url, init);
+  });
+  const app = resourceApp({
+    facilitatorTransport: transport,
+    now: () => clockMs,
+    handler: async (c) => {
+      executions += 1;
+      handlerStarted();
+      await handlerRelease;
+      return c.json({ ok: true });
+    },
+  });
+  let interceptedRequests = 0;
+  const signed = await withheldAttempt(throwawayAccount(), 'http://seller.test/resource', {
+    method: 'POST', body: '{}',
+  }, {
+    idempotencyKey: 'concurrent-authorization-owner',
+    fetchImpl: (url, init) => {
+      interceptedRequests += 1;
+      return interceptedRequests === 1
+        ? app.request(url, init)
+        : Response.json({ error: 'withheld paid retry' }, { status: 503 });
+    },
+  });
+  const secondOffer = await app.request('http://seller.test/resource', {
+    method: 'POST',
+    headers: { 'Idempotency-Key': 'concurrent-authorization-replay' },
+    body: '{}',
+  });
+  assert.equal(secondOffer.status, 402);
+
+  const ownerPromise = app.request('http://seller.test/resource', {
+    method: 'POST',
+    headers: {
+      'Idempotency-Key': signed.idempotencyKey,
+      'X-PAYMENT': signed.xPayment,
+    },
+    body: '{}',
+  });
+  await firstStarted;
+  let replay;
+  let replayAfterTtl;
+  try {
+    replay = await app.request('http://seller.test/resource', {
+      method: 'POST',
+      headers: {
+        'Idempotency-Key': 'concurrent-authorization-replay',
+        'X-PAYMENT': signed.xPayment,
+      },
+        body: '{}',
+      });
+    releaseFirstVerification();
+    await handlerStart;
+    clockMs += DEFAULT_PENDING_OFFER_TTL_MS + 1;
+    const afterTtlOffer = await app.request('http://seller.test/resource', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': 'concurrent-replay-after-ttl' },
+      body: '{}',
+    });
+    assert.equal(afterTtlOffer.status, 402);
+    replayAfterTtl = await app.request('http://seller.test/resource', {
+      method: 'POST',
+      headers: {
+        'Idempotency-Key': 'concurrent-replay-after-ttl',
+        'X-PAYMENT': signed.xPayment,
+      },
+      body: '{}',
+    });
+  } finally {
+    releaseFirstVerification();
+    releaseHandler();
+  }
+  const owner = await ownerPromise;
+
+  assert.equal(owner.status, 200);
+  assert.equal(replay.status, 409);
+  assert.deepEqual(await replay.json(), {
+    error: 'payment authorization is already claimed by a different Idempotency-Key',
+    code: 'PAYMENT_AUTHORIZATION_CLAIMED',
+  });
+  assert.equal(replayAfterTtl.status, 409);
+  assert.deepEqual(await replayAfterTtl.json(), {
+    error: 'payment authorization is already claimed by a different Idempotency-Key',
+    code: 'PAYMENT_AUTHORIZATION_CLAIMED',
+  });
+  assert.equal(verifyCalls, 1);
+  assert.equal(settleCalls, 1);
+  assert.equal(executions, 1);
+});
+
+test('facilitator verification accepts only the exact boolean true', async () => {
+  let caseIndex = 0;
+  for (const isValid of [1, 'true', {}, []]) {
+    const facilitator = createMockFacilitator();
+    let verifyCalls = 0;
+    let settleCalls = 0;
+    let executions = 0;
+    const transport = createMockFacilitatorTransport(async (url, init) => {
+      const operation = new URL(url).pathname;
+      if (operation === '/verify') {
+        verifyCalls += 1;
+        return Response.json({ isValid });
+      }
+      settleCalls += 1;
+      return facilitator.request(url, init);
+    });
+    const app = resourceApp({
+      facilitatorTransport: transport,
+      handler: (c) => {
+        executions += 1;
+        return c.json({ ok: true });
+      },
+    });
+    await assert.rejects(() => payingFetch(throwawayAccount(), 'http://seller.test/resource', {
+      method: 'POST', body: '{}',
+    }, {
+      idempotencyKey: `idem-exact-verify-boolean-${caseIndex++}`,
+      fetchImpl: (url, init) => app.request(url, init),
+    }), (error) => error.code === 'SECOND_PAYMENT_REQUIRED');
+    assert.equal(verifyCalls, 1);
+    assert.equal(settleCalls, 0);
+    assert.equal(executions, 0);
+  }
+});
+
 test('a restarted paywall accepts only the complete persisted frozen offer', async () => {
   const facilitator = createMockFacilitator();
   const transport = createMockFacilitatorTransport((url, init) => facilitator.request(url, init));
@@ -507,6 +792,12 @@ test('unresolved keys retain bounded admission across TTL and release only for t
     });
     assert.equal(trusted.status, resolutionKind === 'settled' ? 200 : 500, resolutionKind);
 
+    const retainedAfterResolution = await app.request('http://seller.test/resource', {
+      method: 'POST', headers: { 'Idempotency-Key': `released-${resolutionKind}` }, body: '{}',
+    });
+    assert.equal(retainedAfterResolution.status, 503, resolutionKind);
+
+    clockMs += 1_001;
     const afterResolution = await app.request('http://seller.test/resource', {
       method: 'POST', headers: { 'Idempotency-Key': `released-${resolutionKind}` }, body: '{}',
     });
@@ -971,6 +1262,44 @@ test('facilitator verify and settle deadlines abort ignoring transports and rema
     assert.equal(held.state, 'unresolved', timedOutOperation);
     assert.equal(held.paymentPolicy.snapshot().reservedAtomic, '250000', timedOutOperation);
     assert.equal(executions, 0, timedOutOperation);
+  }
+});
+
+test('facilitator non-success response bodies are cancelled before payment stays unresolved', async () => {
+  for (const failedOperation of ['verify', 'settle']) {
+    let cancelled = false;
+    let executions = 0;
+    const transport = createMockFacilitatorTransport(async (url) => {
+      const operation = new URL(url).pathname.slice(1);
+      if (operation === failedOperation) {
+        return new Response(new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{"secret":"withheld"}'));
+          },
+          cancel() { cancelled = true; },
+        }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ isValid: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const app = resourceApp({
+      facilitatorTransport: transport,
+      handler: (c) => { executions += 1; return c.json({ ok: true }); },
+    });
+    const held = await withheldAttempt(throwawayAccount(), 'http://seller.test/resource', {
+      method: 'POST', body: '{}',
+    }, {
+      idempotencyKey: `idem-facilitator-${failedOperation}-http`,
+      fetchImpl: (url, init) => app.request(url, init),
+    });
+    assert.equal(cancelled, true, failedOperation);
+    assert.equal(held.state, 'unresolved', failedOperation);
+    assert.equal(executions, 0, failedOperation);
   }
 });
 
