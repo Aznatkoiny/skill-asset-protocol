@@ -11,6 +11,8 @@ license: apache-2.0
 
 # Skill Asset Protocol — verified accounting demo
 
+> **PROPOSED / NONCANONICAL:** The employer-funded internal Invocation-award model is pending explicit approval.
+
 This standalone static root renders the same deterministic accounting fixture
 as the Gradio root. The fixture is generated from
 `prototype/atomic-money.mjs`, copied byte-for-byte into this root, and checked
@@ -27,6 +29,11 @@ The live button makes one unpaid request to a fixed Collar endpoint. Redirects
 are refused and the response is size-bounded. Only a valid x402 v1 `exact`
 offer for Base Sepolia is marked live; JSON 200/500 and malformed responses are
 non-live. No cached response is presented as current.
+
+Anti-framing must be supplied by the host as a `Content-Security-Policy` HTTP
+response header containing `frame-ancestors 'none'`; that directive is not
+enforceable from this page's meta policy. All enforceable meta CSP directives
+remain in `index.html`.
 
 Evidence is deliberately narrow. The historical inference-route aggregate is
 `historical_unreproducible` and not publication-eligible because normalized

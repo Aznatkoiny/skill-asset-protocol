@@ -106,6 +106,7 @@ class FixtureTests(unittest.TestCase):
         fixture = load_allocation_fixture()
         for scenario in fixture["scenarios"]:
             model = render_allocation(fixture, scenario["id"])
+            self.assertEqual(model["implementationNote"], scenario["implementationNote"])
             expected_entries = scenario["allocation"]["journalEntries"]
             self.assertEqual(len(model["rows"]), len(expected_entries))
             for row, entry in zip(model["rows"], expected_entries, strict=True):
@@ -161,6 +162,11 @@ class FixtureTests(unittest.TestCase):
             raw = (data / name).read_bytes()
             self.assertEqual(expected["bytes"], len(raw))
             self.assertEqual(expected["sha256"], "sha256:" + hashlib.sha256(raw).hexdigest())
+
+    def test_readme_marks_internal_award_model_proposed_and_noncanonical(self):
+        readme = (GRADIO_ROOT / "README.md").read_text()
+        self.assertIn("PROPOSED / NONCANONICAL", readme)
+        self.assertRegex(readme, r"(?i)employer-funded internal Invocation-award.*pending explicit approval")
 
 
 if __name__ == "__main__":

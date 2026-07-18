@@ -65,6 +65,28 @@ function requireExactKeys(value, expected, label) {
   }
 }
 
+function snapshotExactDataRecord(value, expected, label) {
+  requireRecord(value, label);
+  const ownKeys = Reflect.ownKeys(value);
+  if (ownKeys.some((key) => typeof key !== 'string')) {
+    fail(`${label} must use only string keys`);
+  }
+  const actual = [...ownKeys].sort();
+  if (actual.length !== expected.length
+      || actual.some((key, index) => key !== expected[index])) {
+    fail(`${label} has invalid keys`);
+  }
+  const snapshot = Object.create(null);
+  for (const key of ownKeys) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) {
+      fail(`${label} fields must be own enumerable data properties`);
+    }
+    snapshot[key] = descriptor.value;
+  }
+  return snapshot;
+}
+
 function requireIdentifier(value, label) {
   if (typeof value !== 'string' || !IDENTIFIER_PATTERN.test(value)) {
     fail(`${label} must be a canonical identifier`);
@@ -141,30 +163,32 @@ function validateClassification(value) {
 }
 
 export function parseSettlementMetricEvent(value) {
-  requireRecord(value, 'SettlementMetricEventV1');
-  requireExactKeys(value, EVENT_KEYS, 'SettlementMetricEventV1');
-  if (value.schemaVersion !== 1) fail('SettlementMetricEventV1 schemaVersion must be 1');
+  const event = snapshotExactDataRecord(value, EVENT_KEYS, 'SettlementMetricEventV1');
+  if (event.schemaVersion !== 1) fail('SettlementMetricEventV1 schemaVersion must be 1');
 
-  const claims = requireRecord(value.untrustedPayerClaims, 'untrustedPayerClaims');
-  requireExactKeys(claims, CLAIM_KEYS, 'untrustedPayerClaims');
-  const gross = requireAtomic(value.grossAtomic, 'grossAtomic');
-  const refunded = requireAtomic(value.refundedAtomic, 'refundedAtomic');
-  const recycled = requireAtomic(value.recycledAtomic, 'recycledAtomic');
+  const claims = snapshotExactDataRecord(
+    event.untrustedPayerClaims,
+    CLAIM_KEYS,
+    'untrustedPayerClaims',
+  );
+  const gross = requireAtomic(event.grossAtomic, 'grossAtomic');
+  const refunded = requireAtomic(event.refundedAtomic, 'refundedAtomic');
+  const recycled = requireAtomic(event.recycledAtomic, 'recycledAtomic');
   if (refunded > gross) fail('refundedAtomic must not exceed grossAtomic');
   if (recycled > gross) fail('recycledAtomic must not exceed grossAtomic');
   if (refunded + recycled > gross) {
     fail('refundedAtomic plus recycledAtomic must not exceed grossAtomic');
   }
-  if (!OUTCOMES.has(value.outcome)) fail('outcome is invalid');
+  if (!OUTCOMES.has(event.outcome)) fail('outcome is invalid');
 
   return deepFreeze({
     schemaVersion: 1,
-    settlementId: requireIdentifier(value.settlementId, 'settlementId'),
-    invocationId: requireIdentifier(value.invocationId, 'invocationId'),
-    skillId: requireIdentifier(value.skillId, 'skillId'),
-    creatorWallet: requireWallet(value.creatorWallet, 'creatorWallet'),
-    payeeWallet: requireWallet(value.payeeWallet, 'payeeWallet'),
-    payerWallet: requireWallet(value.payerWallet, 'payerWallet'),
+    settlementId: requireIdentifier(event.settlementId, 'settlementId'),
+    invocationId: requireIdentifier(event.invocationId, 'invocationId'),
+    skillId: requireIdentifier(event.skillId, 'skillId'),
+    creatorWallet: requireWallet(event.creatorWallet, 'creatorWallet'),
+    payeeWallet: requireWallet(event.payeeWallet, 'payeeWallet'),
+    payerWallet: requireWallet(event.payerWallet, 'payerWallet'),
     untrustedPayerClaims: {
       beneficiaryId: requireUntrustedText(claims.beneficiaryId, 'untrustedPayerClaims.beneficiaryId'),
       payerClusterId: requireUntrustedText(claims.payerClusterId, 'untrustedPayerClaims.payerClusterId'),
@@ -173,8 +197,8 @@ export function parseSettlementMetricEvent(value) {
     grossAtomic: gross.toString(),
     refundedAtomic: refunded.toString(),
     recycledAtomic: recycled.toString(),
-    outcome: value.outcome,
-    settledAt: requireUtcTimestamp(value.settledAt, 'settledAt'),
+    outcome: event.outcome,
+    settledAt: requireUtcTimestamp(event.settledAt, 'settledAt'),
   });
 }
 

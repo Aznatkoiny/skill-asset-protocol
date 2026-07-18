@@ -8,6 +8,54 @@ import {
   rankEligibleSkills,
 } from './metrics.mjs';
 
+function errorMessage(error) {
+  try {
+    if (error instanceof Error) return String(error.message);
+    if (typeof error === 'string') return error;
+    return String(error);
+  } catch {
+    return 'Unknown registry report failure';
+  }
+}
+
+function quoteTerminalText(value) {
+  let quoted = '"';
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit === 0x22) {
+      quoted += '\\"';
+    } else if (codeUnit === 0x5c) {
+      quoted += '\\\\';
+    } else if (
+      codeUnit <= 0x1f
+      || (codeUnit >= 0x7f && codeUnit <= 0x9f)
+      || codeUnit === 0x061c
+      || codeUnit === 0x200e
+      || codeUnit === 0x200f
+      || (codeUnit >= 0x2028 && codeUnit <= 0x202e)
+      || (codeUnit >= 0x2066 && codeUnit <= 0x206f)
+      || (codeUnit >= 0xd800 && codeUnit <= 0xdfff
+        && !(codeUnit <= 0xdbff
+          && index + 1 < value.length
+          && value.charCodeAt(index + 1) >= 0xdc00
+          && value.charCodeAt(index + 1) <= 0xdfff))
+    ) {
+      quoted += `\\u${codeUnit.toString(16).padStart(4, '0')}`;
+    } else {
+      quoted += value[index];
+      if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+        index += 1;
+        quoted += value[index];
+      }
+    }
+  }
+  return `${quoted}"`;
+}
+
+export function renderRegistryError(error) {
+  return `error: ${quoteTerminalText(errorMessage(error))}`;
+}
+
 function sortedMetrics(metricValues) {
   if (!Array.isArray(metricValues)) throw new TypeError('metrics must be an array');
   return metricValues.slice().sort((left, right) => left.skillId.localeCompare(right.skillId));
@@ -99,7 +147,7 @@ export async function main(argv = process.argv.slice(2)) {
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   main().catch((error) => {
-    process.stderr.write(`${error.message}\n`);
+    process.stderr.write(`${renderRegistryError(error)}\n`);
     process.exitCode = 1;
   });
 }

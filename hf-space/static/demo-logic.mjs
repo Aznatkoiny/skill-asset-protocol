@@ -10,8 +10,8 @@ const FIXTURE_NAMES = Object.freeze(['evidence.json', 'public-demo-allocation.js
 const ATOMIC_PATTERN = /^(0|[1-9][0-9]*)$/;
 const ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
 const SHA_PATTERN = /^sha256:[0-9a-f]{64}$/;
-const MAX_FIXTURE_BYTES = 1_000_000;
-const MAX_LIVE_RESPONSE_BYTES = 65_536;
+const MAX_RESPONSE_BYTES = 65_536;
+const RESPONSE_DEADLINE_MILLISECONDS = 5_000;
 
 function deepFreeze(value) {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
@@ -43,22 +43,98 @@ function decodeJson(bytes, label) {
   }
 }
 
-async function responseBytes(response, label, maximumBytes, { requireOk = true } = {}) {
-  if (!response || typeof response.arrayBuffer !== 'function') {
+function abortable(operation, signal) {
+  if (signal.aborted) return Promise.reject(signal.reason ?? new Error('response deadline exceeded'));
+  return new Promise((resolve, reject) => {
+    const aborted = () => reject(signal.reason ?? new Error('response deadline exceeded'));
+    signal.addEventListener('abort', aborted, { once: true });
+    Promise.resolve(operation).then(
+      (value) => {
+        signal.removeEventListener('abort', aborted);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener('abort', aborted);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function responseBytes(response, label, { requireOk = true, signal } = {}) {
+  if (!response?.body || typeof response.body.getReader !== 'function') {
     throw new TypeError(`${label} response is invalid`);
   }
   if (requireOk && response.ok !== true) throw new TypeError(`${label} request failed`);
   const contentLength = response.headers?.get?.('content-length');
   if (contentLength != null && contentLength !== '') {
-    if (!ATOMIC_PATTERN.test(contentLength) || Number(contentLength) > maximumBytes) {
+    if (!ATOMIC_PATTERN.test(contentLength) || Number(contentLength) > MAX_RESPONSE_BYTES) {
       throw new TypeError(`${label} response is too large`);
     }
   }
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.byteLength === 0 || bytes.byteLength > maximumBytes) {
-    throw new TypeError(`${label} response is too large`);
+  const reader = response.body.getReader();
+  const chunks = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await abortable(reader.read(), signal);
+      if (done) break;
+      if (!(value instanceof Uint8Array)) throw new TypeError(`${label} response chunk is invalid`);
+      if (value.byteLength > MAX_RESPONSE_BYTES - totalBytes) {
+        throw new TypeError(`${label} response is too large`);
+      }
+      chunks.push(Uint8Array.from(value));
+      totalBytes += value.byteLength;
+    }
+  } catch (error) {
+    try {
+      Promise.resolve(reader.cancel?.(error)).catch(() => {});
+    } catch {
+      // The original bounded-read error is authoritative.
+    }
+    throw error;
+  } finally {
+    reader.releaseLock?.();
+  }
+  if (totalBytes === 0) {
+    throw new TypeError(`${label} response is empty`);
+  }
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
   }
   return bytes;
+}
+
+async function fetchResponseBytes(
+  fetchImpl,
+  url,
+  fetchOptions,
+  label,
+  { requireOk = true, deadlineMilliseconds = RESPONSE_DEADLINE_MILLISECONDS } = {},
+) {
+  if (!Number.isInteger(deadlineMilliseconds) || deadlineMilliseconds <= 0) {
+    throw new TypeError('response deadline must be a positive integer');
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort(new Error(`${label} response deadline exceeded`));
+  }, deadlineMilliseconds);
+  try {
+    const response = await abortable(fetchImpl(url, {
+      ...fetchOptions,
+      signal: controller.signal,
+    }), controller.signal);
+    const bytes = await responseBytes(response, label, { requireOk, signal: controller.signal });
+    return Object.freeze({ bytes, status: response.status });
+  } catch (error) {
+    if (!controller.signal.aborted) controller.abort(error);
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function sha256(bytes, cryptoImpl) {
@@ -142,11 +218,11 @@ export async function loadPackagedFixtures({ fetchImpl, cryptoImpl }) {
     cache: 'no-store',
     credentials: 'omit',
   });
-  const integrityResponse = await fetchImpl(LOCAL_FIXTURE_URLS[0], fetchOptions);
-  const integrityBytes = await responseBytes(
-    integrityResponse,
+  const { bytes: integrityBytes } = await fetchResponseBytes(
+    fetchImpl,
+    LOCAL_FIXTURE_URLS[0],
+    fetchOptions,
     'fixture-integrity.json',
-    MAX_FIXTURE_BYTES,
   );
   const integrity = validateIntegrityManifest(decodeJson(integrityBytes, 'fixture-integrity.json'));
   const values = Object.create(null);
@@ -155,8 +231,7 @@ export async function loadPackagedFixtures({ fetchImpl, cryptoImpl }) {
     ['evidence.json', LOCAL_FIXTURE_URLS[2]],
   ];
   for (const [fileName, url] of fixtureRequests) {
-    const response = await fetchImpl(url, fetchOptions);
-    const bytes = await responseBytes(response, fileName, MAX_FIXTURE_BYTES);
+    const { bytes } = await fetchResponseBytes(fetchImpl, url, fetchOptions, fileName);
     const expected = integrity.files[fileName];
     if (bytes.byteLength !== expected.bytes || await sha256(bytes, cryptoImpl) !== expected.sha256) {
       throw new TypeError(`packaged fixture integrity mismatch: ${fileName}`);
@@ -367,24 +442,28 @@ function renderLiveResult(documentObject, output, result) {
   }
 }
 
-async function fetchLiveOffer(fetchImpl) {
+export async function fetchLiveOffer(
+  fetchImpl,
+  { deadlineMilliseconds = RESPONSE_DEADLINE_MILLISECONDS } = {},
+) {
   try {
-    const response = await fetchImpl(LIVE_ENDPOINT, {
+    const fetchOptions = {
       method: 'POST',
       redirect: 'error',
       cache: 'no-store',
       credentials: 'omit',
       headers: { 'content-type': 'application/json', accept: 'application/json' },
       body: JSON.stringify({ input: 'help me tighten this prompt' }),
-    });
-    const bytes = await responseBytes(
-      response,
+    };
+    const { bytes, status } = await fetchResponseBytes(
+      fetchImpl,
+      LIVE_ENDPOINT,
+      fetchOptions,
       'live endpoint',
-      MAX_LIVE_RESPONSE_BYTES,
-      { requireOk: false },
+      { requireOk: false, deadlineMilliseconds },
     );
     const body = decodeJson(bytes, 'live endpoint');
-    return validateLive402(response.status, body);
+    return validateLive402(status, body);
   } catch {
     return invalid402(null);
   }

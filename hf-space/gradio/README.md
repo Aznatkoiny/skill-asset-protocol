@@ -13,6 +13,8 @@ license: apache-2.0
 
 # Skill Asset Protocol — verified accounting demo
 
+> **PROPOSED / NONCANONICAL:** The employer-funded internal Invocation-award model is pending explicit approval.
+
 This standalone Gradio root is a research demo for the compensation,
 attribution, and metering layer for authored AI Skills. It defaults to the
 terminal-product **Intra-org** scenario. **Education** is deferred after free

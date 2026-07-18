@@ -50,11 +50,23 @@ function cspAllows(policy, directive, rawUrl, documentOrigin) {
 
 function response(value, status = 200) {
   const bytes = Buffer.isBuffer(value) ? value : Buffer.from(JSON.stringify(value));
+  let read = false;
   return {
     ok: status >= 200 && status < 300,
     status,
-    headers: { get: () => String(bytes.length) },
-    arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+    headers: { get: (name) => name.toLowerCase() === 'content-length' ? String(bytes.length) : null },
+    body: {
+      getReader() {
+        return {
+          async read() {
+            if (read) return { done: true, value: undefined };
+            read = true;
+            return { done: false, value: bytes };
+          },
+          releaseLock() {},
+        };
+      },
+    },
   };
 }
 
@@ -75,8 +87,16 @@ test('static CSP permits only same-origin fixtures and the fixed live endpoint',
 
   assert.deepEqual(policy.get('default-src'), ["'none'"]);
   assert.deepEqual(policy.get('script-src'), ["'self'"]);
+  assert.deepEqual(policy.get('style-src'), ["'unsafe-inline'"]);
+  assert.deepEqual(policy.get('img-src'), ["'self'", 'data:']);
   assert.deepEqual(policy.get('font-src'), ["'none'"]);
   assert.deepEqual(policy.get('connect-src'), ["'self'", 'https://neverhandedover.com']);
+  assert.deepEqual(policy.get('base-uri'), ["'none'"]);
+  assert.deepEqual(policy.get('form-action'), ["'none'"]);
+  assert.deepEqual(policy.get('object-src'), ["'none'"]);
+  assert.deepEqual(policy.get('upgrade-insecure-requests'), []);
+  assert.equal(policy.size, 10);
+  assert.equal(policy.has('frame-ancestors'), false);
 
   assert.equal(cspAllows(policy, 'script-src', './demo-logic.mjs', documentOrigin), true);
   assert.equal(cspAllows(policy, 'script-src', 'https://attacker.example/code.js', documentOrigin), false);
@@ -87,6 +107,23 @@ test('static CSP permits only same-origin fixtures and the fixed live endpoint',
   }
   assert.equal(cspAllows(policy, 'connect-src', LIVE_ENDPOINT, documentOrigin), true);
   assert.equal(cspAllows(policy, 'connect-src', 'https://attacker.example/api', documentOrigin), false);
+});
+
+test('static framing labels the proposed model and delegates anti-framing to the host', async () => {
+  const html = await readFile(new URL('index.html', STATIC_ROOT), 'utf8');
+  const { document } = parseHTML(html);
+  assert.match(document.querySelector('header').textContent, /PROPOSED \/ NONCANONICAL/);
+  assert.match(
+    document.querySelector('header').textContent,
+    /employer-funded internal Invocation-award model is pending explicit approval/i,
+  );
+
+  const readme = await readFile(new URL('README.md', STATIC_ROOT), 'utf8');
+  assert.match(readme, /PROPOSED \/ NONCANONICAL/);
+  assert.match(readme, /employer-funded internal Invocation-award model is pending explicit approval/i);
+  assert.match(readme, /anti-framing must be supplied by the host/is);
+  assert.match(readme, /Content-Security-Policy.*HTTP\s+response header/is);
+  assert.match(readme, /frame-ancestors 'none'/);
 });
 
 test('actual HTML auto-mounts once and distinguishes valid 402 from JSON 200/500', async (t) => {

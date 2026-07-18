@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import re
+import time
+
 import httpx
 import gradio as gr
 
@@ -15,21 +19,51 @@ from demo_logic import (
 
 REQUEST_BODY = {"input": "help me tighten this prompt"}
 REQUEST_TIMEOUT = httpx.Timeout(5.0, connect=3.0)
+MAX_LIVE_RESPONSE_BYTES = 65_536
+LIVE_RESPONSE_DEADLINE_SECONDS = 5.0
+_CONTENT_LENGTH_PATTERN = re.compile(r"^(0|[1-9][0-9]*)$")
+
+
+def _read_streamed_json(response, deadline):
+    content_length = response.headers.get("content-length")
+    if content_length not in (None, ""):
+        if (
+            not isinstance(content_length, str)
+            or not _CONTENT_LENGTH_PATTERN.fullmatch(content_length)
+            or int(content_length) > MAX_LIVE_RESPONSE_BYTES
+        ):
+            raise ValueError("live endpoint response is too large")
+    body = bytearray()
+    for chunk in response.iter_bytes(chunk_size=8_192):
+        if time.monotonic() >= deadline:
+            raise TimeoutError("live endpoint response deadline exceeded")
+        if not isinstance(chunk, (bytes, bytearray, memoryview)):
+            raise TypeError("live endpoint response chunk is invalid")
+        if len(chunk) > MAX_LIVE_RESPONSE_BYTES - len(body):
+            raise ValueError("live endpoint response is too large")
+        body.extend(chunk)
+    if time.monotonic() >= deadline:
+        raise TimeoutError("live endpoint response deadline exceeded")
+    if not body:
+        raise ValueError("live endpoint response is empty")
+    return json.loads(bytes(body).decode("utf-8"))
 
 
 def check_live_402():
     """Read the fixed endpoint once; never follow redirects or use a cached offer."""
     try:
-        response = httpx.post(
+        deadline = time.monotonic() + LIVE_RESPONSE_DEADLINE_SECONDS
+        with httpx.stream(
+            "POST",
             LIVE_ENDPOINT,
             json=REQUEST_BODY,
             headers={"accept": "application/json"},
             timeout=REQUEST_TIMEOUT,
             follow_redirects=False,
-        )
-        body = response.json()
-        result = validate_live_402(response.status_code, body)
-    except (httpx.HTTPError, ValueError, TypeError):
+        ) as response:
+            body = _read_streamed_json(response, deadline)
+            result = validate_live_402(response.status_code, body)
+    except (httpx.HTTPError, UnicodeError, ValueError, TypeError, TimeoutError):
         return {
             "live": False,
             "status": None,
@@ -95,6 +129,8 @@ def build_demo():
     with gr.Blocks(title="Skill Asset Protocol — verified accounting demo") as blocks:
         gr.Markdown(
             "# Skill Asset Protocol\n\n"
+            "**PROPOSED / NONCANONICAL** — The employer-funded internal Invocation-award "
+            "model is pending explicit approval.\n\n"
             "A testnet-only accounting and HTTP 402 research demo. No real funds, "
             "wallet signing, payment, withdrawal, deployment, or publication occurs here."
         )
@@ -121,11 +157,16 @@ def build_demo():
             live_button.click(
                 check_live_402,
                 outputs=live_result,
-                api_name="check_live_402",
+                api_name=False,
+                api_visibility="private",
+                concurrency_limit=1,
+                concurrency_id="fixed-live-402-check",
+                queue=True,
+                trigger_mode="once",
             )
         with gr.Tab("Evidence boundaries"):
             gr.Markdown(evidence_markdown(EVIDENCE_FIXTURE))
-    return blocks
+    return blocks.queue(api_open=False, max_size=1, default_concurrency_limit=1)
 
 
 ALLOCATION_FIXTURE = load_allocation_fixture()

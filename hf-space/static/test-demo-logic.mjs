@@ -7,6 +7,7 @@ import { webcrypto } from 'node:crypto';
 import test from 'node:test';
 
 import {
+  fetchLiveOffer,
   loadPackagedFixtures,
   loadScenario,
   renderScenarioModel,
@@ -32,11 +33,32 @@ const VALID_402 = Object.freeze({
 });
 
 function response(bytes, status = 200) {
+  return streamedResponse([bytes], status);
+}
+
+function streamedResponse(chunks, status = 200, {
+  contentLength = String(chunks.reduce((total, chunk) => total + chunk.byteLength, 0)),
+  onRead = () => {},
+} = {}) {
+  let index = 0;
   return {
     ok: status >= 200 && status < 300,
     status,
-    headers: { get: () => String(bytes.length) },
-    arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+    headers: { get: (name) => name.toLowerCase() === 'content-length' ? contentLength : null },
+    body: {
+      getReader() {
+        return {
+          async read() {
+            onRead(index);
+            if (index >= chunks.length) return { done: true, value: undefined };
+            const value = chunks[index];
+            index += 1;
+            return { done: false, value };
+          },
+          releaseLock() {},
+        };
+      },
+    },
   };
 }
 
@@ -80,6 +102,7 @@ test('browser model renders exact kernel journal rows and conserves gross', asyn
 
   for (const scenario of allocation.scenarios) {
     const model = renderScenarioModel(allocation, scenario.id);
+    assert.equal(model.implementationNote, scenario.implementationNote);
     const entries = scenario.allocation.journalEntries;
     assert.equal(model.rows.length, entries.length);
     for (let index = 0; index < entries.length; index += 1) {
@@ -95,6 +118,49 @@ test('browser model renders exact kernel journal rows and conserves gross', asyn
   }
   const rendered = JSON.stringify(allocation).toLowerCase();
   for (const percentile of [`p${50}`, `p${95}`]) assert.equal(rendered.includes(percentile), false);
+});
+
+test('live reader caps chunked bodies and aborts a slow total response deadline', async () => {
+  let reads = 0;
+  const oversized = streamedResponse(
+    [Buffer.alloc(65_536), Buffer.from('x')],
+    402,
+    { contentLength: '', onRead: () => { reads += 1; } },
+  );
+  const oversizedResult = await fetchLiveOffer(async (_url, options) => {
+    assert.ok(options.signal instanceof AbortSignal);
+    return oversized;
+  });
+  assert.equal(oversizedResult.live, false);
+  assert.equal(reads, 2);
+
+  let deadlineSignal;
+  const slowResult = await fetchLiveOffer(async (_url, options) => {
+    deadlineSignal = options.signal;
+    return {
+      ok: false,
+      status: 402,
+      headers: { get: () => '' },
+      body: {
+        getReader() {
+          return {
+            read() {
+              return new Promise((resolve, reject) => {
+                if (deadlineSignal.aborted) reject(deadlineSignal.reason);
+                deadlineSignal.addEventListener('abort', () => reject(deadlineSignal.reason), {
+                  once: true,
+                });
+              });
+            },
+            releaseLock() {},
+          };
+        },
+      },
+    };
+  }, { deadlineMilliseconds: 5 });
+  assert.ok(deadlineSignal instanceof AbortSignal);
+  assert.equal(deadlineSignal.aborted, true);
+  assert.equal(slowResult.live, false);
 });
 
 test('fixture loader fetches only local packaged files and verifies raw hashes', async () => {
