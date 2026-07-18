@@ -7,6 +7,7 @@ import { MockLlmAdapter, LiveAnthropicAdapter } from './adapters.mjs';
 import { computeEconomics } from './economics.mjs';
 import { renderJson, renderMarkdown } from './reports.mjs';
 import { FIDELITY_THRESHOLD, RUBRIC_VERSION, scoreEvaluation } from './scoring.mjs';
+import { seededOrder } from './sweep.mjs';
 import { assessBenchmark } from './validity.mjs';
 
 const srcDir = path.dirname(fileURLToPath(import.meta.url));
@@ -71,6 +72,7 @@ function buildAdapter(mode, options) {
     return new MockLlmAdapter({
       transcript: options.mockTranscript ?? readJson('mock-transcript.json'),
       cloneSkillMd: fs.readFileSync(fixturePath('good-clone/SKILL.md'), 'utf8'),
+      outputFor: options.outputFor ?? null,
     });
   }
   return new LiveAnthropicAdapter({
@@ -89,12 +91,40 @@ function buildAdapter(mode, options) {
   });
 }
 
+export async function runTargetBenchmark({ adapter, heldoutFixtures, threshold = FIDELITY_THRESHOLD }) {
+  const repoInventory = readJson('repo-inventory.json');
+  const executorSettings = readJson('executor-settings.json');
+  const targetText = fs.readFileSync(
+    path.join(repoRoot, '.claude/skills/optimizing-claude-code-prompts/SKILL.md'),
+    'utf8',
+  );
+  const referenceText = fs.readFileSync(
+    path.join(repoRoot, '.claude/skills/optimizing-claude-code-prompts/references/claude-code-prompting-guide.md'),
+    'utf8',
+  );
+  const sharedExecutor = { repoInventory, executorSettings };
+  const targetOutputs = await collect(
+    adapter,
+    heldoutFixtures,
+    'target-heldout',
+    (fixture) => ({
+      input: fixture.input,
+      targetSkill: targetText,
+      reference: referenceText,
+      ...sharedExecutor,
+    }),
+  );
+  const targetScore = scoreEvaluation(targetOutputs, heldoutFixtures, threshold);
+  const benchmark = assessBenchmark({ threshold, target: targetScore });
+  return { benchmark, targetScore };
+}
+
 export async function runExperiment(options = {}) {
   const mode = options.mode ?? (process.env.MOCK_LLM === '1' ? 'mock' : 'live');
   if (!['mock', 'live'].includes(mode)) throw new Error('mode must be mock or live');
-  const trainFixtures = readJson('train.json');
-  const heldoutFixtures = readJson('heldout.json');
-  const v2Fixtures = readJson('v2-heldout.json');
+  const trainFixtures = options.trainFixtures ?? readJson('train.json');
+  const heldoutFixtures = options.heldoutFixtures ?? readJson('heldout.json');
+  const v2Fixtures = options.v2Fixtures ?? readJson('v2-heldout.json');
   const repoInventory = readJson('repo-inventory.json');
   const executorSettings = readJson('executor-settings.json');
   const evolutionOverlay = readJson('evolution-v2.json');
@@ -102,7 +132,10 @@ export async function runExperiment(options = {}) {
   if (!Number.isInteger(N) || N <= 0 || N > trainFixtures.length) {
     throw new Error(`N must be an integer from 1 to ${trainFixtures.length}`);
   }
-  const selectedTrain = trainFixtures.slice(0, N);
+  const orderedTrain = options.pairOrderSeed === undefined
+    ? trainFixtures
+    : seededOrder(trainFixtures, options.pairOrderSeed);
+  const selectedTrain = orderedTrain.slice(0, N);
   const targetFile = path.join(repoRoot, '.claude/skills/optimizing-claude-code-prompts/SKILL.md');
   const referenceFile = path.join(repoRoot, '.claude/skills/optimizing-claude-code-prompts/references/claude-code-prompting-guide.md');
   const targetText = fs.readFileSync(targetFile, 'utf8');
@@ -125,6 +158,7 @@ export async function runExperiment(options = {}) {
 
   const estimatedRequests = N + 1 + heldoutFixtures.length * 3 + v2Fixtures.length * 2;
   const adapter = buildAdapter(mode, { ...options, N, estimatedRequests });
+  const recordStart = adapter.records.length;
   const sharedExecutor = { repoInventory, executorSettings };
   const acquisitionPairs = [];
   for (const fixture of selectedTrain) {
@@ -142,7 +176,11 @@ export async function runExperiment(options = {}) {
     instructions: 'Author one valid SKILL.md that reproduces the demonstrated input-to-output capability. Use only the supplied examples. Return the raw file content only — no code fences, no preamble — starting with YAML frontmatter exactly like:\n---\nname: <kebab-case-slug>\ndescription: <one line describing when to use the skill>\n---\nfollowed by the markdown body.',
     pairs: acquisitionPairs,
   };
-  const distilled = await adapter.invoke({ kind: 'distill', payload: distillationPayload });
+  const distilled = await adapter.invoke({
+    kind: 'distill',
+    requestedDistillationSeed: options.requestedDistillationSeed,
+    payload: distillationPayload,
+  });
   // Persist the raw distillation output BEFORE validation so a failed live run
   // leaves evidence instead of discarding paid model output.
   const rawDumpDir = path.resolve(options.outputDir ?? path.join(spikeRoot, 'runs', mode));
@@ -169,10 +207,11 @@ export async function runExperiment(options = {}) {
   const scoringA = JSON.stringify({ target: scoreEvaluation(targetOutputs, heldoutFixtures), clone: scoreEvaluation(cloneOutputs, heldoutFixtures) });
   const scoringB = JSON.stringify({ target: scoreEvaluation(targetOutputs, heldoutFixtures), clone: scoreEvaluation(cloneOutputs, heldoutFixtures) });
 
-  const acquisitionProviderUsd = sumCosts(adapter.records, ['target-train']);
-  const distillationProviderUsd = sumCosts(adapter.records, ['distill']);
+  const runRecords = adapter.records.slice(recordStart);
+  const acquisitionProviderUsd = sumCosts(runRecords, ['target-train']);
+  const distillationProviderUsd = sumCosts(runRecords, ['distill']);
   const evaluationKinds = ['target-heldout', 'clone-heldout', 'bad-clone-heldout', 'target-v2-heldout', 'clone-v2-heldout'];
-  const measurementEvaluationUsd = sumCosts(adapter.records, evaluationKinds);
+  const measurementEvaluationUsd = sumCosts(runRecords, evaluationKinds);
   const economics = computeEconomics({
     N,
     invocationPriceUsd,
@@ -188,11 +227,11 @@ export async function runExperiment(options = {}) {
       benchmarkEvaluationProviderUsd: measurementEvaluationUsd,
     },
   });
-  const trainRecords = adapter.records.filter((item) => item.kind === 'target-train');
-  const distillRecord = adapter.records.find((item) => item.kind === 'distill');
+  const trainRecords = runRecords.filter((item) => item.kind === 'target-train');
+  const distillRecord = runRecords.find((item) => item.kind === 'distill');
   const sequentialBuildMs = rounded(trainRecords.reduce((sum, item) => sum + item.latencyMs, 0) + distillRecord.latencyMs);
   const parallelAcquisitionLowerBoundMs = rounded(Math.max(...trainRecords.map((item) => item.latencyMs)) + distillRecord.latencyMs);
-  const completeProviderUsage = adapter.records.every((item) => (
+  const completeProviderUsage = runRecords.every((item) => (
     Number.isFinite(item.normalizedUsage.inputTokens)
     && Number.isFinite(item.normalizedUsage.outputTokens)
     && Number.isFinite(item.costUsd)
@@ -220,7 +259,15 @@ export async function runExperiment(options = {}) {
       skill: { path: '.claude/skills/optimizing-claude-code-prompts/SKILL.md', sha256: sha256(targetText) },
       reference: { path: '.claude/skills/optimizing-claude-code-prompts/references/claude-code-prompting-guide.md', sha256: sha256(referenceText) },
     },
-    dataset: { evidenceLabel: mode === 'mock' ? 'SYNTHETIC' : 'SYNTHETIC FIXTURES + MEASURED OUTPUTS', N, H: heldoutFixtures.length, train: datasetTrain, heldout: datasetHeldout, disjoint },
+    dataset: {
+      evidenceLabel: mode === 'mock' ? 'SYNTHETIC' : 'SYNTHETIC FIXTURES + MEASURED OUTPUTS',
+      fixtureSet: options.fixtureSet ?? 'v1',
+      N,
+      H: heldoutFixtures.length,
+      train: datasetTrain,
+      heldout: datasetHeldout,
+      disjoint,
+    },
     isolation: {
       distillationPairCount: acquisitionPairs.length,
       distillationPayloadSha256: sha256(JSON.stringify(distillationPayload)),
@@ -228,6 +275,19 @@ export async function runExperiment(options = {}) {
       targetAndCloneSharedContextHash: sha256(JSON.stringify(sharedExecutor)),
     },
     generatedClone: { sha256: sha256(cloneSkillMd), validSkillMd: true },
+    seedContract: {
+      replicateId: options.replicateId ?? null,
+      pairOrderSeed: options.pairOrderSeed ?? null,
+      pairOrderSeedStatus: options.pairOrderSeed === undefined ? 'not_requested' : 'honored_locally',
+      requestedDistillationSeed: options.requestedDistillationSeed ?? null,
+      appliedDistillationSeed: distilled.seed?.appliedSeed ?? null,
+      distillationSeedStatus: distilled.seed?.status
+        ?? (options.requestedDistillationSeed === undefined ? 'not_requested' : 'unsupported'),
+      distillationSeedMechanism: distilled.seed?.mechanism
+        ?? (options.requestedDistillationSeed === undefined
+          ? 'no_seed_requested'
+          : 'provider_seed_not_supported_by_adapter'),
+    },
     benchmark,
     fidelity: {
       evidenceLabel: mode === 'mock' ? 'SYNTHETIC' : 'MEASURED AGAINST DETERMINISTIC RUBRIC',
@@ -275,16 +335,16 @@ export async function runExperiment(options = {}) {
       zeroPriceProbe: economics.zeroPriceProbe,
       conclusionSuppressed: !benchmark.economicsConclusionAllowed,
     },
-    usage: { evidenceLabel: mode === 'mock' ? 'SYNTHETIC' : `Provider usage ${providerUsageEvidence}`, raw: adapter.records, normalized: normalizedUsage(adapter.records) },
+    usage: { evidenceLabel: mode === 'mock' ? 'SYNTHETIC' : `Provider usage ${providerUsageEvidence}`, raw: runRecords, normalized: normalizedUsage(runRecords) },
     pricing: { evidenceLabel: mode === 'mock' ? 'SYNTHETIC' : 'OPERATOR-SUPPLIED', ...adapter.pricing },
     timing: {
       evidenceLabel: mode === 'mock' ? 'SYNTHETIC' : 'MEASURED + DERIVED LOWER BOUND',
-      requestLatencies: adapter.records.map((item) => ({ requestId: item.requestId, kind: item.kind, caseId: item.caseId, latencyMs: item.latencyMs, evidenceLabel: item.evidenceLabel })),
+      requestLatencies: runRecords.map((item) => ({ requestId: item.requestId, kind: item.kind, caseId: item.caseId, latencyMs: item.latencyMs, evidenceLabel: item.evidenceLabel })),
       acquisitionSequentialMs: rounded(trainRecords.reduce((sum, item) => sum + item.latencyMs, 0)),
       distillationMs: distillRecord.latencyMs,
       sequentialBuildMs,
       parallelAcquisitionLowerBoundMs,
-      evaluationMs: rounded(adapter.records.filter((item) => evaluationKinds.includes(item.kind)).reduce((sum, item) => sum + item.latencyMs, 0)),
+      evaluationMs: rounded(runRecords.filter((item) => evaluationKinds.includes(item.kind)).reduce((sum, item) => sum + item.latencyMs, 0)),
       requiredUpdateCadence: {
         label: 'HYPOTHESIS/EXTRAPOLATION',
         statement: 'A static synthetic overlay gives no calendar cadence; dated live Skill revisions and repeated clone freezes are required.',
