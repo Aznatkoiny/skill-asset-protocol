@@ -153,9 +153,10 @@ totals, kernel journal entries, and absence of an external settlement.
 
 Every verifier accepts only a canonical Ed25519 SPKI public key. RSA, private-key PEM,
 noncanonical PEM, and a public PEM with appended material fail closed; only canonical
-public PEM is retained in engine state. Receipt and statement verifier trust maps must
-be ordinary plain objects, and a signer ID resolves only through an own map entry;
-inherited or prototype-polluted keys are never trusted. Engine provisioning signs a
+public PEM is retained in engine state. Finance, identity, manager, receipt, and
+statement verifier trust maps must be ordinary plain objects, and a signer ID resolves
+only through an own map entry; inherited or prototype-polluted keys are never trusted.
+Engine provisioning signs a
 random, domain-separated challenge and verifies it with the configured receipt public
 key before any Invocation can start. Each receipt is still independently verified,
 its caller-supplied hash is recomputed over the exact strict signed-receipt schema,

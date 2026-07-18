@@ -41,6 +41,21 @@ function requireString(value, label) {
   if (typeof value !== 'string' || value.length === 0) throw new Error(`${label} must be non-empty`);
 }
 
+function trustedSignerKey(map, signerId, label) {
+  if (map === null || typeof map !== 'object' || Array.isArray(map)
+      || Object.getPrototypeOf(map) !== Object.prototype) {
+    throw new Error(`${label} trust map must be a plain object`);
+  }
+  if (!Object.hasOwn(map, signerId)) {
+    throw new Error(`${label} is not provisioned`);
+  }
+  const configuredKey = map[signerId];
+  if (typeof configuredKey !== 'string' || configuredKey.length === 0) {
+    throw new Error(`${label} is not provisioned`);
+  }
+  return normalizeEd25519PublicKey(configuredKey, `${label} ${signerId}`);
+}
+
 function decodeSignature(value, label) {
   if (typeof value !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) {
     throw new Error(`${label} signature must be canonical base64`);
@@ -191,14 +206,7 @@ export function verifyPrincipalAttestation(signed, {
   if (!policy.permittedIdentitySignerIds.includes(payload.identitySignerId)) {
     throw new Error('identity signer is not permitted by policy');
   }
-  const configuredKey = identitySigners[payload.identitySignerId];
-  if (typeof configuredKey !== 'string' || configuredKey.length === 0) {
-    throw new Error('identity signer is not provisioned');
-  }
-  const key = normalizeEd25519PublicKey(
-    configuredKey,
-    `identity signer ${payload.identitySignerId}`,
-  );
+  const key = trustedSignerKey(identitySigners, payload.identitySignerId, 'identity signer');
   if (!policy.permittedInitiatingPrincipalIds.includes(payload.principalId)) {
     throw new Error('initiating principal is not permitted by policy');
   }
@@ -285,14 +293,7 @@ export function verifyManagerApproval(approval, {
   if (!policy.permittedManagerSignerIds.includes(payload.managerSignerId)) {
     throw new Error('manager signer is not permitted by policy');
   }
-  const configuredKey = managerSigners[payload.managerSignerId];
-  if (typeof configuredKey !== 'string' || configuredKey.length === 0) {
-    throw new Error('manager signer is not provisioned');
-  }
-  const trustedKey = normalizeEd25519PublicKey(
-    configuredKey,
-    `manager signer ${payload.managerSignerId}`,
-  );
+  const trustedKey = trustedSignerKey(managerSigners, payload.managerSignerId, 'manager signer');
   if (payload.invocationId !== quote.invocationId
       || payload.creatorId !== quote.creatorId
       || payload.policyId !== policy.policyId

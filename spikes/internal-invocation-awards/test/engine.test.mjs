@@ -12,6 +12,8 @@ import {
   signManagerApproval,
   signPrincipalAttestation,
   verifyCredential,
+  verifyManagerApproval,
+  verifyPrincipalAttestation,
 } from '../src/credentials.mjs';
 import {
   authorizeInternalInvocation,
@@ -409,6 +411,27 @@ test('principal attestation trust, binding, and nonce replay fail closed', async
     /attestation nonce already consumed/,
   );
   assert.equal(Object.keys(fx.store.snapshot().reservations).length, 1);
+});
+
+test('direct signer-map verifiers reject inherited identity and manager entries', () => {
+  const fx = fixture();
+  const q = makeQuote(fx.activePolicy, 'inherited-verifier-keys');
+  assert.throws(() => verifyPrincipalAttestation(principalAttestation(fx, q), {
+    policy: fx.activePolicy,
+    quote: q,
+    identitySigners: Object.create({ 'megacorp-identity': publicPem(fx.identity) }),
+    now: NOW,
+  }), /identity signer trust map must be a plain object/);
+
+  const selfQuote = makeQuote(fx.activePolicy, 'inherited-manager-key', {
+    initiatingPrincipalId: 'sam',
+  });
+  assert.throws(() => verifyManagerApproval(managerApproval(fx, selfQuote), {
+    policy: fx.activePolicy,
+    quote: selfQuote,
+    managerSigners: Object.create({ 'manager-alex': publicPem(fx.manager) }),
+    now: NOW,
+  }), /manager signer trust map must be a plain object/);
 });
 
 test('successful execution atomically commits policy-bound signed receipt and exact gross', async () => {
