@@ -824,7 +824,7 @@ export function createInvocationJournal({
     return copy(records.get(key));
   }
 
-  function markExternalPaymentSigned(key, input) {
+  function claimExternalPaymentSigned(key, input) {
     refreshFromAuthority();
     const record = requireRecord(records, key);
     const reference = canonicalBytes32(input.settlementReference, 'settlementReference');
@@ -833,15 +833,26 @@ export function createInvocationJournal({
       if (record.payment.settlementReference !== reference || record.payment.payer !== normalizedPayer) {
         throw new Error('idempotency key already binds a different signed payment');
       }
-      return copy(record);
+      return { claimed: false, record: copy(record) };
     }
     if (record.payment.state !== 'offered') {
       throw new Error(`markExternalPaymentSigned cannot run from payment state '${record.payment.state}'`);
     }
     assertUnique(settlementReferences, reference, key, 'settlement reference');
-    append('payment.signed', key, { settlementReference: reference, payer: normalizedPayer });
-    return copy(records.get(key));
+    try {
+      append('payment.signed', key, { settlementReference: reference, payer: normalizedPayer });
+      return { claimed: true, record: copy(records.get(key)) };
+    } catch (error) {
+      if (error.code !== 'JOURNAL_CONFLICT') throw error;
+      const winner = requireRecord(records, key);
+      if (winner.payment.settlementReference !== reference || winner.payment.payer !== normalizedPayer) {
+        throw new Error('idempotency key concurrently bound a different signed payment', { cause: error });
+      }
+      return { claimed: false, record: copy(winner) };
+    }
   }
+
+  const markExternalPaymentSigned = (key, input) => claimExternalPaymentSigned(key, input).record;
 
   function markExternalPaymentSettled(key, input) {
     refreshFromAuthority();
@@ -1014,6 +1025,7 @@ export function createInvocationJournal({
   return Object.freeze({
     requestInvocation,
     offerExternalPayment,
+    claimExternalPaymentSigned,
     markExternalPaymentSigned,
     markExternalPaymentSettled,
     markExternalPaymentUnresolved,

@@ -183,6 +183,17 @@ test('settlement and transaction indexes canonicalize and reject collisions', ()
   }), /settlement reference already binds/);
 });
 
+test('payment authorization claim distinguishes the first signer from exact retries', () => {
+  const journal = fixture();
+  offer(journal);
+  const first = journal.claimExternalPaymentSigned(declaration.idempotencyKey, { settlementReference, payer });
+  const retry = journal.claimExternalPaymentSigned(declaration.idempotencyKey, { settlementReference, payer });
+  assert.equal(first.claimed, true);
+  assert.equal(retry.claimed, false);
+  assert.equal(retry.record.payment.state, 'signed');
+  assert.equal(journal.events.filter((event) => event.type === 'payment.signed').length, 1);
+});
+
 function temporaryAuthority(prefix = 'collar-journal-') {
   const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
   return {
