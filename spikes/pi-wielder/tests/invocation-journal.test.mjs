@@ -1,0 +1,471 @@
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import test from 'node:test';
+
+import {
+  canonicalJson,
+  createInvocationJournal,
+  createReceiptSigner,
+  loadOrCreateReceiptSigner,
+  verifySignedReceipt,
+} from '../src/invocation-journal.mjs';
+
+const payer = `0x${'1'.repeat(40)}`;
+const payTo = `0x${'d'.repeat(40)}`;
+const settlementReference = `0x${'2'.repeat(64)}`;
+const txHash = `0x${'3'.repeat(64)}`;
+
+const declaration = Object.freeze({
+  idempotencyKey: 'idem-0001',
+  mode: 'external',
+  skillId: 'skill-a',
+  skillVersionHash: `sha256:${'a'.repeat(64)}`,
+  requestHash: `sha256:${'b'.repeat(64)}`,
+  creatorId: 'creator-a',
+  beneficiaryId: null,
+});
+
+const requirements = Object.freeze({
+  scheme: 'exact',
+  network: 'base-sepolia',
+  maxAmountRequired: '250000',
+  resource: 'http://seller.test/invoke/skill-a',
+  description: 'Invoke skill-a',
+  mimeType: 'application/json',
+  payTo,
+  maxTimeoutSeconds: 60,
+  asset: '0x036cbd53842c5426634e7929541ec2318f3dcf7e',
+  extra: {
+    name: 'USDC',
+    version: '2',
+    requestHash: declaration.requestHash,
+    quoteId: `sha256:${'c'.repeat(64)}`,
+    issuedAt: '2026-07-17T12:00:00.000Z',
+    expiresAt: '2026-07-17T12:01:00.000Z',
+  },
+});
+
+const quote = Object.freeze({
+  quoteId: requirements.extra.quoteId,
+  amountAtomic: requirements.maxAmountRequired,
+  currency: 'USDC',
+  network: requirements.network,
+  asset: requirements.asset,
+  payTo: requirements.payTo,
+  resource: requirements.resource,
+  requestHash: requirements.extra.requestHash,
+  requirementsHash: `sha256:${'e'.repeat(64)}`,
+  expiresAt: requirements.extra.expiresAt,
+  requirements,
+});
+
+function fixture(overrides = {}) {
+  let tick = 0;
+  return createInvocationJournal({
+    now: () => new Date(Date.UTC(2026, 6, 17, 12, 0, tick++)).toISOString(),
+    createId: () => 'inv-0001',
+    signer: createReceiptSigner(),
+    ...overrides,
+  });
+}
+
+const trustFor = (journal) => ({
+  publicKeyPem: journal.signingPublicKeyPem,
+  keyId: journal.signingKeyId,
+});
+
+function offer(journal, input = declaration) {
+  journal.requestInvocation(input);
+  journal.offerExternalPayment(input.idempotencyKey, quote);
+}
+
+function settle(journal, input = declaration) {
+  offer(journal, input);
+  journal.markExternalPaymentSigned(input.idempotencyKey, { settlementReference, payer });
+  journal.markExternalPaymentSettled(input.idempotencyKey, {
+    settlementReference,
+    txHash,
+    payer,
+  });
+}
+
+function pendingFailureAccounting() {
+  return {
+    grossAtomic: '250000',
+    allocationState: 'pending_cogs_reconciliation',
+    holderCredits: [],
+    ancestorCredits: [],
+    journalEntries: [{
+      category: 'unresolved-execution-accounting',
+      debitAccountId: 'wielder:external-gross',
+      creditAccountId: 'hold:execution-accounting-reconciliation',
+      amountAtomic: '250000',
+    }],
+  };
+}
+
+test('exact retries are no-ops and conflicting idempotency reuse fails closed', () => {
+  const journal = fixture();
+  const first = journal.requestInvocation(declaration);
+  assert.deepEqual(journal.requestInvocation(declaration), first);
+  assert.equal(journal.events.length, 1);
+  assert.throws(() => journal.requestInvocation({
+    ...declaration,
+    skillVersionHash: `sha256:${'f'.repeat(64)}`,
+  }), /idempotency key already binds/);
+  assert.equal(journal.events.length, 1);
+});
+
+test('a settled execution failure keeps its transaction, full-gross hold, and HTTP status', () => {
+  const journal = fixture();
+  settle(journal);
+  const claim = journal.startExecution(declaration.idempotencyKey);
+  journal.finishExecution(declaration.idempotencyKey, {
+    executionAttemptId: claim.record.execution.executionAttemptId,
+    outcome: 'failed',
+    failureClass: 'UPSTREAM_500',
+    message: 'provider returned HTTP 500',
+    outcomeHash: null,
+    httpStatus: 500,
+    accounting: pendingFailureAccounting(),
+  });
+  const bundle = journal.issueReceipt(declaration.idempotencyKey);
+  assert.equal(bundle.receipt.payment.state, 'settled');
+  assert.equal(bundle.receipt.payment.txHash, txHash);
+  assert.equal(bundle.receipt.execution.state, 'failed');
+  assert.equal(bundle.receipt.execution.httpStatus, 500);
+  assert.deepEqual(bundle.receipt.accounting, pendingFailureAccounting());
+  assert.equal(verifySignedReceipt(bundle, trustFor(journal)), true);
+});
+
+test('an unresolved settlement reconciles once by its payment reference', () => {
+  const journal = fixture();
+  offer(journal);
+  journal.markExternalPaymentSigned(declaration.idempotencyKey, { settlementReference, payer });
+  journal.markExternalPaymentUnresolved(declaration.idempotencyKey, { reason: 'facilitator response lost' });
+  const before = journal.events.length;
+  journal.reconcileExternalSettlement({ settlementReference, txHash, payer });
+  journal.reconcileExternalSettlement({ settlementReference, txHash, payer });
+  assert.equal(journal.events.length, before + 1);
+  assert.equal(journal.getBySettlementReference(settlementReference).payment.state, 'settled');
+  assert.equal(journal.getByTxHash(txHash).idempotencyKey, declaration.idempotencyKey);
+});
+
+test('settlement and transaction indexes canonicalize and reject collisions', () => {
+  const journal = fixture();
+  const second = { ...declaration, idempotencyKey: 'idem-0002', requestHash: `sha256:${'9'.repeat(64)}` };
+  offer(journal);
+  journal.markExternalPaymentSigned(declaration.idempotencyKey, {
+    settlementReference: settlementReference.toUpperCase().replace('0X', '0x'),
+    payer: payer.toUpperCase().replace('0X', '0x'),
+  });
+  assert.equal(journal.getByIdempotencyKey(declaration.idempotencyKey).payment.payer, payer);
+  offer(journal, second);
+  assert.throws(() => journal.markExternalPaymentSigned(second.idempotencyKey, {
+    settlementReference,
+    payer,
+  }), /settlement reference already binds/);
+});
+
+function temporaryAuthority(prefix = 'collar-journal-') {
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+  return {
+    directory,
+    filePath: path.join(directory, 'events.jsonl'),
+    signingKeyPath: path.join(directory, 'receipt-key.pem'),
+  };
+}
+
+test('JSONL replay reconstructs a terminal record and refuses rewritten signed history', () => {
+  const { filePath, signingKeyPath } = temporaryAuthority();
+  const journal = createInvocationJournal({ filePath, signingKeyPath, createId: () => 'inv-persistent' });
+  settle(journal);
+  const claim = journal.startExecution(declaration.idempotencyKey);
+  journal.finishExecution(declaration.idempotencyKey, {
+    executionAttemptId: claim.record.execution.executionAttemptId,
+    outcome: 'succeeded',
+    failureClass: null,
+    message: null,
+    outcomeHash: `sha256:${'7'.repeat(64)}`,
+    httpStatus: 200,
+    accounting: { grossAtomic: '250000', allocationState: 'finalized', holderCredits: [], ancestorCredits: [], journalEntries: [] },
+  });
+  const original = journal.issueReceipt(declaration.idempotencyKey);
+  const reopened = createInvocationJournal({ filePath, signingKeyPath });
+  assert.deepEqual(reopened.getByIdempotencyKey(declaration.idempotencyKey), journal.getByIdempotencyKey(declaration.idempotencyKey));
+  assert.deepEqual(reopened.issueReceipt(declaration.idempotencyKey), original);
+  assert.equal(fs.statSync(filePath).mode & 0o777, 0o600);
+  assert.equal(fs.statSync(signingKeyPath).mode & 0o777, 0o600);
+
+  const lines = fs.readFileSync(filePath, 'utf8').trimEnd().split('\n');
+  const event = JSON.parse(lines[0]);
+  event.data.creatorId = 'attacker';
+  const { eventHash: ignoredHash, eventSignature: preservedSignature, ...unsigned } = event;
+  event.eventHash = crypto.createHash('sha256').update(canonicalJson(unsigned)).digest('hex');
+  event.eventSignature = preservedSignature;
+  lines[0] = JSON.stringify(event);
+  fs.writeFileSync(filePath, `${lines.join('\n')}\n`, { mode: 0o600 });
+  assert.throws(() => createInvocationJournal({ filePath, signingKeyPath }), /event signature mismatch/);
+});
+
+test('persistent authority rejects checkout, symlink, relative, non-file, and broad-permission paths', () => {
+  const { directory, filePath, signingKeyPath } = temporaryAuthority('collar-paths-');
+  const journal = createInvocationJournal({ filePath, signingKeyPath });
+  journal.requestInvocation(declaration);
+  fs.chmodSync(filePath, 0o644);
+  assert.throws(() => createInvocationJournal({ filePath, signingKeyPath }), /exactly 0600/);
+  fs.chmodSync(filePath, 0o600);
+  const keyLink = path.join(directory, 'key-link.pem');
+  fs.symlinkSync(signingKeyPath, keyLink);
+  assert.throws(() => createInvocationJournal({ filePath: path.join(directory, 'other.jsonl'), signingKeyPath: keyLink }), /non-symlink/);
+  const directoryTarget = path.join(directory, 'not-a-file');
+  fs.mkdirSync(directoryTarget);
+  assert.throws(() => createInvocationJournal({ filePath: directoryTarget, signingKeyPath }), /regular non-symlink file/);
+  assert.throws(() => createInvocationJournal({ filePath: 'relative.jsonl', signingKeyPath }), /explicit absolute/);
+  assert.throws(() => createInvocationJournal({
+    filePath: fileURLToPath(new URL('../unsafe-journal.jsonl', import.meta.url)),
+    signingKeyPath,
+  }), /outside the repository checkout/);
+});
+
+test('a receipt cannot authenticate itself and tampering invalidates it', () => {
+  const journal = fixture();
+  settle(journal);
+  const claim = journal.startExecution(declaration.idempotencyKey);
+  journal.finishExecution(declaration.idempotencyKey, {
+    executionAttemptId: claim.record.execution.executionAttemptId,
+    outcome: 'failed', failureClass: 'FAULT', message: 'fault', outcomeHash: null,
+    httpStatus: 500, accounting: pendingFailureAccounting(),
+  });
+  const bundle = journal.issueReceipt(declaration.idempotencyKey);
+  const tampered = structuredClone(bundle);
+  tampered.receipt.payment.txHash = `0x${'9'.repeat(64)}`;
+  assert.equal(verifySignedReceipt(tampered, trustFor(journal)), false);
+  const attacker = fixture({ createId: () => 'inv-attacker' });
+  settle(attacker);
+  const attackerClaim = attacker.startExecution(declaration.idempotencyKey);
+  attacker.finishExecution(declaration.idempotencyKey, {
+    executionAttemptId: attackerClaim.record.execution.executionAttemptId,
+    outcome: 'failed', failureClass: 'FAULT', message: 'fault', outcomeHash: null,
+    httpStatus: 500, accounting: pendingFailureAccounting(),
+  });
+  assert.equal(verifySignedReceipt(attacker.issueReceipt(declaration.idempotencyKey), trustFor(journal)), false);
+});
+
+test('refund reverses only a terminal failed full-gross hold and issues a signed revision', () => {
+  const journal = fixture();
+  settle(journal);
+  const claim = journal.startExecution(declaration.idempotencyKey);
+  journal.finishExecution(declaration.idempotencyKey, {
+    executionAttemptId: claim.record.execution.executionAttemptId,
+    outcome: 'failed', failureClass: 'COGS_UNKNOWN', message: 'fault', outcomeHash: null,
+    httpStatus: 500, accounting: pendingFailureAccounting(),
+  });
+  const original = journal.issueReceipt(declaration.idempotencyKey);
+  const request = {
+    reason: 'settled execution failure',
+    refundReference: `refund:${'5'.repeat(64)}`,
+    refundAmountAtomic: '250000',
+  };
+  assert.throws(() => journal.refundExternalPayment(declaration.idempotencyKey, { ...request, refundAmountAtomic: '249999' }), /full settled gross/);
+  journal.refundExternalPayment(declaration.idempotencyKey, request);
+  const revised = journal.issueReceipt(declaration.idempotencyKey);
+  assert.equal(revised.receipt.revision, 2);
+  assert.equal(revised.receipt.supersedesReceiptHash, original.receiptHash);
+  assert.equal(revised.receipt.payment.state, 'refunded');
+  assert.equal(revised.receipt.payment.refundAmountAtomic, '250000');
+  assert.equal(revised.receipt.payment.refundAccounting.reversalEntries.length, 2);
+  assert.equal(verifySignedReceipt(original, trustFor(journal)), true);
+  assert.equal(verifySignedReceipt(revised, trustFor(journal)), true);
+});
+
+const waitForExit = (child) => new Promise((resolve, reject) => {
+  let stderr = '';
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  child.once('error', reject);
+  child.once('exit', (code, signal) => code === 0
+    ? resolve()
+    : reject(new Error(`fixture exited ${code ?? signal}: ${stderr}`)));
+});
+
+async function waitForFiles(paths) {
+  for (let attempt = 0; attempt < 300; attempt += 1) {
+    if (paths.every((candidate) => fs.existsSync(candidate))) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`fixtures did not become ready: ${paths.join(', ')}`);
+}
+
+test('two same-host processes serialize signed hash-chained appends', async () => {
+  const { directory, filePath, signingKeyPath } = temporaryAuthority('collar-writers-');
+  const barrierPath = path.join(directory, 'start');
+  loadOrCreateReceiptSigner(signingKeyPath);
+  const worker = fileURLToPath(new URL('./journal-writer-fixture.mjs', import.meta.url));
+  const keys = ['idem-process-a', 'idem-process-b'];
+  const children = keys.map((key) => spawn(process.execPath, [
+    worker, filePath, signingKeyPath, barrierPath, key, path.join(directory, `${key}.ready`),
+  ], { stdio: ['ignore', 'ignore', 'pipe'] }));
+  await waitForFiles(keys.map((key) => path.join(directory, `${key}.ready`)));
+  fs.writeFileSync(barrierPath, 'go', { flag: 'wx' });
+  await Promise.all(children.map(waitForExit));
+  const reopened = createInvocationJournal({ filePath, signingKeyPath });
+  assert.ok(reopened.getByIdempotencyKey(keys[0]));
+  assert.ok(reopened.getByIdempotencyKey(keys[1]));
+  assert.deepEqual(reopened.events.map(({ sequence }) => sequence), [1, 2]);
+  assert.equal(reopened.events[1].previousHash, reopened.events[0].eventHash);
+});
+
+test('a second process sees the complete frozen offer from the first', async () => {
+  const { directory, filePath, signingKeyPath } = temporaryAuthority('collar-reader-');
+  const outputPath = path.join(directory, 'quote.json');
+  const writer = createInvocationJournal({ filePath, signingKeyPath });
+  offer(writer);
+  const child = spawn(process.execPath, [
+    fileURLToPath(new URL('./journal-reader-fixture.mjs', import.meta.url)),
+    filePath, signingKeyPath, declaration.idempotencyKey, outputPath,
+  ], { stdio: ['ignore', 'ignore', 'pipe'] });
+  await waitForExit(child);
+  assert.deepEqual(JSON.parse(fs.readFileSync(outputPath, 'utf8')), requirements);
+});
+
+test('explicit stale-lock recovery uses an immutable lease claim and never deletes a replacement owner', () => {
+  const { filePath, signingKeyPath } = temporaryAuthority('collar-lock-');
+  let armed = false;
+  const stale = {
+    leaseId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    hostname: os.hostname(),
+    pid: 999_999_999,
+    startedAtUtc: '2026-07-17T12:00:00.000Z',
+  };
+  const movedReplacement = {
+    ...stale,
+    leaseId: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    pid: process.pid,
+    startedAtUtc: '2026-07-17T12:00:01.000Z',
+  };
+  const newOwner = {
+    ...stale,
+    leaseId: 'cccccccccccccccccccccccccccccccc',
+    pid: process.pid,
+    startedAtUtc: '2026-07-17T12:00:02.000Z',
+  };
+  const hooks = {
+    isProcessAlive: () => {
+      if (armed) {
+        const replacementPath = `${filePath}.lock.replacement`;
+        fs.writeFileSync(replacementPath, `${JSON.stringify(movedReplacement)}\n`, { flag: 'wx', mode: 0o600 });
+        fs.renameSync(replacementPath, `${filePath}.lock`);
+      }
+      return false;
+    },
+    afterLeaseClaim: () => {
+      if (armed) fs.writeFileSync(`${filePath}.lock`, `${JSON.stringify(newOwner)}\n`, { flag: 'wx', mode: 0o600 });
+    },
+  };
+  const journal = createInvocationJournal({ filePath, signingKeyPath, lockTestHooks: hooks });
+  fs.writeFileSync(`${filePath}.lock`, `${JSON.stringify(stale)}\n`, { flag: 'wx', mode: 0o600 });
+  armed = true;
+  assert.throws(() => journal.recoverStaleLock({ expectedLeaseId: stale.leaseId }), /retained at|owner changed/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(`${filePath}.lock`, 'utf8')), newOwner);
+  assert.equal(fs.readdirSync(path.dirname(filePath)).filter((name) => name.endsWith('.claim')).length, 1);
+});
+
+test('malformed, unknown-liveness, and different-host locks fail closed', () => {
+  for (const scenario of ['malformed', 'unknown', 'different-host']) {
+    const { filePath, signingKeyPath } = temporaryAuthority(`collar-lock-${scenario}-`);
+    const journal = createInvocationJournal({
+      filePath,
+      signingKeyPath,
+      lockTestHooks: scenario === 'unknown' ? { isProcessAlive: () => undefined } : {},
+    });
+    const lockPath = `${filePath}.lock`;
+    const owner = {
+      leaseId: 'dddddddddddddddddddddddddddddddd',
+      hostname: scenario === 'different-host' ? 'other-host.example' : os.hostname(),
+      pid: 999_999_998,
+      startedAtUtc: '2026-07-17T12:00:00.000Z',
+    };
+    fs.writeFileSync(
+      lockPath,
+      scenario === 'malformed' ? '{not-json}\n' : `${JSON.stringify(owner)}\n`,
+      { flag: 'wx', mode: 0o600 },
+    );
+    if (scenario === 'malformed') {
+      assert.throws(() => journal.recoverStaleLock({ expectedLeaseId: owner.leaseId }), /malformed/);
+    } else if (scenario === 'unknown') {
+      assert.throws(() => journal.recoverStaleLock({ expectedLeaseId: owner.leaseId }), /no boolean proof/);
+    } else {
+      assert.throws(() => journal.recoverStaleLock({ expectedLeaseId: owner.leaseId }), /different host/);
+    }
+    assert.equal(fs.existsSync(lockPath), true);
+  }
+});
+
+test('same-host process-probe errors fail closed and exact stale recovery succeeds only with absence proof', () => {
+  const denied = temporaryAuthority('collar-lock-eperm-');
+  const deniedJournal = createInvocationJournal({
+    filePath: denied.filePath,
+    signingKeyPath: denied.signingKeyPath,
+    lockTestHooks: { isProcessAlive: () => {
+      const error = new Error('EPERM');
+      error.code = 'EPERM';
+      throw error;
+    } },
+  });
+  const deniedOwner = {
+    leaseId: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+    hostname: os.hostname(),
+    pid: 999_999_997,
+    startedAtUtc: '2026-07-17T12:00:00.000Z',
+  };
+  fs.writeFileSync(`${denied.filePath}.lock`, `${JSON.stringify(deniedOwner)}\n`, { flag: 'wx', mode: 0o600 });
+  assert.throws(() => deniedJournal.recoverStaleLock({ expectedLeaseId: deniedOwner.leaseId }), /EPERM/);
+  assert.equal(fs.existsSync(`${denied.filePath}.lock`), true);
+
+  const recoverable = temporaryAuthority('collar-lock-recover-');
+  const recoverableJournal = createInvocationJournal({
+    filePath: recoverable.filePath,
+    signingKeyPath: recoverable.signingKeyPath,
+    lockTestHooks: { isProcessAlive: () => false },
+  });
+  const recoverableOwner = { ...deniedOwner, leaseId: 'ffffffffffffffffffffffffffffffff' };
+  fs.writeFileSync(`${recoverable.filePath}.lock`, `${JSON.stringify(recoverableOwner)}\n`, { flag: 'wx', mode: 0o600 });
+  assert.throws(() => recoverableJournal.recoverStaleLock({
+    expectedLeaseId: '00000000000000000000000000000000',
+  }), /does not match/);
+  recoverableJournal.recoverStaleLock({ expectedLeaseId: recoverableOwner.leaseId });
+  assert.equal(fs.existsSync(`${recoverable.filePath}.lock`), false);
+  assert.deepEqual(recoverableJournal.events, []);
+});
+
+test('normal lease release never unlinks a replacement owner and uses private lock/claim paths', () => {
+  const { directory, filePath, signingKeyPath } = temporaryAuthority('collar-lock-release-');
+  const replacementOwner = {
+    leaseId: 'abababababababababababababababab',
+    hostname: os.hostname(),
+    pid: process.pid,
+    startedAtUtc: '2026-07-17T12:00:03.000Z',
+  };
+  let observedMode = null;
+  const journal = createInvocationJournal({
+    filePath,
+    signingKeyPath,
+    now: () => {
+      observedMode = fs.statSync(`${filePath}.lock`).mode & 0o777;
+      const replacementPath = `${filePath}.lock.replacement`;
+      fs.writeFileSync(replacementPath, `${JSON.stringify(replacementOwner)}\n`, { flag: 'wx', mode: 0o600 });
+      fs.renameSync(replacementPath, `${filePath}.lock`);
+      return '2026-07-17T12:00:04.000Z';
+    },
+  });
+  assert.throws(() => journal.requestInvocation(declaration), /lease CAS failed.*restored/);
+  assert.equal(observedMode, 0o600);
+  assert.deepEqual(JSON.parse(fs.readFileSync(`${filePath}.lock`, 'utf8')), replacementOwner);
+  assert.equal(fs.readdirSync(directory).filter((name) => name.endsWith('.claim')).length, 0);
+  assert.equal(journal.lockPath, `${filePath}.lock`);
+});

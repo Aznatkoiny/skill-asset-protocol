@@ -2,9 +2,11 @@
   "name": "pi-wielder-spike",
   "version": "0.1.0",
   "private": true,
-  "description": "Pi-Wielder spike: one wallet, two asset classes. A coding harness pays per-call x402 for model inference AND a hosted Skill behind a mock collar, with a unified attributed session ledger. Testnet-only (Base Sepolia); fully offline in mock mode.",
+  "description": "Pi-Wielder spike: one wallet pays per-call x402 for model inference and hosted Skill Invocations; the Collar journal is authoritative and the Wielder keeps a signed-receipt view. Testnet-only (Base Sepolia); fully offline in mock mode.",
   "type": "module",
   "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "test:journal": "node --test tests/invocation-journal.test.mjs",
     "e2e": "MOCK_FACILITATOR=1 MOCK_LLM=1 node e2e.mjs",
     "collar": "node src/collar.mjs",
     "gateway": "node src/gateway.mjs",

@@ -17,6 +17,10 @@ out/
 # Run artifacts (belt-and-braces; spikes also ignore locally)
 runs/
 *.jsonl
+spikes/pi-wielder/**/*.lock
+spikes/pi-wielder/**/*.claim
+spikes/pi-wielder/**/*.pem
+spikes/pi-wielder/**/*.key
 
 # Vendor doc snapshots — do not track (redistribution-unsafe)
 .archive/
