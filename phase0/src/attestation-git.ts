@@ -1,0 +1,316 @@
+import { createHash, verify as verifySignature } from "node:crypto";
+import { execFile } from "node:child_process";
+
+import {
+  canonicalRepositoryStatement,
+  normalizeRepositoryUrl,
+  parseForgeObservation,
+  parseRepositoryChallenge,
+  repositoryStatementHash,
+  verifyRepositoryEventSignature,
+  type ForgeObservationV1,
+  type RepositoryControlChallengeV1,
+  type RepositoryControlEvent,
+} from "./attestations";
+
+export interface GitReader {
+  commitExists(repositoryPath: string, commitSha: string): Promise<boolean>;
+  readBlob(repositoryPath: string, commitSha: string, relativePath: string): Promise<Uint8Array>;
+  isAncestor(repositoryPath: string, ancestor: string, descendant: string): Promise<boolean>;
+  remoteUrl(repositoryPath: string, remoteName: string): Promise<string>;
+}
+
+export interface TrustedRepository {
+  repositoryId: string;
+  repositoryUrl: string;
+  repositoryPath: string;
+  trustedRef: `refs/heads/${string}` | `refs/remotes/${string}`;
+  permittedForgeSignerIds: readonly string[];
+}
+
+export interface TrustedRepositoryResolver {
+  resolve(repositoryId: string, normalizedRepositoryUrl: string): TrustedRepository;
+}
+
+export interface SignedRepositoryChallengeFileV1 {
+  challenge: RepositoryControlChallengeV1;
+  statementHash: `0x${string}`;
+  signature: `0x${string}`;
+}
+
+function runGit(args: readonly string[]): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    execFile("git", [...args], {
+      encoding: "buffer",
+      maxBuffer: 16 * 1024 * 1024,
+      windowsHide: true,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" },
+    }, (error, stdout, stderr) => {
+      if (error) {
+        const detail = Buffer.from(stderr).toString("utf8").trim();
+        reject(new Error(`offline Git verification failed${detail ? `: ${detail}` : ""}`, { cause: error }));
+        return;
+      }
+      resolve(new Uint8Array(stdout));
+    });
+  });
+}
+
+function validRepositoryPath(value: string): void {
+  if (!value || !value.startsWith("/") || value.includes("\0")) {
+    throw new Error("trusted repository path must be an absolute path");
+  }
+}
+
+function validObjectName(value: string, label: string): void {
+  if (!/^(?:[0-9a-f]{40,64}|refs\/(?:heads|remotes)\/[A-Za-z0-9._\/-]+)$/.test(value) || value.includes("..")) {
+    throw new Error(`${label} is not a full commit OID or configured trusted ref`);
+  }
+}
+
+function validRelativePath(value: string): void {
+  if (!value || value.startsWith("/") || value.includes("\\") || value.includes("\0")) {
+    throw new Error("Git blob path must be a normalized relative POSIX path");
+  }
+  if (value.split("/").some((segment) => segment === "" || segment === "." || segment === "..")) {
+    throw new Error("Git blob path must be a normalized relative POSIX path");
+  }
+}
+
+export class ExecGitReader implements GitReader {
+  async commitExists(repositoryPath: string, commitSha: string): Promise<boolean> {
+    validRepositoryPath(repositoryPath);
+    validObjectName(commitSha, "Git commit");
+    try {
+      await runGit(["-C", repositoryPath, "cat-file", "-e", `${commitSha}^{commit}`]);
+      return true;
+    } catch (error) {
+      const cause = (error as Error & { cause?: { code?: string | number } }).cause;
+      if (cause && typeof cause.code === "number") return false;
+      throw error;
+    }
+  }
+
+  async readBlob(repositoryPath: string, commitSha: string, relativePath: string): Promise<Uint8Array> {
+    validRepositoryPath(repositoryPath);
+    validObjectName(commitSha, "Git commit");
+    validRelativePath(relativePath);
+    return runGit(["-C", repositoryPath, "show", `${commitSha}:${relativePath}`]);
+  }
+
+  async isAncestor(repositoryPath: string, ancestor: string, descendant: string): Promise<boolean> {
+    validRepositoryPath(repositoryPath);
+    validObjectName(ancestor, "Git ancestor");
+    validObjectName(descendant, "Git descendant");
+    try {
+      await runGit(["-C", repositoryPath, "merge-base", "--is-ancestor", ancestor, descendant]);
+      return true;
+    } catch (error) {
+      const cause = (error as Error & { cause?: { code?: string | number } }).cause;
+      if (cause?.code === 1) return false;
+      throw error;
+    }
+  }
+
+  async remoteUrl(repositoryPath: string, remoteName: string): Promise<string> {
+    validRepositoryPath(repositoryPath);
+    if (remoteName !== "origin") throw new Error("only the configured origin remote may be verified");
+    const bytes = await runGit(["-C", repositoryPath, "remote", "get-url", remoteName]);
+    return Buffer.from(bytes).toString("utf8").trim();
+  }
+}
+
+export function canonicalChallengeFileBytes(input: SignedRepositoryChallengeFileV1): Uint8Array {
+  const challenge = parseRepositoryChallenge(input.challenge);
+  if (!/^0x[0-9a-f]{64}$/.test(input.statementHash)) throw new Error("challenge file statementHash must be lowercase");
+  if (!/^0x(?:[0-9a-fA-F]{2})+$/.test(input.signature)) throw new Error("challenge file signature is malformed");
+  const canonical = {
+    challenge: {
+      schemaVersion: challenge.schemaVersion,
+      subject: {
+        registrationId: challenge.subject.registrationId,
+        ipId: challenge.subject.ipId,
+        wallet: challenge.subject.wallet,
+        artifactHash: challenge.subject.artifactHash,
+        declaredParentIpIds: [...challenge.subject.declaredParentIpIds],
+      },
+      repositoryUrl: challenge.repositoryUrl,
+      artifactCommitSha: challenge.artifactCommitSha,
+      artifactPath: challenge.artifactPath,
+      challengePath: challenge.challengePath,
+      nonce: challenge.nonce,
+      issuedAt: challenge.issuedAt,
+      expiresAt: challenge.expiresAt,
+    },
+    statementHash: input.statementHash,
+    signature: input.signature,
+  };
+  return Buffer.from(`${JSON.stringify(canonical)}\n`, "utf8");
+}
+
+export function parseSignedRepositoryChallengeFile(bytes: Uint8Array): SignedRepositoryChallengeFileV1 {
+  const text = Buffer.from(bytes).toString("utf8");
+  if (!text.endsWith("\n") || text.endsWith("\n\n") || text.slice(0, -1).includes("\n")) {
+    throw new Error("repository challenge file must be canonical single-line JSON with exactly one trailing newline");
+  }
+  let value: unknown;
+  try { value = JSON.parse(text); } catch (error) { throw new Error("repository challenge file contains malformed JSON", { cause: error }); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("repository challenge file must be an object");
+  const object = value as Record<string, unknown>;
+  const keys = Object.keys(object);
+  if (keys.length !== 3 || keys[0] !== "challenge" || keys[1] !== "statementHash" || keys[2] !== "signature") {
+    throw new Error("repository challenge file fields are missing, extra, or out of canonical order");
+  }
+  if (typeof object.statementHash !== "string" || typeof object.signature !== "string") throw new Error("repository challenge file signature fields are malformed");
+  const parsed: SignedRepositoryChallengeFileV1 = {
+    challenge: parseRepositoryChallenge(object.challenge),
+    statementHash: object.statementHash as `0x${string}`,
+    signature: object.signature as `0x${string}`,
+  };
+  const canonical = canonicalChallengeFileBytes(parsed);
+  if (!Buffer.from(canonical).equals(Buffer.from(bytes))) throw new Error("repository challenge file is not canonical byte-for-byte");
+  if (parsed.statementHash !== repositoryStatementHash(parsed.challenge)) throw new Error("repository challenge statement hash mismatch");
+  return parsed;
+}
+
+export function canonicalForgeObservationBytes(
+  observationValue: Omit<ForgeObservationV1, "signature">,
+): Uint8Array {
+  const observation = parseForgeObservation({ ...observationValue, signature: "placeholder" });
+  const canonical = {
+    schemaVersion: observation.schemaVersion,
+    repositoryId: observation.repositoryId,
+    repositoryUrl: observation.repositoryUrl,
+    trustedRef: observation.trustedRef,
+    proofCommitSha: observation.proofCommitSha,
+    challengeNonce: observation.challengeNonce,
+    observedAt: observation.observedAt,
+    forgeSignerId: observation.forgeSignerId,
+  };
+  return Buffer.from(`${JSON.stringify(canonical)}\n`, "utf8");
+}
+
+export function verifyForgeObservation(
+  observationValue: ForgeObservationV1,
+  trusted: TrustedRepository,
+  forgeSigners: Readonly<Record<string, string>>,
+): void {
+  const observation = parseForgeObservation(observationValue);
+  if (observation.repositoryId !== trusted.repositoryId
+      || observation.repositoryUrl !== trusted.repositoryUrl
+      || observation.trustedRef !== trusted.trustedRef) {
+    throw new Error("forge observation does not match verifier-provisioned repository trust");
+  }
+  if (!trusted.permittedForgeSignerIds.includes(observation.forgeSignerId)) {
+    throw new Error("forge signer is not permitted for this repository");
+  }
+  const publicKey = forgeSigners[observation.forgeSignerId];
+  if (!publicKey) throw new Error("forge signer is unknown");
+  if (/PRIVATE KEY/.test(publicKey)) throw new Error("forge signer configuration must contain only a public key");
+  let signatureBytes: Buffer;
+  try {
+    signatureBytes = Buffer.from(observation.signature, "base64");
+  } catch (error) {
+    throw new Error("forge observation signature must be base64", { cause: error });
+  }
+  if (signatureBytes.length === 0 || signatureBytes.toString("base64") !== observation.signature) {
+    throw new Error("forge observation signature must be canonical base64");
+  }
+  const { signature: _signature, ...unsigned } = observation;
+  if (!verifySignature(null, canonicalForgeObservationBytes(unsigned), publicKey, signatureBytes)) {
+    throw new Error("forge observation signature is invalid");
+  }
+}
+
+function sha256(bytes: Uint8Array): `0x${string}` {
+  return `0x${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+async function verifyRepositorySnapshot(input: {
+  event: RepositoryControlEvent;
+  challengeFile: Uint8Array;
+  now: Date;
+  git: GitReader;
+  repositories: TrustedRepositoryResolver;
+  forgeSigners: Readonly<Record<string, string>>;
+}): Promise<void> {
+  const { event, now, git, repositories, forgeSigners } = input;
+  await verifyRepositoryEventSignature(event);
+  const signed = parseSignedRepositoryChallengeFile(input.challengeFile);
+  if (signed.statementHash !== event.statementHash || signed.signature !== event.signature
+      || JSON.stringify(signed.challenge) !== JSON.stringify(event.challenge)) {
+    throw new Error("repository event does not match the exact signed challenge file");
+  }
+  const trusted = repositories.resolve(event.forgeObservation.repositoryId, event.challenge.repositoryUrl);
+  verifyForgeObservation(event.forgeObservation, trusted, forgeSigners);
+  if (event.forgeObservation.challengeNonce !== event.challenge.nonce) throw new Error("forge observation nonce mismatch");
+  const issuedAt = Date.parse(event.challenge.issuedAt);
+  const expiresAt = Date.parse(event.challenge.expiresAt);
+  const observedAt = Date.parse(event.forgeObservation.observedAt);
+  const occurredAt = Date.parse(event.occurredAt);
+  if (observedAt < issuedAt || observedAt > expiresAt) throw new Error("repository challenge was not valid at observation time");
+  if (occurredAt < observedAt) throw new Error("repository event occurred before the forge observation");
+  if (occurredAt > now.getTime() || observedAt > now.getTime()) throw new Error("repository evidence is dated in the future");
+
+  const origin = normalizeRepositoryUrl(await git.remoteUrl(trusted.repositoryPath, "origin"));
+  if (origin !== trusted.repositoryUrl || origin !== event.challenge.repositoryUrl || origin !== event.forgeObservation.repositoryUrl) {
+    throw new Error("trusted checkout origin does not match signed repository URL");
+  }
+  if (!await git.commitExists(trusted.repositoryPath, event.challenge.artifactCommitSha)) throw new Error("artifact commit is absent");
+  if (!await git.commitExists(trusted.repositoryPath, event.forgeObservation.proofCommitSha)) throw new Error("proof commit is absent");
+  if (!await git.commitExists(trusted.repositoryPath, trusted.trustedRef)) throw new Error("configured trusted ref is absent");
+  if (!await git.isAncestor(trusted.repositoryPath, event.challenge.artifactCommitSha, event.forgeObservation.proofCommitSha)) {
+    throw new Error("proof commit does not descend from artifact commit");
+  }
+  if (!await git.isAncestor(trusted.repositoryPath, event.forgeObservation.proofCommitSha, trusted.trustedRef)) {
+    throw new Error("proof commit is not reachable from the configured trusted ref");
+  }
+  const artifact = await git.readBlob(trusted.repositoryPath, event.challenge.artifactCommitSha, event.challenge.artifactPath);
+  if (sha256(artifact) !== event.subject.artifactHash) throw new Error("registered artifact hash does not match exact Git bytes");
+  const challengeBlob = await git.readBlob(trusted.repositoryPath, event.forgeObservation.proofCommitSha, event.challenge.challengePath);
+  if (!Buffer.from(challengeBlob).equals(Buffer.from(input.challengeFile))) throw new Error("committed challenge bytes do not match the signed challenge file");
+}
+
+export async function verifyRepositoryControl(input: {
+  challengeFile: Uint8Array;
+  forgeObservation: ForgeObservationV1;
+  eventId: string;
+  sequence: number;
+  occurredAt: string;
+  now: Date;
+  git: GitReader;
+  repositories: TrustedRepositoryResolver;
+  forgeSigners: Readonly<Record<string, string>>;
+}): Promise<RepositoryControlEvent> {
+  const signed = parseSignedRepositoryChallengeFile(input.challengeFile);
+  const event: RepositoryControlEvent = {
+    type: "repository_control_verified",
+    eventId: input.eventId,
+    sequence: input.sequence,
+    occurredAt: input.occurredAt,
+    subject: signed.challenge.subject,
+    challenge: signed.challenge,
+    forgeObservation: parseForgeObservation(input.forgeObservation),
+    statementHash: signed.statementHash,
+    signature: signed.signature,
+  };
+  await verifyRepositorySnapshot({ ...input, event });
+  return event;
+}
+
+export async function reverifyRepositoryEvent(
+  event: RepositoryControlEvent,
+  context: {
+    git: GitReader;
+    repositories: TrustedRepositoryResolver;
+    forgeSigners: Readonly<Record<string, string>>;
+    now?: Date;
+  },
+): Promise<void> {
+  const challengeFile = canonicalChallengeFileBytes({
+    challenge: event.challenge,
+    statementHash: event.statementHash,
+    signature: event.signature,
+  });
+  await verifyRepositorySnapshot({ event, challengeFile, now: context.now ?? new Date(), ...context });
+}
