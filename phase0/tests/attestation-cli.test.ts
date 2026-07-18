@@ -172,6 +172,57 @@ test("production repository command fails before Git for missing/insecure mappin
   assert.equal(gitCalls, 0);
 
   await chmod(mappingPath, 0o600);
+  const canonicalForgePublicKey = forge.publicKey.export({ type: "spki", format: "pem" }).toString();
+  const forgePrivateKey = forge.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  const secondEd25519 = generateKeyPairSync("ed25519");
+  const rsa512 = generateKeyPairSync("rsa", { modulusLength: 512 });
+  const rsa2048 = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const ed448 = generateKeyPairSync("ed448");
+  const observationBytes = canonicalForgeObservationBytes(unsignedObservation);
+  const invalidForgeTrust = [
+    { name: "weak RSA", key: rsa512.publicKey.export({ type: "spki", format: "pem" }).toString(), signature: signBytes(null, observationBytes, rsa512.privateKey).toString("base64") },
+    { name: "RSA", key: rsa2048.publicKey.export({ type: "spki", format: "pem" }).toString(), signature: signBytes(null, observationBytes, rsa2048.privateKey).toString("base64") },
+    { name: "Ed448", key: ed448.publicKey.export({ type: "spki", format: "pem" }).toString(), signature: signBytes(null, observationBytes, ed448.privateKey).toString("base64") },
+    { name: "private PEM", key: forgePrivateKey, signature: forgeObservation.signature },
+    { name: "trailing whitespace", key: `${canonicalForgePublicKey}\n`, signature: forgeObservation.signature },
+    { name: "trailing text", key: `${canonicalForgePublicKey}trailing`, signature: forgeObservation.signature },
+    { name: "concatenated public PEM", key: canonicalForgePublicKey + secondEd25519.publicKey.export({ type: "spki", format: "pem" }).toString(), signature: forgeObservation.signature },
+    { name: "appended private PEM", key: canonicalForgePublicKey + forgePrivateKey, signature: forgeObservation.signature },
+  ];
+  for (const variant of invalidForgeTrust) {
+    await writeFile(paths.forgeSigners, `${JSON.stringify({
+      schemaVersion: 1,
+      forgeSigners: { "forge-1": variant.key },
+    })}\n`);
+    await writeFile(bundlePath, `${JSON.stringify({
+      schemaVersion: 1,
+      eventId: "repository-cli-1",
+      sequence: 1,
+      occurredAt: "2026-07-18T02:00:00.000Z",
+      challengeFile,
+      forgeObservation: { ...forgeObservation, signature: variant.signature },
+    })}\n`);
+    await assert.rejects(executeAttestationCommand(
+      "attestation-verify-repository",
+      { bundle: bundlePath },
+      () => undefined,
+      { phase0Root: root, paths, env: {}, git: failIfCalled, now: () => NOW },
+    ), /canonical Ed25519 SPKI public key/, variant.name);
+  }
+  assert.equal(gitCalls, 0);
+
+  await writeFile(paths.forgeSigners, `${JSON.stringify({
+    schemaVersion: 1,
+    forgeSigners: { "forge-1": canonicalForgePublicKey },
+  })}\n`);
+  await writeFile(bundlePath, `${JSON.stringify({
+    schemaVersion: 1,
+    eventId: "repository-cli-1",
+    sequence: 1,
+    occurredAt: "2026-07-18T02:00:00.000Z",
+    challengeFile,
+    forgeObservation,
+  })}\n`);
   const output: string[] = [];
   await executeAttestationCommand(
     "attestation-verify-repository",

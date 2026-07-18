@@ -20,6 +20,7 @@ import {
 import {
   canonicalChallengeFileBytes,
   ExecGitReader,
+  normalizeForgePublicKey,
   verifyRepositoryControl,
   type GitReader,
   type SignedRepositoryChallengeFileV1,
@@ -137,8 +138,8 @@ async function forgeSigners(path: string): Promise<Readonly<Record<string, strin
   const signers = object(value.forgeSigners, "forge signers");
   const result: Record<string, string> = {};
   for (const [id, publicKey] of Object.entries(signers)) {
-    if (!/^[a-z0-9][a-z0-9._-]{0,127}$/.test(id) || typeof publicKey !== "string" || !publicKey.includes("PUBLIC KEY")) throw new Error("forge signer trust is malformed");
-    result[id] = publicKey;
+    if (!/^[a-z0-9][a-z0-9._-]{0,127}$/.test(id)) throw new Error("forge signer trust is malformed");
+    result[id] = normalizeForgePublicKey(publicKey);
   }
   validateNoPrivateMaterial(value, "forge signer trust");
   return Object.freeze(result);
@@ -247,12 +248,22 @@ export function renderAttestationStatus(index: AttestationIndex, options: Attest
   for (const itemValue of payload.registrations) {
     const item = itemValue as ReturnType<typeof displayAttestation> & { registrationId: string };
     lines.push(`registration: ${item.registrationId}`);
+    lines.push(`status: ${item.status}`);
     lines.push(`attestation: ${item.level}`);
     lines.push(`claim: ${item.claim}`);
     lines.push(`safety review: ${item.safetyReviewStatus}`);
     for (const warning of item.warnings) lines.push(`warning: ${warning}`);
   }
   lines.push(`conflicts: ${payload.conflicts.length}`);
+  for (const conflictValue of payload.conflicts) {
+    const conflict = conflictValue as AttestationIndex["conflicts"][number];
+    lines.push(`conflict: ${conflict.conflictId}`);
+    lines.push(`conflict status: ${conflict.status}`);
+    lines.push(`conflict reason: ${conflict.reason}`);
+    lines.push(`conflict outcome: ${conflict.outcome ?? "(none)"}`);
+    lines.push(`conflict registrations: ${[...conflict.registrationIds].sort().join(", ")}`);
+    lines.push(`conflict events: ${conflict.eventIds.length > 0 ? conflict.eventIds.join(", ") : "(none)"}`);
+  }
   return lines;
 }
 

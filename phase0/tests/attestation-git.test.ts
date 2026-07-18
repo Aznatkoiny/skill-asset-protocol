@@ -22,6 +22,7 @@ import {
   canonicalChallengeFileBytes,
   canonicalForgeObservationBytes,
   ExecGitReader,
+  verifyForgeObservation,
   verifyRepositoryControl,
   type SignedRepositoryChallengeFileV1,
 } from "../src/attestation-git";
@@ -112,7 +113,7 @@ async function fixture(t: test.TestContext) {
     checkoutPaths: { "demo-checkout": { repositoryPath: root, device: rootMetadata.dev, inode: rootMetadata.ino } },
   });
   const forgeSigners = { "forge-1": forge.publicKey.export({ type: "spki", format: "pem" }).toString() };
-  return { root, artifactCommit, proofCommit, subject, challenge, challengeFile, forgeObservation, repositories, forgeSigners, trustConfig };
+  return { root, artifactCommit, proofCommit, subject, challenge, challengeFile, forge, forgeObservation, repositories, forgeSigners, trustConfig };
 }
 
 test("repository control verifies offline against exact artifact and challenge bytes", async (t) => {
@@ -130,6 +131,57 @@ test("repository control verifies offline against exact artifact and challenge b
   });
   assert.equal(event.type, "repository_control_verified");
   assert.equal(event.subject.artifactHash, f.subject.artifactHash);
+});
+
+test("forge observation trust accepts only one canonical Ed25519 SPKI public key", async (t) => {
+  const f = await fixture(t);
+  const trusted = f.repositories.resolve("demo", REPOSITORY_URL);
+  const { signature: _signature, ...unsignedObservation } = f.forgeObservation;
+  const observationBytes = canonicalForgeObservationBytes(unsignedObservation);
+  const canonicalPublicKey = f.forge.publicKey.export({ type: "spki", format: "pem" }).toString();
+  const privateKey = f.forge.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  const secondEd25519 = generateKeyPairSync("ed25519");
+  const rsa512 = generateKeyPairSync("rsa", { modulusLength: 512 });
+  const rsa2048 = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const ed448 = generateKeyPairSync("ed448");
+  const signedBy = (signer: typeof f.forge.privateKey): ForgeObservationV1 => ({
+    ...unsignedObservation,
+    signature: signBytes(null, observationBytes, signer).toString("base64"),
+  });
+  const invalid = [
+    { name: "weak RSA", key: rsa512.publicKey.export({ type: "spki", format: "pem" }).toString(), observation: signedBy(rsa512.privateKey) },
+    { name: "RSA", key: rsa2048.publicKey.export({ type: "spki", format: "pem" }).toString(), observation: signedBy(rsa2048.privateKey) },
+    { name: "Ed448", key: ed448.publicKey.export({ type: "spki", format: "pem" }).toString(), observation: signedBy(ed448.privateKey) },
+    { name: "private PEM", key: privateKey, observation: f.forgeObservation },
+    { name: "trailing whitespace", key: `${canonicalPublicKey}\n`, observation: f.forgeObservation },
+    { name: "trailing text", key: `${canonicalPublicKey}trailing`, observation: f.forgeObservation },
+    { name: "concatenated public PEM", key: canonicalPublicKey + secondEd25519.publicKey.export({ type: "spki", format: "pem" }).toString(), observation: f.forgeObservation },
+    { name: "appended private PEM", key: canonicalPublicKey + privateKey, observation: f.forgeObservation },
+  ];
+
+  assert.doesNotThrow(() => verifyForgeObservation(f.forgeObservation, trusted, { "forge-1": canonicalPublicKey }));
+  for (const variant of invalid) {
+    assert.throws(
+      () => verifyForgeObservation(variant.observation, trusted, { "forge-1": variant.key }),
+      /canonical Ed25519 SPKI public key/,
+      variant.name,
+    );
+  }
+});
+
+test("forge observation signatures must be canonical base64 encoding of exactly 64 bytes", async (t) => {
+  const f = await fixture(t);
+  const trusted = f.repositories.resolve("demo", REPOSITORY_URL);
+  for (const length of [63, 65]) {
+    assert.throws(
+      () => verifyForgeObservation(
+        { ...f.forgeObservation, signature: Buffer.alloc(length, 1).toString("base64") },
+        trusted,
+        f.forgeSigners,
+      ),
+      /exactly 64 bytes/,
+    );
+  }
 });
 
 test("repository verification rejects signed-binding and snapshot tampering", async (t) => {

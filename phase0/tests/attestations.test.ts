@@ -287,3 +287,29 @@ test("human status output uses explicit evidence-level language", async () => {
   assert.match(output, /safety review: not_reviewed/);
   assert.match(output, /warning: registration does not prove authorship, originality, legal ownership, or safety/);
 });
+
+test("human status output lists challenged registrations and every matching conflict deterministically", async () => {
+  const first = privateKeyToAccount(generatePrivateKey());
+  const second = privateKeyToAccount(generatePrivateKey());
+  const a = subject(IP_A, first.address);
+  const b = subject(IP_B, second.address);
+  const index = await reduceAttestationEvents([], { baseSubjects: [b, a] });
+  const conflictId = deterministicConflictId(a, b);
+  const lines = renderAttestationStatus(index, { artifactHash: a.artifactHash });
+
+  assert.equal(lines.filter((line) => line === "status: challenged").length, 2);
+  assert.deepEqual(lines.slice(-7), [
+    "conflicts: 1",
+    `conflict: ${conflictId}`,
+    "conflict status: open",
+    "conflict reason: duplicate_bytes",
+    "conflict outcome: (none)",
+    `conflict registrations: ${[a.registrationId, b.registrationId].sort().join(", ")}`,
+    "conflict events: (none)",
+  ]);
+
+  const json = JSON.parse(renderAttestationStatus(index, { artifactHash: a.artifactHash, json: true })[0]);
+  assert.equal(json.registrations.length, 2);
+  assert.ok(json.registrations.every((registration: { status: string }) => registration.status === "challenged"));
+  assert.deepEqual(json.conflicts, index.conflicts);
+});

@@ -1,4 +1,4 @@
-import { createHash, verify as verifySignature } from "node:crypto";
+import { createHash, createPublicKey, verify as verifySignature } from "node:crypto";
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
@@ -241,6 +241,23 @@ export function canonicalForgeObservationBytes(
   return Buffer.from(`${JSON.stringify(canonical)}\n`, "utf8");
 }
 
+export function normalizeForgePublicKey(value: unknown): string {
+  const message = "forge signer public key must be exactly one canonical Ed25519 SPKI public key";
+  if (typeof value !== "string") throw new Error(message);
+  let publicKey;
+  try {
+    publicKey = createPublicKey(value);
+  } catch (error) {
+    throw new Error(message, { cause: error });
+  }
+  if (publicKey.type !== "public" || publicKey.asymmetricKeyType !== "ed25519") {
+    throw new Error(message);
+  }
+  const canonical = publicKey.export({ type: "spki", format: "pem" }).toString();
+  if (value !== canonical) throw new Error(message);
+  return canonical;
+}
+
 export function verifyForgeObservation(
   observationValue: ForgeObservationV1,
   trusted: TrustedRepository,
@@ -257,18 +274,18 @@ export function verifyForgeObservation(
   }
   const publicKey = forgeSigners[observation.forgeSignerId];
   if (!publicKey) throw new Error("forge signer is unknown");
-  if (/PRIVATE KEY/.test(publicKey)) throw new Error("forge signer configuration must contain only a public key");
+  const canonicalPublicKey = normalizeForgePublicKey(publicKey);
   let signatureBytes: Buffer;
   try {
     signatureBytes = Buffer.from(observation.signature, "base64");
   } catch (error) {
     throw new Error("forge observation signature must be base64", { cause: error });
   }
-  if (signatureBytes.length === 0 || signatureBytes.toString("base64") !== observation.signature) {
-    throw new Error("forge observation signature must be canonical base64");
+  if (signatureBytes.length !== 64 || signatureBytes.toString("base64") !== observation.signature) {
+    throw new Error("forge observation signature must be canonical base64 encoding of exactly 64 bytes");
   }
   const { signature: _signature, ...unsigned } = observation;
-  if (!verifySignature(null, canonicalForgeObservationBytes(unsigned), publicKey, signatureBytes)) {
+  if (!verifySignature(null, canonicalForgeObservationBytes(unsigned), canonicalPublicKey, signatureBytes)) {
     throw new Error("forge observation signature is invalid");
   }
 }

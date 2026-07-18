@@ -111,7 +111,10 @@ Repository bundles contain the wallet-signed challenge and the forge
 observation. They do not accept a repository path, trusted ref, public key, or
 trust-root override. `repository-trust.json` fixes the repository URL, checkout
 key, trusted ref, and allowed forge signer IDs. Public forge keys live in
-`forge-signers.json`; both trust-root files are empty by default.
+`forge-signers.json`; each value must be exactly one canonical Ed25519 SPKI
+public-key PEM with no private, concatenated, or trailing material. Forge
+observation signatures are canonical base64 encodings of exactly 64 bytes.
+Both trust-root files are empty by default.
 
 The verifier resolves each checkout key through the machine-local file
 `phase0/.attestation-checkouts.local.json`:
