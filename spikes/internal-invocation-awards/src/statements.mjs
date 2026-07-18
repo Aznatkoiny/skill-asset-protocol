@@ -58,6 +58,12 @@ function requireString(value, label) {
   if (typeof value !== 'string' || value.length === 0) throw new Error(`${label} must be non-empty`);
 }
 
+function requireSortableId(value, label) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/.test(value)) {
+    throw new Error(`${label} must be a normalized ASCII identifier`);
+  }
+}
+
 function decodeSignature(value, label) {
   if (typeof value !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) {
     throw new Error(`${label} signature must be canonical base64`);
@@ -385,7 +391,11 @@ export function receiptMerkleRoot(signedReceipts) {
 function uniqueSorted(items, idKey, label, validator) {
   if (!Array.isArray(items)) throw new Error(`${label} must be an array`);
   const result = items.map((item, index) => validator(item, index));
-  result.sort((left, right) => left[idKey].localeCompare(right[idKey]));
+  result.sort((left, right) => {
+    if (left[idKey] < right[idKey]) return -1;
+    if (left[idKey] > right[idKey]) return 1;
+    return 0;
+  });
   const seen = new Set();
   for (const item of result) {
     if (seen.has(item[idKey])) throw new Error(`duplicate ${label} ID ${item[idKey]}`);
@@ -396,7 +406,7 @@ function uniqueSorted(items, idKey, label, validator) {
 
 function validatePayment(payment, index) {
   requireExactKeys(payment, PAYMENT_KEYS, `payment ${index}`);
-  requireString(payment.paymentId, 'paymentId');
+  requireSortableId(payment.paymentId, 'paymentId');
   toAtomic(payment.amountAtomic);
   parseUtc(payment.paidAt, 'payment paidAt');
   requireString(payment.railReference, 'payment railReference');
@@ -405,7 +415,7 @@ function validatePayment(payment, index) {
 
 function validateAdvance(advance, index) {
   requireExactKeys(advance, ADVANCE_KEYS, `payable advance ${index}`);
-  requireString(advance.advanceId, 'advanceId');
+  requireSortableId(advance.advanceId, 'advanceId');
   if (!SHA256_PATTERN.test(advance.receiptHash)) throw new Error('advance receiptHash is invalid');
   toAtomic(advance.amountAtomic);
   parseUtc(advance.advancedAt, 'advance advancedAt');
@@ -414,7 +424,7 @@ function validateAdvance(advance, index) {
 
 function validateReversal(reversal, index) {
   requireExactKeys(reversal, REVERSAL_KEYS, `reversal ${index}`);
-  requireString(reversal.reversalId, 'reversalId');
+  requireSortableId(reversal.reversalId, 'reversalId');
   if (!SHA256_PATTERN.test(reversal.receiptHash)) throw new Error('reversal receiptHash is invalid');
   toAtomic(reversal.amountAtomic);
   if (!['earned_only', 'payable'].includes(reversal.balanceEffect)) {

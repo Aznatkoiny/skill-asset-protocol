@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { generateKeyPairSync } from 'node:crypto';
+import { createHash, generateKeyPairSync } from 'node:crypto';
 import test from 'node:test';
 
 import {
@@ -8,6 +8,7 @@ import {
   canonicalReceiptBytes,
   canonicalStatementBytes,
   receiptHash,
+  receiptMerkleRoot,
   renderJsonl,
   signReceipt,
   signStatement,
@@ -164,6 +165,31 @@ function signedSuccess(signers, sequence = 1, suffix = '001') {
     employerId: 'megacorp',
     receiptSignerId: 'collar-receipt-key-2026-07',
   }), signers.receipt.privateKey);
+}
+
+function expectedMerkleRoot(receipts) {
+  const digest = (bytes) => createHash('sha256').update(bytes).digest();
+  if (receipts.length === 0) {
+    return `sha256:${digest(Buffer.from('internal-invocation-awards:receipt-merkle:v1:empty')).toString('hex')}`;
+  }
+  let level = receipts.map((receipt) => digest(Buffer.concat([
+    Buffer.from('internal-invocation-awards:receipt-merkle:v1:leaf\0'),
+    Buffer.from(receiptHash(receipt).slice(7), 'hex'),
+  ])));
+  while (level.length > 1) {
+    const next = [];
+    for (let index = 0; index < level.length; index += 2) {
+      const left = level[index];
+      const right = level[index + 1] ?? left;
+      next.push(digest(Buffer.concat([
+        Buffer.from('internal-invocation-awards:receipt-merkle:v1:node\0'),
+        left,
+        right,
+      ])));
+    }
+    level = next;
+  }
+  return `sha256:${level[0].toString('hex')}`;
 }
 
 test('employer and employee verify identical exact receipt bytes through a trusted key ID', () => {
@@ -338,42 +364,112 @@ test('statement sequence continuity and domain-separated Merkle rules are determ
   const oddA = build([receipt3, receipt1, receipt2]);
   const oddB = build([receipt1, receipt2, receipt3]);
   assert.equal(oddA.receiptMerkleRoot, oddB.receiptMerkleRoot);
+  assert.equal(oddA.receiptMerkleRoot, expectedMerkleRoot([receipt1, receipt2, receipt3]));
   assert.deepEqual(oddA.receiptHashes, oddB.receiptHashes);
   assert.throws(() => build([receipt1, receipt3]), /statement sequence gap: expected 2, received 3/);
 
   const empty = build([]);
   assert.equal(empty.firstReceiptSequence, null);
   assert.equal(empty.lastReceiptSequence, null);
-  assert.match(empty.receiptMerkleRoot, /^sha256:[0-9a-f]{64}$/);
-  assert.notEqual(empty.receiptMerkleRoot, build([receipt1]).receiptMerkleRoot);
+  assert.equal(empty.receiptMerkleRoot, expectedMerkleRoot([]));
+  assert.equal(receiptMerkleRoot([receipt1]), expectedMerkleRoot([receipt1]));
+  assert.notEqual(empty.receiptMerkleRoot, receiptMerkleRoot([receipt1]));
 });
 
 test('whole-statement and receipt trust roots reject tampering and attacker resigning', () => {
   const signers = signerFixture();
   const receipt = signedSuccess(signers);
+  const receipt2 = signedSuccess(signers, 2, '002');
+  const receipt3 = signedSuccess(signers, 3, '003');
+  const hash = receiptHash(receipt);
   const unsigned = buildStatement({
     statementId: 'statement-trust', employerId: 'megacorp', creatorId: 'sam', period: '2026-07',
-    currency: 'USD', atomicScale: 6, openingPayableAtomic: '0', receipts: [receipt],
-    payableAdvances: [], reversals: [], payments: [], statementSignerId: 'collar-statement-key-2026-07',
+    currency: 'USD', atomicScale: 6, openingPayableAtomic: '0', receipts: [receipt, receipt2, receipt3],
+    payableAdvances: [{ advanceId: 'advance-001', receiptHash: hash, amountAtomic: '1000000', advancedAt: NOW }],
+    reversals: [{ reversalId: 'reversal-001', receiptHash: hash, amountAtomic: '100000', balanceEffect: 'payable', reason: 'duplicate_advance', occurredAt: NOW }],
+    payments: [{ paymentId: 'payment-001', amountAtomic: '250000', paidAt: NOW, railReference: 'simulated-payroll-ref' }],
+    statementSignerId: 'collar-statement-key-2026-07',
   });
   const signed = signStatement(unsigned, signers.statement.privateKey);
   const options = {
-    signedReceipts: [receipt], trustedReceiptSigners: signers.receiptTrust,
+    signedReceipts: [receipt, receipt2, receipt3], trustedReceiptSigners: signers.receiptTrust,
     trustedStatementSigners: signers.statementTrust,
   };
-  for (const mutation of [
-    { statementId: 'changed' },
-    { openingPayableAtomic: '1' },
-    { earnedAwardTotalAtomic: '1999999' },
-    { closingPayableAtomic: '1' },
-    { receiptMerkleRoot: `sha256:${'0'.repeat(64)}` },
-  ]) {
-    assert.throws(() => verifyStatement({ ...signed, ...mutation }, options), /signature|recompute/);
+  const replacePayment = (changes) => ({ payments: [{ ...signed.payments[0], ...changes }] });
+  const replaceReversal = (changes) => ({ reversals: [{ ...signed.reversals[0], ...changes }] });
+  const replaceAdvance = (changes) => ({ payableAdvances: [{ ...signed.payableAdvances[0], ...changes }] });
+  const mutations = [
+    ['statementId', { statementId: 'changed' }],
+    ['employerId', { employerId: 'other-employer' }],
+    ['creatorId', { creatorId: 'other-creator' }],
+    ['period', { period: '2026-08' }],
+    ['currency', { currency: 'EUR' }],
+    ['atomicScale', { atomicScale: 2 }],
+    ['openingPayableAtomic', { openingPayableAtomic: '1' }],
+    ['firstReceiptSequence', { firstReceiptSequence: 2 }],
+    ['lastReceiptSequence', { lastReceiptSequence: 2 }],
+    ['receiptHashes', { receiptHashes: [`sha256:${'0'.repeat(64)}`] }],
+    ['receiptMerkleRoot', { receiptMerkleRoot: `sha256:${'0'.repeat(64)}` }],
+    ['reservationTotalAtomic', { reservationTotalAtomic: '1' }],
+    ['releaseTotalAtomic', { releaseTotalAtomic: '1' }],
+    ['chargeTotalAtomic', { chargeTotalAtomic: '1' }],
+    ['earnedAwardTotalAtomic', { earnedAwardTotalAtomic: '1' }],
+    ['payableAdvanceTotalAtomic', { payableAdvanceTotalAtomic: '1' }],
+    ['reversalTotalAtomic', { reversalTotalAtomic: '1' }],
+    ['payableReversalTotalAtomic', { payableReversalTotalAtomic: '1' }],
+    ['paymentTotalAtomic', { paymentTotalAtomic: '1' }],
+    ['closingPayableAtomic', { closingPayableAtomic: '1' }],
+    ['statementSignerId', { statementSignerId: 'unknown-statement-key' }],
+    ['advanceId', replaceAdvance({ advanceId: 'advance-002' })],
+    ['advance receiptHash', replaceAdvance({ receiptHash: `sha256:${'0'.repeat(64)}` })],
+    ['advance amountAtomic', replaceAdvance({ amountAtomic: '999999' })],
+    ['advance advancedAt', replaceAdvance({ advancedAt: '2026-07-17T00:02:00.000Z' })],
+    ['reversalId', replaceReversal({ reversalId: 'reversal-002' })],
+    ['reversal receiptHash', replaceReversal({ receiptHash: `sha256:${'0'.repeat(64)}` })],
+    ['reversal amountAtomic', replaceReversal({ amountAtomic: '99999' })],
+    ['reversal balanceEffect', replaceReversal({ balanceEffect: 'earned_only' })],
+    ['reversal reason', replaceReversal({ reason: 'other_reason' })],
+    ['reversal occurredAt', replaceReversal({ occurredAt: '2026-07-17T00:02:00.000Z' })],
+    ['paymentId', replacePayment({ paymentId: 'payment-002' })],
+    ['payment amountAtomic', replacePayment({ amountAtomic: '249999' })],
+    ['payment paidAt', replacePayment({ paidAt: '2026-07-17T00:02:00.000Z' })],
+    ['payment railReference', replacePayment({ railReference: 'other-reference' })],
+  ];
+  for (const [label, mutation] of mutations) {
+    assert.throws(
+      () => verifyStatement({ ...signed, ...mutation }, options),
+      /signature|recompute|trusted/,
+      label,
+    );
   }
   const attacker = generateKeyPairSync('ed25519');
   const attackerSigned = signStatement(unsigned, attacker.privateKey);
   assert.throws(() => verifyStatement(attackerSigned, options), /signature/);
   assert.throws(() => verifyStatement({ ...signed, publicKeyPem: 'self-declared' }, options), /unknown key publicKeyPem/);
+});
+
+test('sortable statement event IDs are normalized ASCII and code-unit deterministic', () => {
+  const signers = signerFixture();
+  const receipt = signedSuccess(signers);
+  const hash = receiptHash(receipt);
+  const base = {
+    statementId: 'statement-id-order', employerId: 'megacorp', creatorId: 'sam', period: '2026-07',
+    currency: 'USD', atomicScale: 6, openingPayableAtomic: '0', receipts: [receipt],
+    reversals: [], payments: [], statementSignerId: 'collar-statement-key-2026-07',
+  };
+  const statement = buildStatement({
+    ...base,
+    payableAdvances: [
+      { advanceId: 'b', receiptHash: hash, amountAtomic: '1', advancedAt: NOW },
+      { advanceId: 'A', receiptHash: hash, amountAtomic: '1', advancedAt: NOW },
+      { advanceId: 'a', receiptHash: hash, amountAtomic: '1', advancedAt: NOW },
+    ],
+  });
+  assert.deepEqual(statement.payableAdvances.map((row) => row.advanceId), ['A', 'a', 'b']);
+  assert.throws(() => buildStatement({
+    ...base,
+    payableAdvances: [{ advanceId: 'é', receiptHash: hash, amountAtomic: '1', advancedAt: NOW }],
+  }), /normalized ASCII identifier/);
 });
 
 test('JSONL output is canonical, newline terminated, and rejects BigInt', () => {
