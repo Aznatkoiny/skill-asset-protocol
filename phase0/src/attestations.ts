@@ -461,21 +461,21 @@ function subjectEquals(a: RegistrationSubject, b: RegistrationSubject): boolean 
 
 export function canonicalRepositoryStatement(challengeValue: RepositoryControlChallengeV1): string {
   const challenge = parseRepositoryChallenge(challengeValue);
-  return [
-    "skill-asset-protocol/repository-control/v1",
-    `registration=${challenge.subject.registrationId}`,
-    `ipId=${challenge.subject.ipId}`,
-    `wallet=${challenge.subject.wallet}`,
-    `artifactSha256=${challenge.subject.artifactHash}`,
-    `repository=${challenge.repositoryUrl}`,
-    `artifactCommit=${challenge.artifactCommitSha}`,
-    `artifactPath=${challenge.artifactPath}`,
-    `challengePath=${challenge.challengePath}`,
-    `nonce=${challenge.nonce}`,
-    `issuedAt=${challenge.issuedAt}`,
-    `expiresAt=${challenge.expiresAt}`,
-    "",
-  ].join("\n");
+  return canonicalSignedJson("skill-asset-protocol/repository-control/v2", {
+    schemaVersion: 2,
+    registrationId: challenge.subject.registrationId,
+    ipId: challenge.subject.ipId,
+    wallet: challenge.subject.wallet,
+    artifactSha256: challenge.subject.artifactHash,
+    declaredParentIpIds: [...challenge.subject.declaredParentIpIds].sort(),
+    repository: challenge.repositoryUrl,
+    artifactCommit: challenge.artifactCommitSha,
+    artifactPath: challenge.artifactPath,
+    challengePath: challenge.challengePath,
+    nonce: challenge.nonce,
+    issuedAt: challenge.issuedAt,
+    expiresAt: challenge.expiresAt,
+  });
 }
 
 export function repositoryStatementHash(challenge: RepositoryControlChallengeV1): `0x${string}` {
@@ -504,19 +504,18 @@ export function canonicalOrganizationStatement(approvalValue: UnsignedApproval):
     statementHash: `0x${"0".repeat(64)}`,
     signature: "0x00",
   });
-  return [
-    "skill-asset-protocol/organization-approval/v1",
-    `registration=${approval.subject.registrationId}`,
-    `ipId=${approval.subject.ipId}`,
-    `wallet=${approval.subject.wallet}`,
-    `artifactSha256=${approval.subject.artifactHash}`,
-    `declaredParentIpIds=${[...approval.subject.declaredParentIpIds].sort().join(",")}`,
-    `organizationId=${approval.organizationId}`,
-    `approverWallet=${approval.approverWallet}`,
-    `role=${approval.role}`,
-    `approvedAt=${approval.approvedAt}`,
-    "",
-  ].join("\n");
+  return canonicalSignedJson("skill-asset-protocol/organization-approval/v2", {
+    schemaVersion: 2,
+    registrationId: approval.subject.registrationId,
+    ipId: approval.subject.ipId,
+    wallet: approval.subject.wallet,
+    artifactSha256: approval.subject.artifactHash,
+    declaredParentIpIds: [...approval.subject.declaredParentIpIds].sort(),
+    organizationId: approval.organizationId,
+    approverWallet: approval.approverWallet,
+    role: approval.role,
+    approvedAt: approval.approvedAt,
+  });
 }
 
 export function organizationStatementHash(approval: UnsignedApproval): `0x${string}` {
@@ -544,36 +543,52 @@ export async function verifyOrganizationApproval(
   }
 }
 
-function eventStatement(header: string, rows: readonly [string, string][]): string {
-  return [header, ...rows.map(([key, value]) => `${key}=${value}`), ""].join("\n");
+function canonicalSignedJson(domain: string, payload: Record<string, unknown>): string {
+  return `${domain}\n${JSON.stringify(payload)}\n`;
 }
 
 export function canonicalChallengeEventStatement(eventValue: ChallengeOpenedEvent): string {
   const event = parseAttestationEvent(eventValue);
   if (event.type !== "challenge_opened") throw new Error("challenge event required");
-  return eventStatement("skill-asset-protocol/challenge-opened/v1", [
-    ["eventId", event.eventId], ["sequence", String(event.sequence)], ["occurredAt", event.occurredAt],
-    ["conflictId", event.conflictId], ["challengedRegistrationId", event.challengedRegistrationId],
-    ["challengerRegistrationId", event.challengerRegistrationId], ["challengerWallet", event.challengerWallet],
-    ["evidenceUris", [...event.evidenceUris].sort().join(",")], ["reason", event.reason],
-  ]);
+  return canonicalSignedJson("skill-asset-protocol/challenge-opened/v2", {
+    schemaVersion: 2,
+    eventId: event.eventId,
+    sequence: event.sequence,
+    occurredAt: event.occurredAt,
+    conflictId: event.conflictId,
+    challengedRegistrationId: event.challengedRegistrationId,
+    challengerRegistrationId: event.challengerRegistrationId,
+    challengerWallet: event.challengerWallet,
+    evidenceUris: [...event.evidenceUris].sort(),
+    reason: event.reason,
+  });
 }
 
 export function canonicalAdminEventStatement(eventValue: ChallengeResolvedEvent | AttestationRevokedEvent): string {
   const event = parseAttestationEvent(eventValue);
   if (event.type === "challenge_resolved") {
-    return eventStatement("skill-asset-protocol/challenge-resolved/v1", [
-      ["eventId", event.eventId], ["sequence", String(event.sequence)], ["occurredAt", event.occurredAt],
-      ["conflictId", event.conflictId], ["outcome", event.outcome], ["rationale", event.rationale],
-      ["adminSignerId", event.adminSignerId],
-    ]);
+    return canonicalSignedJson("skill-asset-protocol/challenge-resolved/v2", {
+      schemaVersion: 2,
+      eventId: event.eventId,
+      sequence: event.sequence,
+      occurredAt: event.occurredAt,
+      conflictId: event.conflictId,
+      outcome: event.outcome,
+      rationale: event.rationale,
+      adminSignerId: event.adminSignerId,
+    });
   }
   if (event.type === "attestation_revoked") {
-    return eventStatement("skill-asset-protocol/attestation-revoked/v1", [
-      ["eventId", event.eventId], ["sequence", String(event.sequence)], ["occurredAt", event.occurredAt],
-      ["registrationId", event.registrationId], ["level", event.level], ["reason", event.reason],
-      ["adminSignerId", event.adminSignerId],
-    ]);
+    return canonicalSignedJson("skill-asset-protocol/attestation-revoked/v2", {
+      schemaVersion: 2,
+      eventId: event.eventId,
+      sequence: event.sequence,
+      occurredAt: event.occurredAt,
+      registrationId: event.registrationId,
+      level: event.level,
+      reason: event.reason,
+      adminSignerId: event.adminSignerId,
+    });
   }
   throw new Error("admin event required");
 }
@@ -647,8 +662,11 @@ export async function reduceAttestationEvents(
     adminSigners?: Readonly<Record<string, `0x${string}`>>;
     baseSubjects?: readonly RegistrationSubject[];
     repositoryVerifier?: (event: RepositoryControlEvent) => Promise<void>;
+    now?: Date;
   } = {},
 ): Promise<AttestationIndex> {
+  const verifierNow = trust.now?.getTime();
+  if (verifierNow !== undefined && !Number.isFinite(verifierNow)) throw new Error("attestation verifier clock is invalid");
   const subjects: Record<string, RegistrationSubject> = {};
   for (const raw of trust.baseSubjects ?? []) {
     const subject = parseSubject(raw, "base registration subject");
@@ -656,7 +674,12 @@ export async function reduceAttestationEvents(
     subjects[subject.registrationId] = subject;
   }
 
-  const registrations: Record<string, AttestationRegistration & { repositoryActive: boolean; organizationActive: boolean }> = {};
+  const registrations: Record<string, AttestationRegistration & {
+    repositoryActive: boolean;
+    organizationActive: boolean;
+    repositoryActivatedAt: number | null;
+    organizationActivatedAt: number | null;
+  }> = {};
   for (const subject of Object.values(subjects)) {
     registrations[subject.registrationId] = {
       subject,
@@ -668,6 +691,8 @@ export async function reduceAttestationEvents(
       revocations: [],
       repositoryActive: false,
       organizationActive: false,
+      repositoryActivatedAt: null,
+      organizationActivatedAt: null,
     };
   }
 
@@ -694,30 +719,80 @@ export async function reduceAttestationEvents(
 
   const parsedEvents: AttestationEvent[] = [];
   const eventIds = new Set<string>();
+  const consumedRepositoryStatementHashes = new Set<string>();
+  const consumedRepositoryNonces = new Set<string>();
+  const consumedRepositorySignatures = new Set<string>();
+  const consumedForgeObservations = new Set<string>();
+  const consumedOrganizationStatementHashes = new Set<string>();
+  const consumedOrganizationSignatures = new Set<string>();
+  const challengeOpenedAt = new Map<string, number>();
+  let priorOccurredAt: number | null = null;
   for (let index = 0; index < eventValues.length; index += 1) {
     const event = parseAttestationEvent(eventValues[index]);
     if (event.sequence !== index + 1) throw new Error(`attestation sequence must be contiguous at ${index + 1}`);
     if (eventIds.has(event.eventId)) throw new Error(`duplicate attestation event ID ${event.eventId}`);
+    const occurredAt = Date.parse(event.occurredAt);
+    if (priorOccurredAt !== null && occurredAt < priorOccurredAt) {
+      throw new Error("attestation event occurredAt must be nondecreasing");
+    }
+    if (verifierNow !== undefined && occurredAt > verifierNow) throw new Error("attestation event occurredAt is future-dated");
+    priorOccurredAt = occurredAt;
     eventIds.add(event.eventId);
     parsedEvents.push(event);
 
     if (event.type === "repository_control_verified") {
       const registration = registrations[event.subject.registrationId];
       if (!registration || !subjectEquals(registration.subject, event.subject)) throw new Error("repository event subject drift or unknown registration");
+      const forgeCredential = JSON.stringify([
+        event.forgeObservation.schemaVersion,
+        event.forgeObservation.repositoryId,
+        event.forgeObservation.repositoryUrl,
+        event.forgeObservation.trustedRef,
+        event.forgeObservation.proofCommitSha,
+        event.forgeObservation.challengeNonce,
+        event.forgeObservation.observedAt,
+        event.forgeObservation.forgeSignerId,
+        event.forgeObservation.signature,
+      ]);
+      if (consumedRepositoryStatementHashes.has(event.statementHash)
+          || consumedRepositoryNonces.has(event.challenge.nonce)
+          || consumedRepositorySignatures.has(event.signature)
+          || consumedForgeObservations.has(forgeCredential)) {
+        throw new Error("repository credential, statement, nonce, or forge observation was already consumed");
+      }
       await verifyRepositoryEventSignature(event);
       if (!trust.repositoryVerifier) throw new Error("repository verifier context required");
       await trust.repositoryVerifier(event);
+      consumedRepositoryStatementHashes.add(event.statementHash);
+      consumedRepositoryNonces.add(event.challenge.nonce);
+      consumedRepositorySignatures.add(event.signature);
+      consumedForgeObservations.add(forgeCredential);
       registration.repositoryActive = true;
+      registration.repositoryActivatedAt = occurredAt;
       registration.evidenceEventIds = Object.freeze([...registration.evidenceEventIds, event.eventId]);
     } else if (event.type === "organization_approved") {
       const registration = registrations[event.subject.registrationId];
       if (!registration || !subjectEquals(registration.subject, event.subject) || !subjectEquals(event.subject, event.approval.subject)) throw new Error("organization event subject drift or unknown registration");
       if (!registration.repositoryActive) throw new Error("organization approval requires active repository evidence");
+      if (consumedOrganizationStatementHashes.has(event.approval.statementHash)
+          || consumedOrganizationSignatures.has(event.approval.signature)) {
+        throw new Error("organization approval credential was already consumed");
+      }
+      const approvedAt = Date.parse(event.approval.approvedAt);
+      if (approvedAt > occurredAt) throw new Error("organization approvedAt must not follow its event envelope");
+      if (registration.repositoryActivatedAt === null || approvedAt < registration.repositoryActivatedAt) {
+        throw new Error("organization approvedAt must not precede active repository evidence");
+      }
       await verifyOrganizationApproval(event.approval, trust.organizationSigners ?? {});
+      consumedOrganizationStatementHashes.add(event.approval.statementHash);
+      consumedOrganizationSignatures.add(event.approval.signature);
       registration.organizationActive = true;
+      registration.organizationActivatedAt = occurredAt;
       registration.evidenceEventIds = Object.freeze([...registration.evidenceEventIds, event.eventId]);
     } else if (event.type === "challenge_opened") {
       await verifyChallengeEventSignature(event, subjects);
+      const priorChallenge = challengeOpenedAt.get(event.conflictId);
+      if (priorChallenge === undefined || occurredAt < priorChallenge) challengeOpenedAt.set(event.conflictId, occurredAt);
       const existing = conflicts.get(event.conflictId);
       if (existing) {
         const ids = new Set(existing.registrationIds);
@@ -743,6 +818,9 @@ export async function reduceAttestationEvents(
       await verifyAdminEventSignature(event, trust.adminSigners ?? {});
       const conflict = conflicts.get(event.conflictId);
       if (!conflict) throw new Error("resolution targets an unknown conflict");
+      const openedAt = challengeOpenedAt.get(event.conflictId);
+      if (openedAt === undefined) throw new Error("resolution requires a preceding signed challenge");
+      if (occurredAt < openedAt) throw new Error("resolution must follow its signed challenge");
       if (conflict.status === "resolved") throw new Error("conflict is already resolved");
       conflicts.set(event.conflictId, { ...conflict, status: "resolved", outcome: event.outcome, eventIds: [...conflict.eventIds, event.eventId] });
     } else {
@@ -751,11 +829,16 @@ export async function reduceAttestationEvents(
       if (!registration) throw new Error("revocation targets an unknown registration");
       if (event.level === "repository_control_verified") {
         if (!registration.repositoryActive) throw new Error("repository evidence is not active");
+        if (registration.repositoryActivatedAt === null || occurredAt < registration.repositoryActivatedAt) throw new Error("revocation must follow active repository evidence");
         registration.repositoryActive = false;
         registration.organizationActive = false;
+        registration.repositoryActivatedAt = null;
+        registration.organizationActivatedAt = null;
       } else {
         if (!registration.organizationActive) throw new Error("organization evidence is not active");
+        if (registration.organizationActivatedAt === null || occurredAt < registration.organizationActivatedAt) throw new Error("revocation must follow active organization evidence");
         registration.organizationActive = false;
+        registration.organizationActivatedAt = null;
       }
       registration.revocations = Object.freeze([...registration.revocations, {
         level: event.level,
@@ -781,7 +864,13 @@ export async function reduceAttestationEvents(
   }
 
   const publicRegistrations = Object.fromEntries(Object.entries(registrations).map(([id, value]) => {
-    const { repositoryActive: _repositoryActive, organizationActive: _organizationActive, ...publicValue } = value;
+    const {
+      repositoryActive: _repositoryActive,
+      organizationActive: _organizationActive,
+      repositoryActivatedAt: _repositoryActivatedAt,
+      organizationActivatedAt: _organizationActivatedAt,
+      ...publicValue
+    } = value;
     return [id, deepFreeze(publicValue)];
   }));
   return deepFreeze({

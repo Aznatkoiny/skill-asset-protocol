@@ -86,8 +86,8 @@ async function repositoryEvent(value: RegistrationSubject, account: ReturnType<t
 test("canonical repository statement has fixed order and exactly one trailing newline", () => {
   const account = privateKeyToAccount(generatePrivateKey());
   const statement = canonicalRepositoryStatement(challengeFor(subject(IP_A, account.address)));
-  assert.equal(statement.split("\n")[0], "skill-asset-protocol/repository-control/v1");
-  assert.match(statement, /\nregistration=eip155:1315:/);
+  assert.equal(statement.split("\n")[0], "skill-asset-protocol/repository-control/v2");
+  assert.match(statement, /\n\{"schemaVersion":2,"registrationId":"eip155:1315:/);
   assert.ok(statement.endsWith("\n"));
   assert.ok(!statement.endsWith("\n\n"));
 });
