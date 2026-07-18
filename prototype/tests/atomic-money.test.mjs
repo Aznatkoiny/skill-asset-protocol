@@ -7,6 +7,8 @@ import {
   ROYALTY_ALLOCATION_POLICY,
   allocateByBps,
   allocateByWeights,
+  allocateExternalGross,
+  allocateInternalGross,
   allocateRoyaltyGraph,
   assertAtomic,
   floorBps,
@@ -293,4 +295,288 @@ test('allocateRoyaltyGraph leaves a deeply frozen claim graph unchanged', () => 
   assert.deepEqual(skills, {
     root: { parentIds: [], inheritBps: 0, holders: [{ recipientId: 'creator', bps: 10_000 }] },
   });
+});
+
+test('allocateExternalGross subtracts costs, fee, and reserve before the Royalty pool', () => {
+  const result = allocateExternalGross({
+    grossAtomic: 250_000n,
+    executionCostAtomic: 60_000n,
+    settlementCostAtomic: 1_000n,
+    protocolFeeBps: 250,
+    refundReserveAtomic: 2_000n,
+    leafSkillId: 'skill',
+    skills: {
+      skill: {
+        parentIds: [],
+        inheritBps: 0,
+        holders: [{ recipientId: 'creator', bps: 10_000 }],
+      },
+    },
+  });
+  assert.equal(result.allocationPolicy, 'lrp-per-hop-v1');
+  assert.equal(result.protocolFeeAtomic, 6_250n);
+  assert.equal(result.royaltyPoolAtomic, 180_750n);
+  assert.equal(result.holderCredits[0].amountAtomic, 180_750n);
+  assert.equal(
+    result.executionCostAtomic + result.settlementCostAtomic + result.protocolFeeAtomic
+      + result.royaltyPoolAtomic + result.refundReserveAtomic,
+    result.grossAtomic,
+  );
+  assert.deepEqual(
+    result.journalEntries.map(({ debitAccountId, creditAccountId, amountAtomic }) => ({
+      debitAccountId, creditAccountId, amountAtomic,
+    })),
+    [
+      {
+        debitAccountId: 'wielder:external-gross',
+        creditAccountId: 'provider:execution',
+        amountAtomic: 60_000n,
+      },
+      {
+        debitAccountId: 'wielder:external-gross',
+        creditAccountId: 'provider:settlement',
+        amountAtomic: 1_000n,
+      },
+      {
+        debitAccountId: 'wielder:external-gross',
+        creditAccountId: 'protocol:treasury',
+        amountAtomic: 6_250n,
+      },
+      {
+        debitAccountId: 'wielder:external-gross',
+        creditAccountId: 'reserve:refund',
+        amountAtomic: 2_000n,
+      },
+      {
+        debitAccountId: 'wielder:external-gross',
+        creditAccountId: 'royalty:creator',
+        amountAtomic: 180_750n,
+      },
+    ],
+  );
+});
+
+test('allocateInternalGross leaves one exact employee Invocation award', () => {
+  const result = allocateInternalGross({
+    grossAtomic: 200_000n,
+    executionCostAtomic: 50_000n,
+    protocolFeeAtomic: 5_000n,
+    refundReserveAtomic: 5_000n,
+    recipientId: 'employee-1',
+  });
+  assert.deepEqual(result.awardCredit, { recipientId: 'employee-1', amountAtomic: 140_000n });
+  assert.equal(
+    result.executionCostAtomic + result.protocolFeeAtomic
+      + result.refundReserveAtomic + result.invocationAwardAtomic,
+    result.grossAtomic,
+  );
+  assert.deepEqual(result.journalEntries, [
+    {
+      category: 'execution-cogs', debitAccountId: 'employer:invocation-gross',
+      creditAccountId: 'provider:execution', amountAtomic: 50_000n,
+    },
+    {
+      category: 'protocol-fee', debitAccountId: 'employer:invocation-gross',
+      creditAccountId: 'protocol:treasury', amountAtomic: 5_000n,
+    },
+    {
+      category: 'refund-reserve', debitAccountId: 'employer:invocation-gross',
+      creditAccountId: 'reserve:refund', amountAtomic: 5_000n,
+    },
+    {
+      category: 'invocation-award', debitAccountId: 'employer:invocation-gross',
+      creditAccountId: 'employee:employee-1', amountAtomic: 140_000n,
+    },
+  ]);
+});
+
+test('gross partitions reject insufficient, negative, and non-bigint monetary inputs', () => {
+  const external = {
+    grossAtomic: 100n,
+    executionCostAtomic: 0n,
+    settlementCostAtomic: 0n,
+    protocolFeeBps: 0,
+    refundReserveAtomic: 0n,
+    leafSkillId: 'skill',
+    skills: chain(0),
+  };
+  const internal = {
+    grossAtomic: 100n,
+    executionCostAtomic: 0n,
+    protocolFeeAtomic: 0n,
+    refundReserveAtomic: 0n,
+    recipientId: 'employee',
+  };
+
+  assert.throws(() => allocateExternalGross({
+    ...external, executionCostAtomic: 99n, protocolFeeBps: 250,
+  }), /cannot cover costs/);
+  assert.throws(() => allocateInternalGross({
+    ...internal, executionCostAtomic: 101n,
+  }), /cannot cover costs/);
+
+  for (const field of [
+    'grossAtomic', 'executionCostAtomic', 'settlementCostAtomic', 'refundReserveAtomic',
+  ]) {
+    assert.throws(() => allocateExternalGross({ ...external, [field]: -1n }), /non-negative/);
+    assert.throws(() => allocateExternalGross({ ...external, [field]: 1 }), /must be a bigint/);
+  }
+  for (const field of [
+    'grossAtomic', 'executionCostAtomic', 'protocolFeeAtomic', 'refundReserveAtomic',
+  ]) {
+    assert.throws(() => allocateInternalGross({ ...internal, [field]: -1n }), /non-negative/);
+    assert.throws(() => allocateInternalGross({ ...internal, [field]: 1 }), /must be a bigint/);
+  }
+});
+
+test('gross partitions accept frozen inputs without mutation and reject unsupported policy', () => {
+  const external = Object.freeze({
+    grossAtomic: 100n,
+    executionCostAtomic: 0n,
+    settlementCostAtomic: 0n,
+    protocolFeeBps: 0,
+    refundReserveAtomic: 0n,
+    leafSkillId: 'skill-0',
+    skills: Object.freeze({
+      'skill-0': Object.freeze({
+        parentIds: Object.freeze([]),
+        inheritBps: 0,
+        holders: Object.freeze([
+          Object.freeze({ recipientId: 'creator', bps: 10_000 }),
+        ]),
+      }),
+    }),
+  });
+  const internal = Object.freeze({
+    grossAtomic: 100n,
+    executionCostAtomic: 1n,
+    protocolFeeAtomic: 2n,
+    refundReserveAtomic: 3n,
+    recipientId: 'employee',
+  });
+
+  allocateExternalGross(external);
+  allocateInternalGross(internal);
+  assert.equal(external.grossAtomic, 100n);
+  assert.equal(internal.grossAtomic, 100n);
+  assert.throws(() => allocateExternalGross({
+    ...external,
+    allocationPolicy: 'lap-whole-ancestry-v1',
+  }), /unsupported royalty allocation policy/);
+});
+
+const branchingClaims = () => ({
+  leaf: {
+    parentIds: ['root-b', 'root-a'],
+    inheritBps: 3_333,
+    holders: [
+      { recipientId: 'employee', bps: 3_333 },
+      { recipientId: 'employer', bps: 6_667 },
+    ],
+  },
+  'root-a': {
+    parentIds: [],
+    inheritBps: 0,
+    holders: [{ recipientId: 'alice', bps: 5_001 }, { recipientId: 'acme', bps: 4_999 }],
+  },
+  'root-b': {
+    parentIds: [],
+    inheritBps: 0,
+    holders: [{ recipientId: 'bob', bps: 7_777 }, { recipientId: 'beta', bps: 2_223 }],
+  },
+});
+
+function assertBalanced(result, expectedSourceAccount, grossAtomic) {
+  const debitTotal = result.journalEntries.reduce((sum, entry) => sum + entry.amountAtomic, 0n);
+  const creditTotal = result.journalEntries.reduce((sum, entry) => sum + entry.amountAtomic, 0n);
+  assert.equal(debitTotal, grossAtomic);
+  assert.equal(creditTotal, grossAtomic);
+  assert.ok(result.journalEntries.every((entry) => entry.debitAccountId === expectedSourceAccount));
+  assert.ok(result.journalEntries.every((entry) => entry.creditAccountId && entry.amountAtomic >= 0n));
+}
+
+test('152-case external matrix conserves gross across costs, claims, ancestry, and rounding', () => {
+  let cases = 0;
+  const claimGraphs = [
+    { leafSkillId: 'skill-2', skills: chain(2) },
+    { leafSkillId: 'leaf', skills: branchingClaims() },
+  ];
+  for (const grossAtomic of [250_001n, 1_000_003n]) {
+    for (const executionCostAtomic of [0n, 17n]) {
+      for (const settlementCostAtomic of [0n, 13n]) {
+        for (const refundReserveAtomic of [0n, 11n]) {
+          for (const protocolFeeBps of [0, 1, 250, 3_333]) {
+            for (const graph of claimGraphs) {
+              const result = allocateExternalGross({
+                grossAtomic,
+                executionCostAtomic,
+                settlementCostAtomic,
+                protocolFeeBps,
+                refundReserveAtomic,
+                ...graph,
+              });
+              assert.equal(
+                result.executionCostAtomic + result.settlementCostAtomic
+                  + result.protocolFeeAtomic + result.royaltyPoolAtomic
+                  + result.refundReserveAtomic,
+                grossAtomic,
+              );
+              assert.equal(
+                result.credits.reduce((sum, credit) => sum + credit.amountAtomic, 0n),
+                result.royaltyPoolAtomic,
+              );
+              assertBalanced(result, 'wielder:external-gross', grossAtomic);
+              cases += 1;
+            }
+          }
+        }
+      }
+    }
+  }
+  for (const grossAtomic of [0n, 1n, 2n]) {
+    for (const protocolFeeBps of [0, 1, 250, 3_333]) {
+      for (const graph of claimGraphs) {
+        const result = allocateExternalGross({
+          grossAtomic,
+          executionCostAtomic: 0n,
+          settlementCostAtomic: 0n,
+          protocolFeeBps,
+          refundReserveAtomic: 0n,
+          ...graph,
+        });
+        assertBalanced(result, 'wielder:external-gross', grossAtomic);
+        assert.ok(result.credits.every((credit) => credit.amountAtomic >= 0n));
+        cases += 1;
+      }
+    }
+  }
+  assert.equal(cases, 152);
+});
+
+test('20-case internal matrix conserves employer gross at zero, dust, and large amounts', () => {
+  let cases = 0;
+  for (const grossAtomic of [0n, 1n, 2n, 250_001n, 1_000_003n]) {
+    const third = grossAtomic / 3n;
+    const partitions = [
+      { executionCostAtomic: 0n, protocolFeeAtomic: 0n, refundReserveAtomic: 0n },
+      { executionCostAtomic: grossAtomic, protocolFeeAtomic: 0n, refundReserveAtomic: 0n },
+      { executionCostAtomic: 0n, protocolFeeAtomic: grossAtomic, refundReserveAtomic: 0n },
+      { executionCostAtomic: third, protocolFeeAtomic: third, refundReserveAtomic: third },
+    ];
+    for (const partition of partitions) {
+      const result = allocateInternalGross({
+        grossAtomic,
+        ...partition,
+        recipientId: 'employee',
+      });
+      assert.equal(
+        result.executionCostAtomic + result.protocolFeeAtomic
+          + result.refundReserveAtomic + result.invocationAwardAtomic,
+        grossAtomic,
+      );
+      assertBalanced(result, 'employer:invocation-gross', grossAtomic);
+      cases += 1;
+    }
+  }
+  assert.equal(cases, 20);
 });

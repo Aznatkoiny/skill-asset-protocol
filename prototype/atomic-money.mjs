@@ -269,3 +269,115 @@ export function allocateRoyaltyGraph({
     ancestorCredits: credits.filter((credit) => credit.kind === 'ancestor'),
   };
 }
+
+function requireCoveredGross(grossAtomic, components) {
+  const required = components.reduce((sum, component) => sum + component, 0n);
+  if (required > grossAtomic) {
+    fail(
+      'GROSS_INSUFFICIENT',
+      `gross ${grossAtomic} cannot cover costs and reserves ${required}`,
+    );
+  }
+  return grossAtomic - required;
+}
+
+function journalEntry(category, debitAccountId, creditAccountId, amountAtomic) {
+  return {
+    category,
+    debitAccountId,
+    creditAccountId,
+    amountAtomic: assertAtomic(amountAtomic),
+  };
+}
+
+export function allocateExternalGross({
+  grossAtomic,
+  executionCostAtomic,
+  settlementCostAtomic,
+  protocolFeeBps,
+  refundReserveAtomic,
+  leafSkillId,
+  skills,
+  allocationPolicy = ROYALTY_ALLOCATION_POLICY,
+}) {
+  const gross = assertAtomic(grossAtomic, 'grossAtomic');
+  const executionCost = assertAtomic(executionCostAtomic, 'executionCostAtomic');
+  const settlementCost = assertAtomic(settlementCostAtomic, 'settlementCostAtomic');
+  const refundReserve = assertAtomic(refundReserveAtomic, 'refundReserveAtomic');
+  const protocolFee = floorBps(gross, protocolFeeBps);
+  const royaltyPool = requireCoveredGross(
+    gross,
+    [executionCost, settlementCost, protocolFee, refundReserve],
+  );
+  const royalty = allocateRoyaltyGraph({
+    royaltyPoolAtomic: royaltyPool,
+    leafSkillId,
+    skills,
+    allocationPolicy,
+  });
+  const debitAccountId = 'wielder:external-gross';
+  const journalEntries = [
+    journalEntry('execution-cogs', debitAccountId, 'provider:execution', executionCost),
+    journalEntry('settlement-cogs', debitAccountId, 'provider:settlement', settlementCost),
+    journalEntry('protocol-fee', debitAccountId, 'protocol:treasury', protocolFee),
+    journalEntry('refund-reserve', debitAccountId, 'reserve:refund', refundReserve),
+    ...royalty.credits.map((credit) => journalEntry(
+      credit.kind === 'holder' ? 'royalty-holder' : 'royalty-ancestor',
+      debitAccountId,
+      `royalty:${credit.recipientId}`,
+      credit.amountAtomic,
+    )),
+  ];
+  return {
+    allocationPolicy: royalty.allocationPolicy,
+    grossAtomic: gross,
+    executionCostAtomic: executionCost,
+    settlementCostAtomic: settlementCost,
+    protocolFeeAtomic: protocolFee,
+    royaltyPoolAtomic: royaltyPool,
+    refundReserveAtomic: refundReserve,
+    credits: royalty.credits,
+    holderCredits: royalty.holderCredits,
+    ancestorCredits: royalty.ancestorCredits,
+    journalEntries,
+  };
+}
+
+export function allocateInternalGross({
+  grossAtomic,
+  executionCostAtomic,
+  protocolFeeAtomic,
+  refundReserveAtomic,
+  recipientId,
+}) {
+  const gross = assertAtomic(grossAtomic, 'grossAtomic');
+  const executionCost = assertAtomic(executionCostAtomic, 'executionCostAtomic');
+  const protocolFee = assertAtomic(protocolFeeAtomic, 'protocolFeeAtomic');
+  const refundReserve = assertAtomic(refundReserveAtomic, 'refundReserveAtomic');
+  const invocationAward = requireCoveredGross(
+    gross,
+    [executionCost, protocolFee, refundReserve],
+  );
+  const recipient = String(recipientId ?? '');
+  if (!recipient) fail('RECIPIENT_REQUIRED', 'recipientId must be non-empty');
+  const debitAccountId = 'employer:invocation-gross';
+  return {
+    grossAtomic: gross,
+    executionCostAtomic: executionCost,
+    protocolFeeAtomic: protocolFee,
+    refundReserveAtomic: refundReserve,
+    invocationAwardAtomic: invocationAward,
+    awardCredit: { recipientId: recipient, amountAtomic: invocationAward },
+    journalEntries: [
+      journalEntry('execution-cogs', debitAccountId, 'provider:execution', executionCost),
+      journalEntry('protocol-fee', debitAccountId, 'protocol:treasury', protocolFee),
+      journalEntry('refund-reserve', debitAccountId, 'reserve:refund', refundReserve),
+      journalEntry(
+        'invocation-award',
+        debitAccountId,
+        `employee:${recipient}`,
+        invocationAward,
+      ),
+    ],
+  };
+}
