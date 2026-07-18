@@ -369,6 +369,13 @@ test('cancelled reservation makes its signed credential unusable', async () => {
     now: NOW,
   });
   assert.equal(cancelled.invocation.state, 'cancelled');
+  assert.equal(cancelled.invocation.receiptSequence, 1);
+  assert.equal(cancelled.state.nextReceiptSequence, 2);
+  assert.deepEqual(cancelled.events.map((event) => event.type), [
+    'budget_released',
+    'invocation_cancelled',
+  ]);
+  assert.equal(cancelled.state.events.filter((event) => event.type === 'budget_released').length, 1);
   await assert.rejects(() => executeAuthorizedInvocation({
     store: fx.store, quote: q, credential,
     executor: async () => { throw new Error('must not execute'); }, now: NOW,

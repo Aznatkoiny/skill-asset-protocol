@@ -460,6 +460,7 @@ export async function cancelInternalAuthorization(input) {
       revision: invocation.revision + 1,
       finalizedAt: input.now,
       releasedAtomic: reservation.reservedAtomic,
+      receiptSequence: current.nextReceiptSequence,
     });
     return nextState(current, {
       budget: released.budget,
@@ -472,6 +473,7 @@ export async function cancelInternalAuthorization(input) {
           reason: input.reason,
         }),
       ]),
+      nextReceiptSequence: current.nextReceiptSequence + 1,
     });
   });
   const reservation = state.reservations[input.reservationId];
