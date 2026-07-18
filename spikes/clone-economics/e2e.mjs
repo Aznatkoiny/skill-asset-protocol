@@ -35,6 +35,12 @@ const targetPath = path.resolve(here, '../../.claude/skills/optimizing-claude-co
 const referencePath = path.resolve(here, '../../.claude/skills/optimizing-claude-code-prompts/references/claude-code-prompting-guide.md');
 const targetText = fs.readFileSync(targetPath, 'utf8');
 const referenceText = fs.readFileSync(referencePath, 'utf8');
+function treeSnapshot(directory) {
+  if (!fs.existsSync(directory)) return [];
+  return fs.readdirSync(directory, { recursive: true }).map(String).sort();
+}
+const retainedRuns = path.join(here, 'runs');
+const runsBefore = treeSnapshot(retainedRuns);
 const outputA = fs.mkdtempSync(path.join(os.tmpdir(), 'clone-economics-a-'));
 const outputB = fs.mkdtempSync(path.join(os.tmpdir(), 'clone-economics-b-'));
 
@@ -156,7 +162,7 @@ try {
   ok(!first.markdownReport.split('\n').some((line) => /[ \t]+$/.test(line)), 'Markdown report contains no trailing whitespace');
   eq(fs.readFileSync(first.outputFiles.json, 'utf8'), fs.readFileSync(second.outputFiles.json, 'utf8'), 'two JSON report runs are byte-identical');
   eq(fs.readFileSync(first.outputFiles.markdown, 'utf8'), fs.readFileSync(second.outputFiles.markdown, 'utf8'), 'two Markdown report runs are byte-identical');
-  ok(!fs.existsSync(path.join(here, 'runs')), 'e2e leaves no run artifacts in the tree');
+  eq(treeSnapshot(retainedRuns), runsBefore, 'e2e leaves pre-existing run artifacts unchanged');
 
   const unknownTranscript = JSON.parse(fs.readFileSync(path.join(here, 'fixtures/mock-transcript.json'), 'utf8'));
   unknownTranscript.usageProfiles.distill.inputTokens = null;
