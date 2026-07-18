@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "experimentId": "2026-07-15-overhead",
+  "observedAt": "2026-07-15",
+  "evidenceStatus": "historical_unreproducible",
+  "evidenceLabel": "HISTORICAL SUMMARY ONLY — normalized samples were not retained",
+  "source": {
+    "repositoryPath": "spikes/pi-wielder/README.md",
+    "runtime": "Base Sepolia testnet",
+    "funding": "testnet USDC play money",
+    "providerCountReported": 2
+  },
+  "historicalSummary": {
+    "settledCallCountReported": 48,
+    "paymentOverheadP50MsReported": 731,
+    "paymentOverheadP95MsReported": 1206
+  },
+  "rawEvidence": {
+    "normalizedSamplesCommitted": false,
+    "recomputableFromCleanCheckout": false,
+    "reason": "The repository retained only aggregate prose; per-call normalized timing rows and a hashed evidence manifest were not committed."
+  },
+  "publication": {
+    "allowed": false,
+    "reason": "Do not use the reported p50, p95, or n=48 in launch copy. A new authorized run must write a new dated evidence directory before publication."
+  },
+  "replacementPolicy": {
+    "overwriteThisDirectory": false,
+    "newRunDirectoryPattern": "spikes/pi-wielder/evidence/YYYY-MM-DD-overhead-RUN_ID",
+    "requiredFiles": ["manifest.json", "samples.jsonl", "summary.json", "report.md", "README.md"]
+  }
+}

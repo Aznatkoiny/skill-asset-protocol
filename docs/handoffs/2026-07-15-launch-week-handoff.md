@@ -31,10 +31,11 @@ executed and committed by 2026-07-12; see `docs/plans/2026-07-12-phase-a-finding
 
 ## Next tasks (agent-doable, in order)
 
-1. ~~x402 overhead distribution~~ **Done 2026-07-15:** p50 731 ms / p95
-   1206 ms (n=48 settled, both legs); gateway `max_completion_tokens` fix;
-   pay-then-fail + settled-but-rejected failure modes recorded in
-   `spikes/pi-wielder/README.md`; PRD updated.
+1. **Pi-Wielder follow-up recorded, distribution quarantined** — the historical
+   2026-07-15 aggregate did not retain normalized per-call samples, so its n/p50/p95
+   are not publishable. See
+   `spikes/pi-wielder/evidence/2026-07-15-overhead/manifest.json`. A replacement
+   testnet run is human-authorized work and must use a new dated evidence bundle.
 2. **High-N clone-economics run** (`spikes/clone-economics/`) — required
    before any public copy leans on the N=6 result (LinkedIn Post 2, X
    clone-attack thread).

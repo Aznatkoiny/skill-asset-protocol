@@ -163,16 +163,19 @@ skill executed behind the Collar with output-only response; splits credited
 per the settlement engine — the protocol's Phase-1 Leg-1 loop, end to end,
 for $0.33 of play money.
 
-## Measured results — overhead distribution + live pi session (2026-07-15)
+## Historical overhead summary — quarantined (2026-07-15)
 
-**x402 payment overhead, n=48 settled calls** (29 claude + 19 gpt, real
-`x402.org/facilitator`, Base Sepolia): **p50 731 ms · p95 1206 ms** (mean
-830, min 487, max 1859). Decomposition: facilitator verify+settle p50 729 ms
-(the whole story); 402-roundtrip p50 1.2 ms; EIP-3009 sign p50 0.9 ms.
-End-to-end paid roundtrip including inference (green calls): claude p50
-2.15 s / p95 3.94 s; gpt p50 1.47 s / p95 3.30 s. Wallet reconciled
-on-chain to the cent: 19.299 → 16.129 USDC = one pi session ($0.287) +
-29×$0.041 + 19×$0.087 + one settled-but-rejected call ($0.041).
+The 2026-07-15 run was previously summarized as 48 settled calls across two
+providers. Its per-call normalized samples and evidence hashes were not retained,
+so a clean checkout cannot recompute the reported distribution. The historical
+aggregate is preserved in
+`evidence/2026-07-15-overhead/manifest.json` with
+`evidenceStatus: historical_unreproducible`.
+
+**Publication status:** do not cite the historical sample count, p50, or p95 in
+public copy. A future authorized testnet run must use a new dated evidence
+directory and must never overwrite the tombstone. No rerun is performed by this
+documentation change.
 
 **The gpt leg ran for the first time** (skipped 2026-07-12 for lack of a
 key) — after fixing a real gateway bug the bench surfaced: newer OpenAI
