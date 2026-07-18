@@ -205,7 +205,10 @@ export function allocateRoyaltyGraph({
     validating.add(skillId);
     for (const parentId of node.parentIds) validateReachable(parentId, depth + 1);
     validating.delete(skillId);
-    deepestValidatedDepth.set(skillId, Math.max(priorDepth ?? -1, depth));
+    deepestValidatedDepth.set(
+      skillId,
+      priorDepth == null || depth > priorDepth ? depth : priorDepth,
+    );
   }
 
   const leaf = String(leafSkillId ?? '');
