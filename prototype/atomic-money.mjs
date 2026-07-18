@@ -1,6 +1,11 @@
 export const USDC_DECIMALS = 6;
 export const ATOMIC_PER_USDC = 10n ** BigInt(USDC_DECIMALS);
 export const BPS_DENOMINATOR = 10_000n;
+export const ROYALTY_ALLOCATION_POLICY = 'lrp-per-hop-v1';
+
+const MAX_ANCESTRY_DEPTH = 32;
+const MAX_REACHABLE_SKILLS = 128;
+const MAX_DISTRIBUTION_VISITS = 1_024;
 
 export class MoneyInputError extends RangeError {
   constructor(code, message) {
@@ -125,4 +130,142 @@ export function allocateByBps(amountAtomic, shares) {
     fail('BPS_TOTAL', `basis-point allocations must sum to 10000 (got ${total})`);
   }
   return allocateByWeights(amountAtomic, normalized);
+}
+
+export function allocateRoyaltyGraph({
+  royaltyPoolAtomic,
+  leafSkillId,
+  skills,
+  allocationPolicy = ROYALTY_ALLOCATION_POLICY,
+}) {
+  const pool = assertAtomic(royaltyPoolAtomic, 'royaltyPoolAtomic');
+  if (allocationPolicy !== ROYALTY_ALLOCATION_POLICY) {
+    fail(
+      'ALLOCATION_POLICY_UNSUPPORTED',
+      `unsupported royalty allocation policy '${String(allocationPolicy)}'; `
+        + `only '${ROYALTY_ALLOCATION_POLICY}' is implemented`,
+    );
+  }
+  if (!skills || typeof skills !== 'object' || Array.isArray(skills)) {
+    fail('SKILLS_TYPE', 'skills must be an object keyed by Skill identifier');
+  }
+
+  function requireSkill(skillId) {
+    if (!Object.hasOwn(skills, skillId) || !skills[skillId] || typeof skills[skillId] !== 'object') {
+      fail('SKILL_UNKNOWN', `unknown Skill '${skillId}'`);
+    }
+    return skills[skillId];
+  }
+
+  function normalizedNode(skillId) {
+    const skill = requireSkill(skillId);
+    if (!Array.isArray(skill.parentIds)) {
+      fail('PARENTS_TYPE', `Skill '${skillId}' parentIds must be an array`);
+    }
+    if (!Array.isArray(skill.holders)) {
+      fail('HOLDERS_TYPE', `Skill '${skillId}' holders must be an array`);
+    }
+    const parentIds = skill.parentIds.map(String).sort();
+    if (new Set(parentIds).size !== parentIds.length) {
+      fail('PARENT_DUPLICATE', `Skill '${skillId}' has a duplicate parent`);
+    }
+    assertBps(skill.inheritBps, `${skillId}.inheritBps`);
+    const inheritBps = skill.inheritBps;
+    const holders = skill.holders.map((holder) => ({
+      key: holder?.recipientId,
+      bps: holder?.bps,
+    }));
+    // Validate the complete claim table even if this traversal carries zero atomic units.
+    allocateByBps(0n, holders);
+    return { parentIds, inheritBps, holders };
+  }
+
+  const deepestValidatedDepth = new Map();
+  const validating = new Set();
+  const reachableNodes = new Set();
+  function validateReachable(skillId, depth) {
+    if (depth > MAX_ANCESTRY_DEPTH) {
+      fail('ANCESTRY_DEPTH', `Derivative ancestry exceeds maximum depth ${MAX_ANCESTRY_DEPTH}`);
+    }
+    if (validating.has(skillId)) {
+      fail('ANCESTRY_CYCLE', `ancestry cycle contains Skill '${skillId}'`);
+    }
+    const priorDepth = deepestValidatedDepth.get(skillId);
+    // A prior visit at an equal or greater depth had no more remaining depth budget.
+    if (priorDepth != null && priorDepth >= depth) return;
+
+    const node = normalizedNode(skillId);
+    reachableNodes.add(skillId);
+    if (reachableNodes.size > MAX_REACHABLE_SKILLS) {
+      fail(
+        'ANCESTRY_NODES',
+        `Derivative ancestry exceeds maximum ${MAX_REACHABLE_SKILLS} reachable Skills`,
+      );
+    }
+    validating.add(skillId);
+    for (const parentId of node.parentIds) validateReachable(parentId, depth + 1);
+    validating.delete(skillId);
+    deepestValidatedDepth.set(skillId, Math.max(priorDepth ?? -1, depth));
+  }
+
+  const leaf = String(leafSkillId ?? '');
+  validateReachable(leaf, 0);
+
+  const credits = [];
+  const visiting = new Set();
+  let distributionVisits = 0;
+  function distribute(skillId, amountAtomic, depth) {
+    distributionVisits += 1;
+    if (distributionVisits > MAX_DISTRIBUTION_VISITS) {
+      fail(
+        'ANCESTRY_VISITS',
+        `Derivative ancestry distribution exceeds maximum ${MAX_DISTRIBUTION_VISITS} visits`,
+      );
+    }
+    if (depth > MAX_ANCESTRY_DEPTH) {
+      fail('ANCESTRY_DEPTH', `Derivative ancestry exceeds maximum depth ${MAX_ANCESTRY_DEPTH}`);
+    }
+    if (visiting.has(skillId)) {
+      fail('ANCESTRY_CYCLE', `ancestry cycle contains Skill '${skillId}'`);
+    }
+    visiting.add(skillId);
+
+    const node = normalizedNode(skillId);
+    const ancestorPool = node.parentIds.length
+      ? floorBps(amountAtomic, node.inheritBps)
+      : 0n;
+    const ownPool = amountAtomic - ancestorPool;
+    const holderRows = allocateByBps(ownPool, node.holders);
+    for (const row of holderRows) {
+      credits.push({
+        recipientId: row.key,
+        viaSkillId: skillId,
+        depth,
+        kind: depth === 0 ? 'holder' : 'ancestor',
+        amountAtomic: row.amountAtomic,
+      });
+    }
+
+    if (node.parentIds.length && ancestorPool > 0n) {
+      const parentRows = allocateByWeights(
+        ancestorPool,
+        node.parentIds.map((parentId) => ({ key: parentId, weight: 1 })),
+      );
+      for (const row of parentRows) distribute(row.key, row.amountAtomic, depth + 1);
+    }
+    visiting.delete(skillId);
+  }
+
+  distribute(leaf, pool, 0);
+  const credited = credits.reduce((sum, credit) => sum + credit.amountAtomic, 0n);
+  if (credited !== pool) {
+    throw new Error(`internal invariant: credits ${credited} do not equal Royalty pool ${pool}`);
+  }
+  return {
+    allocationPolicy,
+    royaltyPoolAtomic: pool,
+    credits,
+    holderCredits: credits.filter((credit) => credit.kind === 'holder'),
+    ancestorCredits: credits.filter((credit) => credit.kind === 'ancestor'),
+  };
 }
