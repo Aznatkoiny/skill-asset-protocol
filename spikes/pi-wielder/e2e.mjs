@@ -145,17 +145,41 @@ ok(
 );
 const authoritative = collar.journal.getByTxHash(entries[2].txHash);
 eq(entries[2].receipt.receipt.invocationId, authoritative.invocationId, 'receipt view points to the authoritative Collar Invocation');
-const accounting = entries[2].receipt.receipt.accounting;
+const skillReceipt = entries[2].receipt.receipt;
+const skillAccounting = skillReceipt.accounting;
+eq(skillReceipt.quote.schemaVersion, 2, 'Skill receipt uses the strict quote schema');
+eq(
+  skillReceipt.quote.executionQuote.quoteId,
+  skillAccounting.quoteId,
+  'signed receipt accounting is bound to the accepted execution quote',
+);
+eq(skillAccounting.executionCogs.status, 'known', 'mock provider usage is explicitly known');
+eq(skillAccounting.executionCogs.actualAtomic, '756', 'mock provider COGS uses the versioned catalog');
+eq(skillAccounting.executionCostAtomic, '756', 'final allocation charges the known execution COGS');
+eq(skillAccounting.settlementCostAtomic, '1000', 'settlement cost is allocated before royalties');
+eq(skillAccounting.protocolFeeAtomic, '6250', 'protocol fee remains exact');
+eq(skillAccounting.refundReserveAtomic, '5000', 'refund reserve remains explicit');
+eq(skillAccounting.royaltyPoolAtomic, '236994', 'Royalty pool is the exact post-cost residual');
+eq(skillAccounting.contributionMarginAtomic, '6250', 'contribution margin remains the retained protocol fee');
+ok(
+  BigInt(skillAccounting.executionCostAtomic)
+    + BigInt(skillAccounting.settlementCostAtomic)
+    + BigInt(skillAccounting.protocolFeeAtomic)
+    + BigInt(skillAccounting.royaltyPoolAtomic)
+    + BigInt(skillAccounting.refundReserveAtomic)
+    === BigInt(skillAccounting.grossAtomic),
+  'receipt accounting conserves 250,000 atomic USDC exactly',
+);
 eq(entries[2].splits, [
-  ...accounting.holderCredits.map((credit) => ({
+  ...skillAccounting.holderCredits.map((credit) => ({
     party: credit.recipientId,
     amountAtomic: credit.amountAtomic,
   })),
-  ...accounting.ancestorCredits.map((credit) => ({
+  ...skillAccounting.ancestorCredits.map((credit) => ({
     party: credit.recipientId,
     amountAtomic: credit.amountAtomic,
   })),
-  { party: 'treasury', amountAtomic: accounting.protocolFeeAtomic },
+  { party: 'treasury', amountAtomic: skillAccounting.protocolFeeAtomic },
 ], 'displayed claims are projected only from finalized signed accounting');
 
 console.log('\nidempotency and replay:');

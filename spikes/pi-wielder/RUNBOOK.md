@@ -146,6 +146,19 @@ reconciliation design exists. Do not manually rewrite the journal.
 
 ## 5. Live Base Sepolia boundary — intentionally blocked in the CLI
 
+Before a live provider run, verify the current provider price sheet, add a new immutable
+catalog version with `evidenceLabel: human_verified`, source, and as-of timestamp. Compute
+its exact canonical `catalogDigest`, set that separately as `LIVE_CATALOG_DIGEST`, set an
+atomic `LIVE_SPEND_CAP_ATOMIC`, then set `ALLOW_LIVE_PROVIDER=1` and `MOCK_LLM=0`. Supply
+the provider credential only through the operator's secret injection. Do not embed approval
+or spend authorization in the catalog itself. Never relabel
+`synthetic-anthropic-2026-07-17-v1` as measured. Automated verification stays on the
+mock facilitator and mock model and uses no real funds.
+
+Provider approval is separate from the x402 settlement gate below. Both gates must be
+satisfied by a future integration; enabling either one does not implicitly authorize
+the other.
+
 Live mode is opt-in only:
 
 ```dotenv

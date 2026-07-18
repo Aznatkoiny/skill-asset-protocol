@@ -11,6 +11,7 @@
     "test:proxy": "node --test tests/proxy-trust.test.mjs",
     "test:policy": "node --test tests/payment-policy.test.mjs",
     "test:payment": "node --test tests/payment-policy.test.mjs tests/paying-fetch.test.mjs tests/seller-payment-response.test.mjs",
+    "test:economics": "node --test tests/execution-economics.test.mjs tests/artifact-boundary.test.mjs tests/collar-cogs.test.mjs",
     "e2e": "MOCK_LLM=1 node e2e.mjs",
     "collar": "node src/collar.mjs",
     "gateway": "node src/gateway.mjs",

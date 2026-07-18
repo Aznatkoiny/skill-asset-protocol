@@ -74,8 +74,10 @@ socket:
 2. The Wielder signs one EIP-3009 authorization per challenge and retries with the same
    Wielder-owned idempotency key after the local payment policy reserves budget.
 3. The Collar records one authoritative external Invocation and returns derived output
-   plus a signed receipt. The hosted `SKILL.md` bytes are read server-side and are not
-   directly returned.
+   plus a signed receipt. The Collar does not directly return or serialize the hosted
+   Skill artifact. A narrow runtime guard rejects full or long exact artifact fragments.
+   Model-output extraction can never be ruled out categorically; prompt-injection
+   resistance remains adversarial test evidence, not a secrecy guarantee.
 4. An exact terminal retry returns the same receipt without another settlement or Skill
    execution. Different request bytes under the same key return `409`.
 5. A lost settlement response becomes `unresolved`; exact retries return `503` and do
@@ -85,15 +87,19 @@ socket:
    projected from the signed receipt; a failed full-gross hold produces no invented
    creator or treasury claim.
 
-The displayed successful mock session currently looks like:
+For the deterministic mock fixture, a 250,000-atomic-USDC gross Invocation allocates
+756 to synthetic-config execution COGS, 1,000 to settlement cost, 6,250 to protocol
+fee, 5,000 to refund reserve, and 236,994 to the Royalty pool. These are mock accounting
+values, not observed live provider economics. If provider usage is missing, the settled
+Invocation fails `COGS_UNKNOWN`, emits no output or Royalty credits, and holds full gross
+in `pending_cogs_reconciliation` until trusted reconciliation or refund.
 
-```text
-claude/plan $0.041 [succeeded] · gpt/implement $0.087 [succeeded] · skill/optimizing-claude-code-prompts $0.25 [succeeded] → creator $0.24375 / treasury $0.00625
-  session receipt total $0.378 across 3 settled calls, one wallet
-```
+The complete payer-side mock session totals 378,000 atomic USDC across two model calls
+and one hosted-Skill Invocation. It is deliberately not described as a unified
+authoritative ledger.
 
-This is a payer-side view across independent sellers. It is deliberately not described
-as a unified authoritative ledger.
+The quoted execution catalog is immutable and versioned. Its initial rates are labeled
+`synthetic_config`; they are proof fixtures rather than current provider pricing.
 
 ## Failure and refund semantics
 
@@ -150,7 +156,7 @@ npm test
 npm run e2e
 ```
 
-Expected current results are 141 offline unit/integration tests and 30 offline e2e
+Expected current results are 172 offline unit/integration tests and 41 offline e2e
 checks. Counts can increase as regressions are added; zero failures is the contract.
 The e2e labels all timing output synthetic and uses in-process Hono requests only.
 
@@ -162,6 +168,7 @@ npm run test:collar
 npm run test:proxy
 npm run test:policy
 npm run test:payment
+npm run test:economics
 ```
 
 For standalone mock processes, persistent trust bootstrapping, and the intentionally
@@ -198,9 +205,10 @@ blocked live boundary, see [RUNBOOK.md](./RUNBOOK.md).
   DER. A key ID or key embedded in a receipt cannot authenticate that receipt.
 - The Pi extension is a manual demo adapter and is not compiled by this spike's test
   suite.
-- Successful mock accounting currently passes zero execution and settlement COGS into
-  the atomic allocator. That is explicit spike behavior, not a validated production
-  margin model.
+- Successful mock accounting records synthetic-config provider usage and allocates
+  execution COGS and settlement cost before the Royalty pool. It is executable evidence
+  of ordering and conservation, not a validated production margin model or current
+  provider-price claim.
 
 ## Protocol implementation note
 
