@@ -38,14 +38,31 @@ for (const args of [
   });
 }
 
-test("help exposes only demo, check, and explicit stale-lock recovery", async () => {
+test("help exposes chain commands and read-only attestation surfaces", async () => {
   const fixture = dependencies();
   assert.equal(await runCommand([], fixture.deps), 0);
   const output = fixture.lines.join("\n");
   assert.match(output, /npm run demo/);
   assert.match(output, /npm run check/);
   assert.match(output, /npm run recover-stale-lock/);
+  assert.match(output, /npm run attestation-status/);
+  assert.match(output, /npm run attestation-verify-repository/);
   assert.doesNotMatch(output, /create-collection|register-skill|register-derivative/);
+});
+
+test("attestation commands receive parsed machine-readable options without Story construction", async () => {
+  const fixture = dependencies();
+  const calls: unknown[] = [];
+  fixture.deps.attestation = async (command, options) => { calls.push({ command, options }); };
+  assert.equal(await runCommand(["attestation-status"], fixture.deps, {
+    artifactHash: `0x${"0".repeat(64)}`,
+    json: true,
+  }), 0);
+  assert.deepEqual(calls, [{
+    command: "attestation-status",
+    options: { artifactHash: `0x${"0".repeat(64)}`, json: true },
+  }]);
+  assert.deepEqual(fixture.calls, { check: 0, demo: 0, recover: [] });
 });
 
 for (const retired of ["create-collection", "register-skill", "register-derivative"] as const) {

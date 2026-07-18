@@ -14,6 +14,7 @@ import {
   displayAttestation,
   organizationStatementHash,
   parseAttestationEvent,
+  registrationSubjectsFromManifest,
   reduceAttestationEvents,
   repositoryStatementHash,
   type AttestationRevokedEvent,
@@ -24,6 +25,8 @@ import {
   type RepositoryControlChallengeV1,
   type RepositoryControlEvent,
 } from "../src/attestations";
+import { renderAttestationStatus } from "../src/attestation-cli";
+import { createEmptyRegistrationManifest } from "../src/registrations";
 
 const HASH_A = `0x${"1".repeat(64)}` as const;
 const HASH_B = `0x${"2".repeat(64)}` as const;
@@ -101,6 +104,15 @@ test("wallet assertion is seeded only by base subjects", async () => {
     () => parseAttestationEvent({ type: "attestation_revoked", level: "wallet_asserted" }),
     /unexpected or missing|cannot be revoked/,
   );
+});
+
+test("not-run manifests produce no base assertion and status JSON stays empty", async () => {
+  assert.deepEqual(registrationSubjectsFromManifest(createEmptyRegistrationManifest()), []);
+  const index = await reduceAttestationEvents([], { baseSubjects: [] });
+  assert.deepEqual(JSON.parse(renderAttestationStatus(index, {
+    artifactHash: `0x${"0".repeat(64)}`,
+    json: true,
+  })[0]), { registrations: [], conflicts: [] });
 });
 
 test("wallet-signed repository evidence requires the injected repository verifier", async () => {
@@ -263,4 +275,15 @@ test("sequence gaps, duplicate IDs, malformed normalized inputs, and overclaim t
   const state = await reduceAttestationEvents([], { baseSubjects: [base] });
   const rendered = JSON.stringify(displayAttestation(state, base.registrationId)).toLowerCase();
   assert.doesNotMatch(rendered, /authored by|safe skill|proves originality|proves safety/);
+});
+
+test("human status output uses explicit evidence-level language", async () => {
+  const account = privateKeyToAccount(generatePrivateKey());
+  const base = subject(IP_A, account.address);
+  const index = await reduceAttestationEvents([], { baseSubjects: [base] });
+  const output = renderAttestationStatus(index, { registrationId: base.registrationId }).join("\n");
+  assert.match(output, /attestation: wallet_asserted/);
+  assert.match(output, /claim: wallet registered these bytes and declared this ancestry/);
+  assert.match(output, /safety review: not_reviewed/);
+  assert.match(output, /warning: registration does not prove authorship, originality, legal ownership, or safety/);
 });

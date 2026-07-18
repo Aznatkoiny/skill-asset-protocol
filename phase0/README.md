@@ -36,6 +36,91 @@ transaction hashes, event-derived IP IDs and license fields, declared parent
 edges, fee caps, and exact metadata URI/hash pairs. These are wallet and chain
 facts, not proof that the wallet authored the artifacts.
 
+## Offline attestation sidecar
+
+Registration remains immutable. Optional evidence is recorded in the local,
+ignored `attestations.jsonl` append-only sidecar and rendered at one of three
+levels:
+
+1. `wallet_asserted`: a wallet registered these bytes and declared this
+   ancestry;
+2. `repository_control_verified`: a wallet signature and matching bytes were
+   verified against a trusted forge observation and verifier-provisioned Git
+   snapshot;
+3. `organization_approved`: a named, allow-listed organization signer approved
+   the Skill and Creator relationship.
+
+Safety review is a separate status. Duplicate artifact bytes registered by
+different wallets produce a visible deterministic conflict; no arrival order
+chooses an owner. Challenge openings must be signed by the existing challenger
+registration wallet. Resolution and revocation bundles must be pre-signed by an
+admin listed in `attestation-admins.json`. Revocation removes only the named
+higher evidence level and does not delete registration, event, conflict, or
+chain history. The `wallet_asserted` confirmed-proof floor cannot be created or
+revoked through the sidecar.
+
+Inspect evidence without a network or chain write:
+
+```bash
+npm run attestation-status -- --artifact-hash 0x<64-lowercase-hex> --json
+npm run attestation-status -- --registration-id eip155:1315:0x<40-lowercase-hex>
+npm run attestation-conflicts -- --json
+```
+
+Append only fully signed, offline-verifiable bundles:
+
+```bash
+npm run attestation-verify-repository -- --bundle /absolute/path/repository-bundle.json
+npm run attestation-verify-organization -- --bundle /absolute/path/organization-event.json
+npm run attestation-append-challenge -- --bundle /absolute/path/challenge-event.json
+npm run attestation-resolve -- --bundle /absolute/path/resolution-event.json
+npm run attestation-revoke -- --bundle /absolute/path/revocation-event.json
+```
+
+Repository bundles contain the wallet-signed challenge and the forge
+observation. They do not accept a repository path, trusted ref, public key, or
+trust-root override. `repository-trust.json` fixes the repository URL, checkout
+key, trusted ref, and allowed forge signer IDs. Public forge keys live in
+`forge-signers.json`; both trust-root files are empty by default.
+
+The verifier resolves each checkout key through the machine-local file
+`phase0/.attestation-checkouts.local.json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "checkouts": {
+    "example-checkout-key": "/canonical/absolute/path/to/verifier-checkout"
+  }
+}
+```
+
+The file must be a non-symlink regular file owned by the current user with mode
+`0600` (`chmod 600 phase0/.attestation-checkouts.local.json`). Every checkout
+must already be its canonical absolute real path, be owned by the current user,
+and not be group- or world-writable. An optional absolute
+`PHASE0_ATTESTATION_CHECKOUTS_FILE` may point outside the repository; an
+in-repository override must equal the exact ignored default path. Missing
+configuration fails with `repository snapshot mapping unavailable` before Git
+runs. This machine-local mapping must never be staged, copied into a bundle, or
+used as claimant evidence.
+
+`repository_control_verified` means a trusted forge observer and a
+verifier-provisioned Git snapshot matched the wallet-signed bytes at an
+observation time. It does not prove current remote account ownership or
+continuing hosting.
+
+An attestation records evidence about who made or approved a registration. It
+does not prove originality, legal ownership, absence of prior art, or Skill
+safety. Safety review is a separate status.
+
+The local sidecar uses an owner-only lock and exact-token stale recovery. Inspect
+the printed lock metadata and prove its PID is absent before running:
+
+```bash
+npm run attestation-recover-lock -- --lock-token <exact-token>
+```
+
 Before broadcast, the demo signs the transaction locally and atomically saves
 its hash, serialized testnet transaction, and canonical operation intent to the
 mode-0600, ignored `pending-transactions.json`. The whole demo holds an exclusive

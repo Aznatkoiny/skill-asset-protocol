@@ -620,13 +620,13 @@ export async function verifyAdminEventSignature(
 export function registrationSubjectsFromManifest(manifest: RegistrationManifest): RegistrationSubject[] {
   if (manifest.status === "not-run") return [];
   if (!manifest.wallet) throw new Error("confirmed registration manifest wallet is required");
-  return (Object.values(manifest.registrations).filter((proof) => proof !== null)).map((proof) => ({
+  return deepFreeze((Object.values(manifest.registrations).filter((proof) => proof !== null)).map((proof) => ({
     registrationId: `eip155:1315:${proof.ipId.toLowerCase()}` as `eip155:1315:${string}`,
     ipId: proof.ipId.toLowerCase() as `0x${string}`,
     wallet: manifest.wallet!.toLowerCase() as `0x${string}`,
     artifactHash: proof.metadata.artifact.mediaHash.toLowerCase() as `0x${string}`,
     declaredParentIpIds: proof.parentIpIds.map((parent) => parent.toLowerCase() as `0x${string}`),
-  }));
+  })));
 }
 
 export function deterministicConflictId(a: RegistrationSubject, b: RegistrationSubject): string {
