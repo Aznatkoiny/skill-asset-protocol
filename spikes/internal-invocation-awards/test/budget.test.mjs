@@ -240,6 +240,41 @@ test('signed budget authorization is immutable and separate from mutable counter
   );
 });
 
+test('finance signer lookup ignores inherited entries and rejects accessor trust roots', () => {
+  const fixture = financeFixture();
+  const signerId = fixture.signedBudget.signerId;
+  const trustedPublicKey = fixture.trustedFinanceSigners[signerId];
+  Object.defineProperty(Object.prototype, signerId, {
+    configurable: true,
+    enumerable: false,
+    writable: true,
+    value: trustedPublicKey,
+  });
+  try {
+    assert.throws(() => createBudget(fixture.signedBudget, {
+      trustedFinanceSigners: {},
+      policy: ACTIVE_POLICY,
+      now: NOW,
+    }), /trusted finance signer is not provisioned/);
+  } finally {
+    Reflect.deleteProperty(Object.prototype, signerId);
+  }
+
+  const accessorMap = {};
+  Object.defineProperty(accessorMap, signerId, {
+    configurable: true,
+    enumerable: true,
+    get() {
+      return trustedPublicKey;
+    },
+  });
+  assert.throws(() => createBudget(fixture.signedBudget, {
+    trustedFinanceSigners: accessorMap,
+    policy: ACTIVE_POLICY,
+    now: NOW,
+  }), /trustedFinanceSigners.*data properties/);
+});
+
 test('finance verification accepts canonical Ed25519 public SPKI only', () => {
   const rsa = generateKeyPairSync('rsa', { modulusLength: 512 });
   const rsaBudget = signBudget(UNSIGNED_BUDGET_AUTHORIZATION, rsa.privateKey);

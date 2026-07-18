@@ -111,12 +111,26 @@ function validateTrustedSignerMap(value) {
       || Object.getPrototypeOf(value) !== Object.prototype) {
     throw new Error('trustedFinanceSigners must be an object');
   }
-  const normalized = {};
-  for (const [signerId, key] of Object.entries(value)) {
+  const normalized = Object.create(null);
+  for (const propertyKey of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, propertyKey);
+    if (typeof propertyKey !== 'string' || !descriptor?.enumerable
+        || !Object.hasOwn(descriptor, 'value')) {
+      throw new Error('trustedFinanceSigners entries must be enumerable own data properties');
+    }
+    const signerId = propertyKey;
     requireNonEmpty(signerId, 'finance signer ID');
-    normalized[signerId] = normalizeEd25519PublicKey(key, `trusted finance signer ${signerId}`);
+    Object.defineProperty(normalized, signerId, {
+      configurable: false,
+      enumerable: true,
+      writable: false,
+      value: normalizeEd25519PublicKey(
+        descriptor.value,
+        `trusted finance signer ${signerId}`,
+      ),
+    });
   }
-  return cloneFrozen(normalized);
+  return Object.freeze(normalized);
 }
 
 export function createBudget(signedBudget, { trustedFinanceSigners, policy: policyInput, now }) {
@@ -136,10 +150,10 @@ export function createBudget(signedBudget, { trustedFinanceSigners, policy: poli
   if (!policy.permittedFinanceSignerIds.includes(unsigned.signerId)) {
     throw new Error('finance signer is not permitted by policy');
   }
-  const trustedKey = normalizedFinanceSigners[unsigned.signerId];
-  if (typeof trustedKey !== 'string' || trustedKey.length === 0) {
+  if (!Object.hasOwn(normalizedFinanceSigners, unsigned.signerId)) {
     throw new Error('trusted finance signer is not provisioned');
   }
+  const trustedKey = normalizedFinanceSigners[unsigned.signerId];
   const at = parseUtc(now, 'now');
   const effectiveAt = parseUtc(unsigned.effectiveAt, 'budget effectiveAt');
   const expiresAt = parseUtc(unsigned.expiresAt, 'budget expiresAt');

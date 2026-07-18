@@ -170,6 +170,7 @@ function fixture({
   budgetOverrides = {},
   registrations,
   receiptSign = null,
+  additionalCredentialAuthorizers = {},
 } = {}) {
   const finance = generateKeyPairSync('ed25519');
   const authorizer = generateKeyPairSync('ed25519');
@@ -207,7 +208,10 @@ function fixture({
     skillRegistrations,
     financeSigners: { 'megacorp-finance': publicPem(finance) },
     managerSigners: { 'manager-alex': publicPem(manager) },
-    credentialAuthorizers: { 'megacorp-collar-authorizer': publicPem(authorizer) },
+    credentialAuthorizers: {
+      'megacorp-collar-authorizer': publicPem(authorizer),
+      ...additionalCredentialAuthorizers,
+    },
     identitySigners: { 'megacorp-identity': publicPem(identity) },
     receiptSigners: { 'megacorp-receipts': publicPem(receipt) },
     clock: () => clock.now,
@@ -463,6 +467,55 @@ test('successful execution atomically commits policy-bound signed receipt and ex
   assert.doesNotThrow(() => JSON.stringify(result));
 });
 
+test('execution captures an accessor-backed signed credential once before authorizer lookup', async () => {
+  const alternateAuthorizer = generateKeyPairSync('ed25519');
+  const alternateAuthorizerId = 'megacorp-alternate-authorizer';
+  const fx = fixture({
+    policyOverrides: {
+      permittedCredentialAuthorizerIds: [
+        'megacorp-collar-authorizer',
+        alternateAuthorizerId,
+      ],
+    },
+    additionalCredentialAuthorizers: {
+      [alternateAuthorizerId]: publicPem(alternateAuthorizer),
+    },
+  });
+  const q = makeQuote(fx.activePolicy, 'credential-snapshot');
+  const authorized = await authorize(fx, q);
+  const signedByAlternate = signCredential(
+    authorized.credentialPayload,
+    alternateAuthorizer.privateKey,
+  );
+  let authorizerReads = 0;
+  const switchingCredential = { ...signedByAlternate };
+  Object.defineProperty(switchingCredential, 'credentialAuthorizerId', {
+    enumerable: true,
+    configurable: true,
+    get() {
+      authorizerReads += 1;
+      return authorizerReads === 1
+        ? alternateAuthorizerId
+        : 'megacorp-collar-authorizer';
+    },
+  });
+  let executorCalls = 0;
+
+  await assert.rejects(() => executeAuthorizedInvocation({
+    store: fx.store,
+    quote: q,
+    credential: switchingCredential,
+    executor: async () => {
+      executorCalls += 1;
+      return { kind: 'succeeded', executionCostAtomic: '700000', outputHash: OUTPUT_HASH };
+    },
+  }), /credential signature|credential payload/i);
+
+  assert.equal(authorizerReads, 1);
+  assert.equal(executorCalls, 0);
+  assert.equal(fx.store.snapshot().invocations[q.invocationId].state, 'authorized');
+});
+
 test('consumed terminal credentials reject and never invoke executor again', async () => {
   const fx = fixture();
   const q = makeQuote(fx.activePolicy, 'retry');
@@ -490,6 +543,55 @@ test('consumed terminal credentials reject and never invoke executor again', asy
   assert.equal(calls, 1);
   assert.equal(first.invocation.state, 'succeeded');
   assert.equal(Object.keys(fx.store.snapshot().receipts).length, 1);
+});
+
+test('terminal replay captures an accessor-backed signed credential once before verification', async () => {
+  const alternateAuthorizer = generateKeyPairSync('ed25519');
+  const alternateAuthorizerId = 'megacorp-alternate-authorizer';
+  const fx = fixture({
+    policyOverrides: {
+      permittedCredentialAuthorizerIds: [
+        'megacorp-collar-authorizer',
+        alternateAuthorizerId,
+      ],
+    },
+    additionalCredentialAuthorizers: {
+      [alternateAuthorizerId]: publicPem(alternateAuthorizer),
+    },
+  });
+  const q = makeQuote(fx.activePolicy, 'terminal-credential-snapshot');
+  const authorized = await authorize(fx, q);
+  await executeSuccess(fx, q, authorized);
+  const signedByAlternate = signCredential(
+    authorized.credentialPayload,
+    alternateAuthorizer.privateKey,
+  );
+  let authorizerReads = 0;
+  const switchingCredential = { ...signedByAlternate };
+  Object.defineProperty(switchingCredential, 'credentialAuthorizerId', {
+    enumerable: true,
+    configurable: true,
+    get() {
+      authorizerReads += 1;
+      return authorizerReads === 1
+        ? alternateAuthorizerId
+        : 'megacorp-collar-authorizer';
+    },
+  });
+  let executorCalls = 0;
+
+  await assert.rejects(() => executeAuthorizedInvocation({
+    store: fx.store,
+    quote: q,
+    credential: switchingCredential,
+    executor: async () => {
+      executorCalls += 1;
+      throw new Error('terminal replay must not invoke executor');
+    },
+  }), /credential signature|credential payload/i);
+
+  assert.equal(authorizerReads, 1);
+  assert.equal(executorCalls, 0);
 });
 
 test('validated known failure records exactly one shared-kernel execution COGS row', async () => {

@@ -966,9 +966,10 @@ export async function recordAwardReversal(input) {
 
 export async function executeAuthorizedInvocation(input) {
   requireExactKeys(input, EXECUTE_KEYS, 'execution input');
+  const credential = cloneFrozen(input.credential);
   const initial = input.store.snapshot();
   capabilitiesFor(initial);
-  const replay = verifyTerminalReplay(initial, input.quote, input.credential);
+  const replay = verifyTerminalReplay(initial, input.quote, credential);
   if (replay) {
     if (replay.invocation.state === 'cancelled') {
       throw new Error('credential authorization was cancelled and reservation released');
@@ -1012,7 +1013,7 @@ export async function executeAuthorizedInvocation(input) {
         !== invocation.principalAttestationHash) {
       throw new Error('persisted initiating-principal attestation hash changed');
     }
-    const authorizerId = input.credential?.credentialAuthorizerId;
+    const authorizerId = credential?.credentialAuthorizerId;
     if (typeof authorizerId !== 'string'
         || !policy.permittedCredentialAuthorizerIds.includes(authorizerId)) {
       throw new Error('credential authorizer is not permitted by policy');
@@ -1020,7 +1021,7 @@ export async function executeAuthorizedInvocation(input) {
     const trustedKey = current.credentialAuthorizers[authorizerId];
     if (!trustedKey) throw new Error('credential authorizer is not provisioned');
     compareCredentialPayload(
-      verifyCredential(input.credential, trustedKey, now),
+      verifyCredential(credential, trustedKey, now),
       invocation.credentialPayload,
     );
     const executionAttemptId = `attempt-${invocation.invocationId}-${invocation.credentialNonce}`;
