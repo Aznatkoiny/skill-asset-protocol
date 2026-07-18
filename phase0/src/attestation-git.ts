@@ -258,6 +258,16 @@ export function normalizeForgePublicKey(value: unknown): string {
   return canonical;
 }
 
+function assertForgeSignerMap(value: unknown): asserts value is Readonly<Record<string, string>> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("forge signer trust must be a plain or null-prototype record");
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new Error("forge signer trust must be a plain or null-prototype record");
+  }
+}
+
 export function verifyForgeObservation(
   observationValue: ForgeObservationV1,
   trusted: TrustedRepository,
@@ -272,8 +282,11 @@ export function verifyForgeObservation(
   if (!trusted.permittedForgeSignerIds.includes(observation.forgeSignerId)) {
     throw new Error("forge signer is not permitted for this repository");
   }
+  assertForgeSignerMap(forgeSigners);
+  if (!Object.hasOwn(forgeSigners, observation.forgeSignerId)) {
+    throw new Error("forge signer is unknown; signer ID must be an own property of the trust map");
+  }
   const publicKey = forgeSigners[observation.forgeSignerId];
-  if (!publicKey) throw new Error("forge signer is unknown");
   const canonicalPublicKey = normalizeForgePublicKey(publicKey);
   let signatureBytes: Buffer;
   try {

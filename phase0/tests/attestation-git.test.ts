@@ -184,6 +184,31 @@ test("forge observation signatures must be canonical base64 encoding of exactly 
   }
 });
 
+test("forge observation trust rejects inherited signer entries and exotic map prototypes", async (t) => {
+  const f = await fixture(t);
+  const trusted = f.repositories.resolve("demo", REPOSITORY_URL);
+  const canonicalPublicKey = f.forge.publicKey.export({ type: "spki", format: "pem" }).toString();
+  Object.defineProperty(Object.prototype, "forge-1", {
+    configurable: true,
+    enumerable: false,
+    value: canonicalPublicKey,
+  });
+  try {
+    assert.throws(
+      () => verifyForgeObservation(f.forgeObservation, trusted, {}),
+      /own property/,
+    );
+  } finally {
+    delete (Object.prototype as Record<string, unknown>)["forge-1"];
+  }
+
+  const inherited = Object.create({ "forge-1": canonicalPublicKey }) as Record<string, string>;
+  assert.throws(
+    () => verifyForgeObservation(f.forgeObservation, trusted, inherited),
+    /plain or null-prototype record/,
+  );
+});
+
 test("repository verification rejects signed-binding and snapshot tampering", async (t) => {
   const f = await fixture(t);
   const base = {
