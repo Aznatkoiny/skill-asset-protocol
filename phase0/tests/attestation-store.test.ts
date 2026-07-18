@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -169,4 +169,37 @@ test("writeAll handles short writes and rejects zero or invalid progress", async
   assert.deepEqual(Buffer.concat(chunks), source);
   await assert.rejects(writeAll({ async write() { return { bytesWritten: 0 }; } }, source), /made no progress/);
   await assert.rejects(writeAll({ async write(_buffer, _offset, length) { return { bytesWritten: length + 1 }; } }, source), /invalid byte count/);
+});
+
+test("failed acquisition never deletes a replacement lock owner", async (t) => {
+  let store!: FileAttestationStore;
+  const f = await fixture(t, {
+    afterLockCreated: async () => {
+      await rename(`${f.path}.lock`, `${f.path}.lock.original`);
+      await writeFile(`${f.path}.lock`, `${JSON.stringify({
+        schemaVersion: 1,
+        pid: 777_777,
+        token: "f".repeat(32),
+        targetPath: f.path,
+        acquiredAt: NOW,
+      })}\n`, { mode: 0o600 });
+      throw new Error("injected failure after replacement");
+    },
+  });
+  store = f.store;
+  await assert.rejects(store.load(), /observed owner was retained/);
+  const replacement = JSON.parse(await readFile(`${f.path}.lock`, "utf8"));
+  assert.equal(replacement.token, "f".repeat(32));
+});
+
+test("event log rejects symlinks and non-owner-only modes", async (t) => {
+  const f = await fixture(t);
+  const victim = resolve(f.directory, "victim.jsonl");
+  await writeFile(victim, "", { mode: 0o600 });
+  await symlink(victim, f.path);
+  await assert.rejects(f.store.load(), /must not be a symlink|non-symlink/);
+  await rm(f.path);
+  await writeFile(f.path, "", { mode: 0o644 });
+  await chmod(f.path, 0o644);
+  await assert.rejects(f.store.load(), /mode 0600/);
 });

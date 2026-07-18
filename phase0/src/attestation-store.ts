@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { constants } from "node:fs";
 import { link, mkdir, open, rename, stat, unlink, type FileHandle } from "node:fs/promises";
 import { dirname } from "node:path";
 
@@ -59,7 +60,7 @@ export async function writeAll(handle: WriteAllHandle, bytes: Uint8Array): Promi
 }
 
 async function syncDirectory(path: string): Promise<void> {
-  const handle = await open(path, "r");
+  const handle = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   try { await handle.sync(); } finally { await handle.close(); }
 }
 
@@ -86,9 +87,10 @@ function parseLock(value: unknown): AttestationLockMetadata {
 }
 
 async function readMode0600(path: string, label: string): Promise<string> {
-  const handle = await open(path, "r");
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const metadata = await handle.stat();
+    if (!metadata.isFile()) throw new Error(`${label} must be a non-symlink regular file`);
     if ((metadata.mode & 0o777) !== 0o600) throw new Error(`${label} must have mode 0600`);
     return await handle.readFile("utf8");
   } finally {
@@ -125,17 +127,28 @@ export class FileAttestationStore {
 
   async append(eventValue: AttestationEvent): Promise<void> {
     await this.withLock(async () => {
-      const events = await this.loadUnlocked();
+      const snapshot = await this.readLogSnapshot();
+      const events = snapshot.events;
       const event = parseAttestationEvent(eventValue);
       if (event.sequence !== events.length + 1) throw new Error(`attestation event sequence must equal ${events.length + 1}`);
       if (events.some((prior) => prior.eventId === event.eventId)) throw new Error(`duplicate attestation event ID ${event.eventId}`);
       const candidate = [...events, event];
       await this.validateEvents(candidate);
-      await this.options.hooks?.beforeAppendWrite?.();
       await mkdir(dirname(this.path), { recursive: true });
       let handle: FileHandle | null = null;
       try {
-        handle = await open(this.path, "a", 0o600);
+        handle = await open(
+          this.path,
+          constants.O_RDWR | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW,
+          0o600,
+        );
+        const metadata = await handle.stat();
+        if (!metadata.isFile() || (metadata.mode & 0o777) !== 0o600) {
+          throw new Error("attestation log must be a non-symlink regular file with mode 0600");
+        }
+        const boundBytes = await handle.readFile("utf8");
+        if (boundBytes !== snapshot.bytes) throw new Error("attestation log changed between validation and append");
+        await this.options.hooks?.beforeAppendWrite?.();
         const bytes = Buffer.from(`${JSON.stringify(event)}\n`, "utf8");
         await writeAll(handle, bytes);
         await handle.sync();
@@ -191,20 +204,31 @@ export class FileAttestationStore {
   }
 
   private async loadUnlocked(): Promise<AttestationEvent[]> {
+    return (await this.readLogSnapshot()).events;
+  }
+
+  private async readLogSnapshot(): Promise<{ events: AttestationEvent[]; bytes: string }> {
     let bytes: string;
-    try { bytes = await open(this.path, "r").then(async (handle) => {
-      try { return await handle.readFile("utf8"); } finally { await handle.close(); }
+    try { bytes = await open(this.path, constants.O_RDONLY | constants.O_NOFOLLOW).then(async (handle) => {
+      try {
+        const metadata = await handle.stat();
+        if (!metadata.isFile() || (metadata.mode & 0o777) !== 0o600) {
+          throw new Error("attestation log must be a non-symlink regular file with mode 0600");
+        }
+        return await handle.readFile("utf8");
+      } finally { await handle.close(); }
     }); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { events: [], bytes: "" };
+      if ((error as NodeJS.ErrnoException).code === "ELOOP") throw new Error("attestation log must not be a symlink", { cause: error });
       throw error;
     }
-    if (bytes === "") return [];
+    if (bytes === "") return { events: [], bytes };
     if (!bytes.endsWith("\n")) throw new Error("attestation log has a malformed trailing fragment");
     const lines = bytes.slice(0, -1).split("\n");
     if (lines.some((line) => line.length === 0)) throw new Error("attestation log contains an empty or malformed line");
     const events = lines.map(parseJsonLine);
     await this.validateEvents(events);
-    return events;
+    return { events, bytes };
   }
 
   private async withLock<T>(operation: () => Promise<T>): Promise<T> {
@@ -225,13 +249,19 @@ export class FileAttestationStore {
     let created = false;
     try {
       try {
-        handle = await open(this.lockPath, "wx", 0o600);
+        handle = await open(
+          this.lockPath,
+          constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+          0o600,
+        );
         created = true;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
         const existing = await this.readLock();
         throw new Error(`attestation store locked by PID ${existing.owner.pid}, token ${existing.owner.token}`, { cause: error });
       }
+      const metadata = await handle.stat();
+      if (!metadata.isFile() || (metadata.mode & 0o777) !== 0o600) throw new Error("attestation store lock must be a mode-0600 regular file");
       await writeAll(handle, Buffer.from(`${JSON.stringify(owner)}\n`, "utf8"));
       await handle.sync();
       await handle.close();
@@ -241,7 +271,15 @@ export class FileAttestationStore {
     } catch (error) {
       const unfinishedHandle = handle as FileHandle | null;
       if (unfinishedHandle) await unfinishedHandle.close().catch(() => undefined);
-      if (created) await unlink(this.lockPath).catch(() => undefined);
+      if (created) {
+        try {
+          await this.claimAndRemoveLock(owner, `${JSON.stringify(owner)}\n`, "attestation store lock acquisition cleanup failed");
+        } catch (cleanupError) {
+          throw new Error("attestation store lock acquisition failed and the observed owner was retained", {
+            cause: new AggregateError([error, cleanupError]),
+          });
+        }
+      }
       throw error;
     }
   }
