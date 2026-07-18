@@ -11,10 +11,15 @@ import {
   validateApprovedBudgetSnapshot,
   validateBudgetSnapshotShape,
 } from './budget.mjs';
-import { loadFixtureSet } from './fixture-set.mjs';
-import { readGitState } from './git-state.mjs';
+import { normalizedInputHash } from './fixture-set.mjs';
+import {
+  gitRepositoryRoot,
+  readGitBlobAtCommit,
+  readGitState,
+  resolveGitCommit,
+} from './git-state.mjs';
 import { validateApprovedLiveEconomics, validateLiveEconomicsShape } from './live-economics.mjs';
-import { validateSweepConfig } from './sweep.mjs';
+import { classifyHighNSeedValidity, seededOrder, validateSweepConfig } from './sweep.mjs';
 
 const evidenceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -36,8 +41,16 @@ const DISTILLATION_SEED_STATUSES = new Set([
 const DISTILLATION_SEED_MECHANISMS = new Set([
   'no_seed_requested',
   'deterministic_mock_fixture_selection',
+  'provider_confirmed_distillation_seed',
   'provider_seed_not_supported_by_adapter',
   'historical_source_not_recorded',
+]);
+const DISTILLATION_SEED_CONTRACTS = new Map([
+  ['not_requested', 'no_seed_requested'],
+  ['synthetic_honored', 'deterministic_mock_fixture_selection'],
+  ['honored', 'provider_confirmed_distillation_seed'],
+  ['unsupported', 'provider_seed_not_supported_by_adapter'],
+  ['not_recorded', 'historical_source_not_recorded'],
 ]);
 const FORBIDDEN_KEYS = new Set([
   'prompt', 'payload', 'output', 'rawResponse', 'apiKey', 'authorization',
@@ -101,6 +114,23 @@ const SENSITIVE_VALUE_TOKENS = new Set([
   'raw', 'rawresponse', 'rawpayload', 'rawoutput', 'tmp', 'temp', 'temporary',
   'path', 'paths',
 ]);
+const CREDENTIAL_VALUE_PATTERNS = [
+  /-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----/i,
+  /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/,
+  /\bAIza[0-9A-Za-z_-]{20,}\b/,
+  /\b(?:gh[pousr]|github_pat)_[A-Za-z0-9_]{20,}\b/i,
+  /\b(?:glpat|npm|hf)_[A-Za-z0-9_-]{20,}\b/i,
+  /\bxox[baprs]-[A-Za-z0-9-]{20,}\b/i,
+  /\bsk-(?:ant-|proj-|live-|test-)?[A-Za-z0-9_-]{16,}\b/i,
+  /\b0x[0-9a-f]{64}\b/i,
+  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/,
+  /\bbearer\s+[A-Za-z0-9._~+/-]{12,}\b/i,
+  /\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key)\s*[:=]\s*\S+/i,
+];
+
+function containsCredentialValue(value) {
+  return CREDENTIAL_VALUE_PATTERNS.some((pattern) => pattern.test(value));
+}
 
 function containsSensitiveValue(value) {
   const tokens = value
@@ -127,6 +157,9 @@ function assertPortableJson(value, label = 'evidence input', active = new WeakSe
   if (value === null || typeof value === 'boolean') return;
   if (typeof value === 'string') {
     if (value.length > 4096) throw new Error(`${label} exceeds the evidence string length limit`);
+    if (containsCredentialValue(value)) {
+      throw new Error(`${label} contains a credential-shaped evidence value`);
+    }
     if (checkSensitive && containsSensitiveValue(value)) {
       throw new Error(`${label} contains a sensitive evidence value`);
     }
@@ -201,8 +234,19 @@ function safeIdentifier(value, label, maxLength) {
   if (typeof value !== 'string'
       || value.length === 0
       || value.length > maxLength
-      || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)) {
+      || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)
+      || containsCredentialValue(value)) {
     throw new Error(`${label} must be a bounded safe identifier`);
+  }
+}
+
+function providerRequestIdentifier(value) {
+  if (typeof value !== 'string'
+      || value.length === 0
+      || value.length > 128
+      || !/^[A-Za-z][A-Za-z0-9_-]*$/.test(value)
+      || containsCredentialValue(value)) {
+    throw new Error('providerRequestId must be a bounded provider request identifier');
   }
 }
 
@@ -219,7 +263,7 @@ function validateSample(sample) {
   if (!SAMPLE_PROFILES.has(sample.profile)) throw new Error('sample profile is unsupported');
   if (sample.caseId !== null) safeIdentifier(sample.caseId, 'caseId', 128);
   if (sample.replicateId !== null) safeIdentifier(sample.replicateId, 'replicateId', 64);
-  if (sample.providerRequestId !== null) safeIdentifier(sample.providerRequestId, 'providerRequestId', 128);
+  if (sample.providerRequestId !== null) providerRequestIdentifier(sample.providerRequestId);
   if (sample.budgetAttemptId !== null
       && !(typeof sample.budgetAttemptId === 'string' && /^attempt-\d{6}$/.test(sample.budgetAttemptId))) {
     throw new Error('budgetAttemptId must be an exact reservation identifier or null');
@@ -236,6 +280,10 @@ function validateSample(sample) {
   }
   if (!DISTILLATION_SEED_MECHANISMS.has(sample.distillationSeedMechanism)) {
     throw new Error('distillationSeedMechanism is unsupported');
+  }
+  if (DISTILLATION_SEED_CONTRACTS.get(sample.distillationSeedStatus)
+      !== sample.distillationSeedMechanism) {
+    throw new Error('distillation seed status and mechanism are inconsistent');
   }
   if (typeof sample.success !== 'boolean') throw new Error('sample success must be boolean');
   finiteNonNegative(sample.latencyMs, 'sample latencyMs');
@@ -334,6 +382,90 @@ function nonEmptyString(value, label, { nullable = false } = {}) {
   }
 }
 
+function boundedPatternString(value, label, {
+  nullable = false,
+  maxLength,
+  pattern,
+  description,
+}) {
+  if (nullable && value === null) return;
+  if (typeof value !== 'string'
+      || value.length === 0
+      || value.length > maxLength
+      || !pattern.test(value)
+      || containsCredentialValue(value)) {
+    throw new Error(`${label} must be a bounded ${description}`);
+  }
+}
+
+function safeCommand(value, label) {
+  boundedPatternString(value, label, {
+    maxLength: 512,
+    pattern: /^[A-Za-z0-9][A-Za-z0-9 ./:_=@-]*$/,
+    description: 'safe command',
+  });
+}
+
+function safeProviderName(value, label, { nullable = false } = {}) {
+  boundedPatternString(value, label, {
+    nullable,
+    maxLength: 64,
+    pattern: /^[A-Za-z][A-Za-z0-9._-]*$/,
+    description: 'provider name',
+  });
+}
+
+function safeModelIdentifier(value, label, { nullable = false } = {}) {
+  boundedPatternString(value, label, {
+    nullable,
+    maxLength: 160,
+    pattern: /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/,
+    description: 'model identifier',
+  });
+}
+
+function safeRuntimeToken(value, label) {
+  boundedPatternString(value, label, {
+    maxLength: 64,
+    pattern: /^[A-Za-z0-9][A-Za-z0-9._+-]*$/,
+    description: 'runtime token',
+  });
+}
+
+function boundedEvidenceText(value, label) {
+  boundedPatternString(value, label, {
+    maxLength: 512,
+    pattern: /^[A-Za-z0-9][A-Za-z0-9 .,;:_()'/-]*$/,
+    description: 'evidence text',
+  });
+}
+
+function safeEvidenceHttpsUrl(value, label, { nullable = false } = {}) {
+  if (nullable && value === null) return;
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error(`${label} must be a credential-free HTTPS URL`);
+  }
+  if (typeof value !== 'string'
+      || value.length > 512
+      || parsed.protocol !== 'https:'
+      || parsed.username !== ''
+      || parsed.password !== ''
+      || parsed.hash !== ''
+      || containsCredentialValue(value)) {
+    throw new Error(`${label} must be a credential-free HTTPS URL`);
+  }
+}
+
+function validateBudgetEvidenceStrings(snapshot, label) {
+  safeIdentifier(snapshot.experimentFamily, `${label}.experimentFamily`, 128);
+  safeProviderName(snapshot.provider, `${label}.provider`);
+  safeModelIdentifier(snapshot.model, `${label}.model`, { nullable: true });
+  safeEvidenceHttpsUrl(snapshot.pricing.source, `${label}.pricing.source`, { nullable: true });
+}
+
 function integerArray(value, label, { positive = false, historical = false } = {}) {
   if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
   for (let index = 0; index < value.length; index += 1) {
@@ -362,8 +494,8 @@ function validateSweepConfiguration(value) {
   ];
   assertExactKeys(value, keys, 'configuration.sweepConfig');
   if (value.schemaVersion !== 1) throw new Error('configuration.sweepConfig.schemaVersion must be 1');
-  nonEmptyString(value.experimentFamily, 'configuration.sweepConfig.experimentFamily');
-  nonEmptyString(value.fixtureSet, 'configuration.sweepConfig.fixtureSet');
+  safeIdentifier(value.experimentFamily, 'configuration.sweepConfig.experimentFamily', 128);
+  safeIdentifier(value.fixtureSet, 'configuration.sweepConfig.fixtureSet', 64);
   integerArray(value.nValues, 'configuration.sweepConfig.nValues', { positive: true });
   for (const key of ['heldoutMinimum', 'highNDefinition']) {
     if (!Number.isSafeInteger(value[key]) || value[key] <= 0) {
@@ -379,14 +511,21 @@ function validateSweepConfiguration(value) {
   ]) {
     if (typeof value[key] !== 'boolean') throw new Error(`configuration.sweepConfig.${key} must be boolean`);
   }
-  for (const key of ['acquisitionTreatment', 'attemptCostTreatment']) {
-    nonEmptyString(value[key], `configuration.sweepConfig.${key}`);
+  if (value.acquisitionTreatment !== 'modeled_unless_x402_receipts_attached') {
+    throw new Error('configuration.sweepConfig.acquisitionTreatment is unsupported');
+  }
+  if (value.attemptCostTreatment !== 'include_every_attempted_provider_call') {
+    throw new Error('configuration.sweepConfig.attemptCostTreatment is unsupported');
   }
   if (!Array.isArray(value.replicates)) throw new Error('configuration.sweepConfig.replicates must be an array');
   for (let index = 0; index < value.replicates.length; index += 1) {
     const replicate = value.replicates[index];
     assertExactKeys(replicate, ['replicateId', 'pairOrderSeed', 'distillationSeed'], `configuration.sweepConfig.replicates[${index}]`);
-    nonEmptyString(replicate.replicateId, `configuration.sweepConfig.replicates[${index}].replicateId`);
+    safeIdentifier(
+      replicate.replicateId,
+      `configuration.sweepConfig.replicates[${index}].replicateId`,
+      64,
+    );
     for (const key of ['pairOrderSeed', 'distillationSeed']) {
       if (!Number.isSafeInteger(replicate[key])) {
         throw new Error(`configuration.sweepConfig.replicates[${index}].${key} must be a safe integer`);
@@ -405,7 +544,14 @@ function validateConfiguration(configuration = {}) {
   }
   if (Object.hasOwn(configuration, 'sweepConfig')) validateSweepConfiguration(configuration.sweepConfig);
   if (Object.hasOwn(configuration, 'nValues')) integerArray(configuration.nValues, 'configuration.nValues', { positive: true });
-  if (Object.hasOwn(configuration, 'replicateIds')) stringArray(configuration.replicateIds, 'configuration.replicateIds');
+  if (Object.hasOwn(configuration, 'replicateIds')) {
+    if (!Array.isArray(configuration.replicateIds)) {
+      throw new Error('configuration.replicateIds must be an array');
+    }
+    configuration.replicateIds.forEach((value, index) => {
+      safeIdentifier(value, `configuration.replicateIds[${index}]`, 64);
+    });
+  }
   for (const key of ['pairOrderSeeds', 'requestedDistillationSeeds', 'appliedDistillationSeeds']) {
     if (Object.hasOwn(configuration, key)) integerArray(configuration[key], `configuration.${key}`, { historical: true });
   }
@@ -420,8 +566,12 @@ function validateConfiguration(configuration = {}) {
           throw new Error(`configuration.distillationSeedEvidence[${index}].${key} must be a safe integer or null`);
         }
       }
-      nonEmptyString(item.status, `configuration.distillationSeedEvidence[${index}].status`);
-      nonEmptyString(item.mechanism, `configuration.distillationSeedEvidence[${index}].mechanism`);
+      if (!DISTILLATION_SEED_STATUSES.has(item.status)) {
+        throw new Error(`configuration.distillationSeedEvidence[${index}].status is unsupported`);
+      }
+      if (!DISTILLATION_SEED_MECHANISMS.has(item.mechanism)) {
+        throw new Error(`configuration.distillationSeedEvidence[${index}].mechanism is unsupported`);
+      }
     });
   }
   if (Object.hasOwn(configuration, 'tokenCaps')) {
@@ -435,12 +585,20 @@ function validateConfiguration(configuration = {}) {
   }
   if (Object.hasOwn(configuration, 'pricingSnapshot')) {
     validateBudgetSnapshotShape(configuration.pricingSnapshot, configuration.sweepConfig ?? null);
+    validateBudgetEvidenceStrings(configuration.pricingSnapshot, 'configuration.pricingSnapshot');
   }
   if (Object.hasOwn(configuration, 'evidenceLabels')) {
     stringArray(configuration.evidenceLabels, 'configuration.evidenceLabels', EVIDENCE_LABELS);
   }
-  for (const key of ['acquisitionTreatment', 'attemptCoverage', 'fixtureSet']) {
-    if (Object.hasOwn(configuration, key)) nonEmptyString(configuration[key], `configuration.${key}`);
+  if (Object.hasOwn(configuration, 'acquisitionTreatment')
+      && !['modeled', 'modeled_unless_x402_receipts_attached'].includes(configuration.acquisitionTreatment)) {
+    throw new Error('configuration.acquisitionTreatment is unsupported');
+  }
+  if (Object.hasOwn(configuration, 'attemptCoverage')) {
+    boundedEvidenceText(configuration.attemptCoverage, 'configuration.attemptCoverage');
+  }
+  if (Object.hasOwn(configuration, 'fixtureSet')) {
+    safeIdentifier(configuration.fixtureSet, 'configuration.fixtureSet', 64);
   }
   if (Object.hasOwn(configuration, 'historicalRunDate')) {
     const value = configuration.historicalRunDate;
@@ -477,6 +635,11 @@ function validateConfiguration(configuration = {}) {
   if (Object.hasOwn(configuration, 'liveEconomics')) {
     if (!configuration.sweepConfig) throw new Error('configuration.liveEconomics requires sweepConfig');
     validateLiveEconomicsShape(configuration.liveEconomics, configuration.sweepConfig);
+    safeIdentifier(
+      configuration.liveEconomics.experimentFamily,
+      'configuration.liveEconomics.experimentFamily',
+      128,
+    );
   }
   return canonicalize(configuration);
 }
@@ -485,7 +648,9 @@ function validateSourceEvidence(sourceEvidence) {
   if (sourceEvidence === null || sourceEvidence === undefined) return null;
   assertPortableJson(sourceEvidence, 'manifest.sourceEvidence');
   assertExactKeys(sourceEvidence, ['bytes', 'kind', 'sha256'], 'sourceEvidence');
-  if (typeof sourceEvidence.kind !== 'string' || sourceEvidence.kind === '') throw new Error('sourceEvidence kind is required');
+  if (sourceEvidence.kind !== 'legacy-report-json') {
+    throw new Error('sourceEvidence kind must be legacy-report-json');
+  }
   if (!/^[0-9a-f]{64}$/.test(sourceEvidence.sha256)) throw new Error('sourceEvidence sha256 must be a lowercase digest');
   if (!Number.isSafeInteger(sourceEvidence.bytes) || sourceEvidence.bytes <= 0) throw new Error('sourceEvidence bytes must be positive');
   return { ...sourceEvidence };
@@ -552,7 +717,9 @@ function validateLock(lock) {
   } else {
     throw new Error('liveBudget.lock.kind is unsupported');
   }
-  nonEmptyString(lock.attemptId, 'liveBudget.lock.attemptId');
+  if (typeof lock.attemptId !== 'string' || !/^attempt-\d{6}$/.test(lock.attemptId)) {
+    throw new Error('liveBudget.lock.attemptId must be an exact reservation identifier');
+  }
   return canonicalize(lock);
 }
 
@@ -568,8 +735,11 @@ function validateLiveBudget(liveBudget) {
   ];
   assertExactKeys(liveBudget, keys, 'liveBudget');
   for (const key of ['configPath', 'snapshotPath', 'economicsSnapshotPath']) {
-    nonEmptyString(liveBudget[key], `liveBudget.${key}`);
-    if (path.isAbsolute(liveBudget[key]) || liveBudget[key].split(/[\\/]/).includes('..')) {
+    if (typeof liveBudget[key] !== 'string'
+        || liveBudget[key].length > 160
+        || !/^fixtures\/[A-Za-z0-9][A-Za-z0-9._/-]*\.json$/.test(liveBudget[key])
+        || path.isAbsolute(liveBudget[key])
+        || liveBudget[key].split(/[\\/]/).includes('..')) {
       throw new Error(`liveBudget.${key} must be repository-relative`);
     }
   }
@@ -635,7 +805,10 @@ function validateExecutionModeContract({ executionMode, evidenceLabel, liveBudge
   }
 }
 
-function validateGitIdentity({ executionMode, gitCommit, gitDirty, sourceEvidence }, { current = false } = {}) {
+function validateGitIdentity(
+  { executionMode, gitCommit, gitDirty, sourceEvidence },
+  { current = false, repositoryRoot = null } = {},
+) {
   if (executionMode === 'historical') {
     if (gitCommit !== HISTORICAL_GIT_COMMIT || gitDirty !== null) {
       throw new Error('historical evidence requires the exact unrecorded git identity sentinel');
@@ -652,6 +825,7 @@ function validateGitIdentity({ executionMode, gitCommit, gitDirty, sourceEvidenc
   if (typeof gitDirty !== 'boolean') throw new Error('manifest.gitDirty is required and must be boolean');
   if (executionMode === 'live' && gitDirty) throw new Error('Live evidence requires a clean checkout');
   if (sourceEvidence !== null) throw new Error(`${executionMode} evidence forbids sourceEvidence`);
+  if (repositoryRoot !== null) resolveGitCommit(repositoryRoot, gitCommit);
   if (current) {
     const actual = readGitState(evidenceRoot);
     if (actual.gitCommit !== gitCommit || actual.gitDirty !== gitDirty) {
@@ -714,20 +888,22 @@ This bundle does not by itself authorize publication or a live benchmark claim.
 `;
 }
 
-function validateManifest(manifest) {
+function validateManifest(manifest, { repositoryRoot = null } = {}) {
   assertPortableJson(manifest, 'manifest');
   assertExactKeys(manifest, MANIFEST_KEYS, 'Evidence manifest');
   if (manifest.schemaVersion !== 1) throw new Error('Unsupported evidence manifest schemaVersion');
-  if (!manifest || typeof manifest.experimentId !== 'string' || manifest.experimentId === '') {
-    throw new Error('Evidence manifest experimentId is required');
-  }
+  safeIdentifier(manifest.experimentId, 'manifest.experimentId', 128);
   validateRecordedAtUtc(manifest.recordedAtUtc);
   validateRecordedAtMode(manifest.recordedAtUtc, manifest.executionMode);
-  for (const key of ['gitCommit', 'command']) nonEmptyString(manifest[key], `manifest.${key}`);
-  for (const key of ['modelProvider', 'model']) nonEmptyString(manifest[key], `manifest.${key}`, { nullable: true });
+  nonEmptyString(manifest.gitCommit, 'manifest.gitCommit');
+  safeCommand(manifest.command, 'manifest.command');
+  safeProviderName(manifest.modelProvider, 'manifest.modelProvider', { nullable: true });
+  safeModelIdentifier(manifest.model, 'manifest.model', { nullable: true });
   if (!EVIDENCE_LABELS.has(manifest.evidenceLabel)) throw new Error('Evidence manifest evidenceLabel is unsupported');
   assertExactKeys(manifest.runtime, ['node', 'platform', 'arch'], 'manifest.runtime');
-  for (const key of ['node', 'platform', 'arch']) nonEmptyString(manifest.runtime[key], `manifest.runtime.${key}`);
+  for (const key of ['node', 'platform', 'arch']) {
+    safeRuntimeToken(manifest.runtime[key], `manifest.runtime.${key}`);
+  }
   validateSourceEvidence(manifest.sourceEvidence);
   const liveBudget = validateLiveBudget(manifest.liveBudget);
   validateExecutionModeContract({
@@ -740,7 +916,7 @@ function validateManifest(manifest) {
     gitCommit: manifest.gitCommit,
     gitDirty: manifest.gitDirty,
     sourceEvidence: manifest.sourceEvidence,
-  });
+  }, { repositoryRoot });
   const configuration = validateConfiguration(manifest.configuration);
   validateReportInputs(manifest.reportInputs, manifest.evidenceLabel, configuration);
   validateReadmeInputs(manifest.readmeInputs);
@@ -785,11 +961,15 @@ export function writeEvidenceBundle(input) {
     if (!MANIFEST_INPUT_KEYS.includes(key)) throw new Error(`Unsupported evidence manifest field: ${key}`);
   }
   assertPortableJson(manifest, 'manifest input');
-  nonEmptyString(manifest.experimentId, 'manifest.experimentId');
-  nonEmptyString(manifest.command, 'manifest.command');
+  safeIdentifier(manifest.experimentId, 'manifest.experimentId', 128);
+  safeCommand(manifest.command, 'manifest.command');
   if (!EVIDENCE_LABELS.has(manifest.evidenceLabel)) throw new Error('Evidence manifest evidenceLabel is unsupported');
-  for (const key of ['gitCommit', 'modelProvider', 'model']) {
-    if (Object.hasOwn(manifest, key)) nonEmptyString(manifest[key], `manifest.${key}`, { nullable: key !== 'gitCommit' });
+  if (Object.hasOwn(manifest, 'gitCommit')) nonEmptyString(manifest.gitCommit, 'manifest.gitCommit');
+  if (Object.hasOwn(manifest, 'modelProvider')) {
+    safeProviderName(manifest.modelProvider, 'manifest.modelProvider', { nullable: true });
+  }
+  if (Object.hasOwn(manifest, 'model')) {
+    safeModelIdentifier(manifest.model, 'manifest.model', { nullable: true });
   }
   const recordedAtUtc = manifest.recordedAtUtc === undefined ? new Date().toISOString() : manifest.recordedAtUtc;
   validateRecordedAtUtc(recordedAtUtc);
@@ -853,18 +1033,36 @@ export function writeEvidenceBundle(input) {
   return finalManifest;
 }
 
-function readRegularFixture(packageRoot, relativePath, label) {
-  const filePath = path.join(packageRoot, relativePath);
-  let stat;
+function committedTreeContext(packageRoot, recordedCommit) {
+  const packagePath = fs.realpathSync(path.resolve(packageRoot));
+  const repositoryRoot = fs.realpathSync(gitRepositoryRoot(packagePath));
+  const packageRelative = path.relative(repositoryRoot, packagePath);
+  if (packageRelative === '..'
+      || packageRelative.startsWith(`..${path.sep}`)
+      || path.isAbsolute(packageRelative)) {
+    throw new Error('Live package root must be inside the recorded git repository');
+  }
+  return {
+    repositoryRoot,
+    recordedCommit: resolveGitCommit(repositoryRoot, recordedCommit),
+    packagePrefix: packageRelative.split(path.sep).filter(Boolean).join('/'),
+  };
+}
+
+function readCommittedJsonFixture(context, relativePath, label) {
+  const repositoryPath = context.packagePrefix
+    ? `${context.packagePrefix}/${relativePath}`
+    : relativePath;
+  let bytes;
   try {
-    stat = fs.lstatSync(filePath);
+    bytes = readGitBlobAtCommit(
+      context.repositoryRoot,
+      context.recordedCommit,
+      repositoryPath,
+    );
   } catch {
-    throw new Error(`${label} must exist as a regular file`);
+    throw new Error(`${label} must exist as a regular blob in the recorded commit`);
   }
-  if (stat.isSymbolicLink() || !stat.isFile()) {
-    throw new Error(`${label} must exist as a regular file`);
-  }
-  const bytes = fs.readFileSync(filePath);
   let parsed;
   try {
     parsed = JSON.parse(bytes);
@@ -874,12 +1072,197 @@ function readRegularFixture(packageRoot, relativePath, label) {
   return { bytes, parsed };
 }
 
+function fixtureSetFromCommittedValues(train, heldout) {
+  if (!Array.isArray(train) || !Array.isArray(heldout)) {
+    throw new Error('Live train and heldout fixtures must be arrays');
+  }
+  const decorate = (items, label) => items.map((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)
+        || typeof item.id !== 'string' || typeof item.input !== 'string') {
+      throw new Error(`${label}[${index}] must contain string id and input fields`);
+    }
+    return { ...item, inputHash: normalizedInputHash(item.input) };
+  });
+  const decoratedTrain = decorate(train, 'Live train fixture');
+  const decoratedHeldout = decorate(heldout, 'Live heldout fixture');
+  const trainIds = new Set(decoratedTrain.map((item) => item.id));
+  const trainHashes = new Set(decoratedTrain.map((item) => item.inputHash));
+  if (trainIds.size !== decoratedTrain.length
+      || new Set(decoratedHeldout.map((item) => item.id)).size !== decoratedHeldout.length
+      || decoratedHeldout.some((item) => trainIds.has(item.id) || trainHashes.has(item.inputHash))) {
+    throw new Error('Train and heldout fixtures must be unique and disjoint');
+  }
+  return { train: decoratedTrain, heldout: decoratedHeldout };
+}
+
 function requireExactLivePath(actual, expected, label) {
   if (actual !== expected) throw new Error(`Live ${label} must equal ${expected}`);
 }
 
 function canonicalEqual(left, right) {
   return JSON.stringify(canonicalize(left)) === JSON.stringify(canonicalize(right));
+}
+
+function requireExactCaseRows(rows, expectedFixtures, label) {
+  const expectedIds = expectedFixtures.map((fixture) => fixture.id).sort();
+  const actualIds = rows.map((sample) => sample.caseId).sort();
+  if (JSON.stringify(actualIds) !== JSON.stringify(expectedIds)) {
+    throw new Error(`High-N publication gate samples do not contain the exact ${label} cases`);
+  }
+  if (rows.some((sample) => sample.success !== true)) {
+    throw new Error(`High-N publication gate samples contain a failed ${label} attempt`);
+  }
+  return rows;
+}
+
+function targetBenchmarkFromRows(rows, fixtures, config, label) {
+  requireExactCaseRows(rows, fixtures, label);
+  if (rows.some((sample) => !Number.isFinite(sample.score)
+      || typeof sample.criticalGatePass !== 'boolean')) {
+    throw new Error(`High-N publication gate samples lack complete ${label} metrics`);
+  }
+  const absoluteScore = rounded(sum(rows.map((sample) => sample.score)) / rows.length);
+  const criticalGatePass = rows.every((sample) => sample.criticalGatePass === true);
+  return {
+    valid: absoluteScore >= config.targetThreshold
+      && (!config.requireAllTargetCriticalGates || criticalGatePass),
+  };
+}
+
+function validateCellMetadata(rows, n, replicate) {
+  if (rows.some((sample) => (
+    sample.n !== n
+    || sample.replicateId !== replicate.replicateId
+    || sample.pairOrderSeed !== replicate.pairOrderSeed
+    || sample.requestedDistillationSeed !== replicate.distillationSeed
+  ))) {
+    throw new Error('High-N publication gate samples differ from preregistered cell metadata');
+  }
+}
+
+function evaluationRows(rows, profile, fixtures) {
+  const ids = new Set(fixtures.map((fixture) => fixture.id));
+  return rows.filter((sample) => (
+    sample.phase === 'evaluation'
+    && sample.profile === profile
+    && ids.has(sample.caseId)
+  ));
+}
+
+function recomputeHighNPublicationGate({ samples, config, fixtures, v2Fixtures, requestCount }) {
+  if (samples.length !== requestCount) {
+    throw new Error('High-N publication gate samples do not cover the complete preregistered sweep');
+  }
+  const validated = samples.map((sample) => validateSample(sample));
+  const consumed = new Set();
+  const consume = (rows) => rows.forEach((sample) => consumed.add(sample.sampleId));
+
+  const standalone = validated.filter((sample) => sample.n === null);
+  if (standalone.some((sample) => (
+    sample.phase !== 'evaluation'
+    || sample.profile !== 'target'
+    || sample.replicateId !== null
+    || sample.pairOrderSeed !== null
+    || sample.requestedDistillationSeed !== null
+    || sample.appliedDistillationSeed !== null
+    || sample.distillationSeedStatus !== 'not_requested'
+    || sample.distillationSeedMechanism !== 'no_seed_requested'
+  ))) {
+    throw new Error('High-N publication gate standalone samples have invalid metadata');
+  }
+  const standaloneBenchmark = targetBenchmarkFromRows(
+    standalone,
+    fixtures.heldout,
+    config,
+    'standalone target',
+  );
+  consume(standalone);
+
+  const cells = [];
+  for (const n of config.nValues) {
+    for (const replicate of config.replicates) {
+      const rows = validated.filter((sample) => (
+        sample.n === n && sample.replicateId === replicate.replicateId
+      ));
+      validateCellMetadata(rows, n, replicate);
+
+      const acquisition = rows.filter((sample) => (
+        sample.phase === 'acquisition' && sample.profile === 'target'
+      ));
+      const expectedAcquisition = seededOrder(fixtures.train, replicate.pairOrderSeed).slice(0, n);
+      requireExactCaseRows(acquisition, expectedAcquisition, `N=${n} acquisition`);
+
+      const distillation = rows.filter((sample) => sample.phase === 'distillation');
+      if (distillation.length !== 1
+          || distillation[0].profile !== 'clone'
+          || distillation[0].caseId !== null
+          || distillation[0].success !== true) {
+        throw new Error(`High-N publication gate samples lack the exact N=${n} distillation attempt`);
+      }
+
+      const target = evaluationRows(rows, 'target', fixtures.heldout);
+      const clone = evaluationRows(rows, 'clone', fixtures.heldout);
+      const badClone = evaluationRows(rows, 'bad-clone', fixtures.heldout);
+      const targetV2 = evaluationRows(rows, 'target', v2Fixtures);
+      const cloneV2 = evaluationRows(rows, 'clone', v2Fixtures);
+      const benchmark = targetBenchmarkFromRows(target, fixtures.heldout, config, `N=${n} target`);
+      requireExactCaseRows(clone, fixtures.heldout, `N=${n} clone`);
+      requireExactCaseRows(badClone, fixtures.heldout, `N=${n} bad clone`);
+      requireExactCaseRows(targetV2, v2Fixtures, `N=${n} target v2`);
+      requireExactCaseRows(cloneV2, v2Fixtures, `N=${n} clone v2`);
+
+      const expectedCount = n + 1 + fixtures.heldout.length * 3 + v2Fixtures.length * 2;
+      if (rows.length !== expectedCount) {
+        throw new Error(`High-N publication gate samples contain unexpected N=${n} cell rows`);
+      }
+      consume(rows);
+      const seed = distillation[0];
+      cells.push({
+        n,
+        replicateId: replicate.replicateId,
+        status: 'complete',
+        benchmark,
+        requestedDistillationSeed: seed.requestedDistillationSeed,
+        appliedDistillationSeed: seed.appliedDistillationSeed,
+        distillationSeedStatus: seed.distillationSeedStatus,
+        seedEvidenceReconciled: true,
+      });
+    }
+  }
+  if (consumed.size !== validated.length) {
+    throw new Error('High-N publication gate samples contain rows outside the preregistered sweep');
+  }
+  return classifyHighNSeedValidity({
+    cells,
+    adapterMode: 'live',
+    standaloneBenchmark,
+  });
+}
+
+function verifyClaimedHighNPublicationGate({
+  samples,
+  manifest,
+  configuration,
+  fixtures,
+  v2Fixtures,
+  requestCount,
+}) {
+  const passedLabel = manifest.evidenceLabel === 'LIVE CANDIDATE — PUBLICATION GATE PASSED';
+  const passedConfiguration = configuration.publicationGate?.publishableHighN === true;
+  if (passedLabel !== passedConfiguration) {
+    throw new Error('Live publication gate label and configuration disagree');
+  }
+  if (!passedConfiguration) return;
+  const recomputed = recomputeHighNPublicationGate({
+    samples,
+    config: configuration.sweepConfig,
+    fixtures,
+    v2Fixtures,
+    requestCount,
+  });
+  if (!recomputed.valid) {
+    throw new Error(`Claimed high-N publication gate does not match samples: ${recomputed.reason}`);
+  }
 }
 
 function deriveBudgetViolation({ sample, exactCost, knownAccrued, snapshot, worstCasePerCall, humanCap }) {
@@ -904,6 +1287,7 @@ export function verifyLiveEvidenceContract(samples, manifest, packageRoot) {
   if (manifest.gitDirty !== false) throw new Error('Live evidence requires a clean checkout');
   if (manifest.sourceEvidence !== null) throw new Error('Live evidence forbids sourceEvidence');
   const configuration = validateConfiguration(manifest.configuration);
+  const tree = committedTreeContext(packageRoot, manifest.gitCommit);
 
   requireExactLivePath(liveBudget.configPath, 'fixtures/sweep-v1.json', 'configPath');
   requireExactLivePath(liveBudget.snapshotPath, 'fixtures/live-budget-v1.json', 'snapshotPath');
@@ -912,10 +1296,10 @@ export function verifyLiveEvidenceContract(samples, manifest, packageRoot) {
     'fixtures/live-economics-v1.json',
     'economicsSnapshotPath',
   );
-  const configFile = readRegularFixture(packageRoot, liveBudget.configPath, 'Live sweep config');
-  const snapshotFile = readRegularFixture(packageRoot, liveBudget.snapshotPath, 'Live budget snapshot');
-  const economicsFile = readRegularFixture(
-    packageRoot,
+  const configFile = readCommittedJsonFixture(tree, liveBudget.configPath, 'Live sweep config');
+  const snapshotFile = readCommittedJsonFixture(tree, liveBudget.snapshotPath, 'Live budget snapshot');
+  const economicsFile = readCommittedJsonFixture(
+    tree,
     liveBudget.economicsSnapshotPath,
     'Live economics snapshot',
   );
@@ -932,6 +1316,7 @@ export function verifyLiveEvidenceContract(samples, manifest, packageRoot) {
   }
   const config = configFile.parsed;
   validateBudgetSnapshotShape(snapshotFile.parsed, config);
+  validateBudgetEvidenceStrings(snapshotFile.parsed, 'Live budget snapshot');
   const snapshot = validateApprovedBudgetSnapshot(snapshotFile.parsed, config);
   const liveEconomics = validateApprovedLiveEconomics(economicsFile.parsed, config);
   if (manifest.model !== snapshot.model) throw new Error('Live manifest model differs from approved snapshot');
@@ -942,11 +1327,22 @@ export function verifyLiveEvidenceContract(samples, manifest, packageRoot) {
 
   // Validate the fixed preregistration before using fixtureSet in any path.
   validateSweepConfig(config, { trainCount: 100, heldoutCount: 30, v2Count: 0 });
-  for (const name of [`train-${config.fixtureSet}.json`, `heldout-${config.fixtureSet}.json`, 'v2-heldout.json']) {
-    readRegularFixture(packageRoot, path.join('fixtures', name), `Live fixture ${name}`);
-  }
-  const fixtures = loadFixtureSet(packageRoot, config.fixtureSet);
-  const v2Fixtures = readRegularFixture(packageRoot, 'fixtures/v2-heldout.json', 'Live v2 fixtures').parsed;
+  const trainFile = readCommittedJsonFixture(
+    tree,
+    `fixtures/train-${config.fixtureSet}.json`,
+    `Live fixture train-${config.fixtureSet}.json`,
+  );
+  const heldoutFile = readCommittedJsonFixture(
+    tree,
+    `fixtures/heldout-${config.fixtureSet}.json`,
+    `Live fixture heldout-${config.fixtureSet}.json`,
+  );
+  const fixtures = fixtureSetFromCommittedValues(trainFile.parsed, heldoutFile.parsed);
+  const v2Fixtures = readCommittedJsonFixture(
+    tree,
+    'fixtures/v2-heldout.json',
+    'Live v2 fixtures',
+  ).parsed;
   if (!Array.isArray(v2Fixtures)) throw new Error('Live v2 fixtures must be an array');
   const counts = {
     trainCount: fixtures.train.length,
@@ -956,6 +1352,14 @@ export function verifyLiveEvidenceContract(samples, manifest, packageRoot) {
   validateSweepConfig(config, counts);
   const requestCount = conservativeSweepRequestCount(config, counts);
   if (requestCount !== 1713) throw new Error('Live committed fixture request count must equal 1713');
+  verifyClaimedHighNPublicationGate({
+    samples,
+    manifest,
+    configuration,
+    fixtures,
+    v2Fixtures,
+    requestCount,
+  });
   const worstCasePerCall = calculateProviderCostMicroUsd({
     inputTokens: snapshot.tokenCaps.maxInputTokens,
     outputTokens: snapshot.tokenCaps.maxOutputTokens,
@@ -1102,7 +1506,7 @@ export function verifyEvidenceBundle(dir) {
   const manifestText = fs.readFileSync(manifestPath, 'utf8');
   const manifest = JSON.parse(manifestText);
   if (manifestText !== stableJson(manifest)) throw new Error('manifest.json must use canonical JSON');
-  validateManifest(manifest);
+  validateManifest(manifest, { repositoryRoot: evidenceRoot });
   for (const name of REQUIRED_BUNDLE_FILES) {
     const filePath = path.join(dir, name);
     const bytes = fs.readFileSync(filePath);

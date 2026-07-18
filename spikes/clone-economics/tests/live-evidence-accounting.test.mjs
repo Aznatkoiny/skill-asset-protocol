@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -9,10 +10,20 @@ import { fileURLToPath } from 'node:url';
 import { liveAuthorizationHash } from '../src/authorization.mjs';
 import { calculateProviderCostMicroUsd } from '../src/budget.mjs';
 import { verifyLiveEvidenceContract } from '../src/evidence.mjs';
+import { seededOrder } from '../src/sweep.mjs';
 import { approved, config, economics } from './fixtures/live-contract.mjs';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
+
+function git(cwd, args) {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    shell: false,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+}
 
 function writeJson(filePath, value) {
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
@@ -48,11 +59,82 @@ function normalizedLiveSample(overrides = {}) {
   };
 }
 
+function completePublicationSamples() {
+  const train = JSON.parse(fs.readFileSync(path.join(packageRoot, 'fixtures/train-v2.json'), 'utf8'));
+  const heldout = JSON.parse(fs.readFileSync(path.join(packageRoot, 'fixtures/heldout-v2.json'), 'utf8'));
+  const v2 = JSON.parse(fs.readFileSync(path.join(packageRoot, 'fixtures/v2-heldout.json'), 'utf8'));
+  let sequence = 0;
+  const sample = (overrides) => {
+    sequence += 1;
+    return normalizedLiveSample({
+      sampleId: `live:sample:${String(sequence).padStart(4, '0')}`,
+      providerRequestId: `req_${String(sequence).padStart(6, '0')}`,
+      budgetAttemptId: `attempt-${String(sequence).padStart(6, '0')}`,
+      ...overrides,
+    });
+  };
+  const samples = heldout.map((fixture) => sample({ caseId: fixture.id }));
+  for (const n of config.nValues) {
+    for (const replicate of config.replicates) {
+      const metadata = {
+        n,
+        replicateId: replicate.replicateId,
+        pairOrderSeed: replicate.pairOrderSeed,
+        requestedDistillationSeed: replicate.distillationSeed,
+      };
+      for (const fixture of seededOrder(train, replicate.pairOrderSeed).slice(0, n)) {
+        samples.push(sample({
+          ...metadata,
+          phase: 'acquisition',
+          profile: 'target',
+          caseId: fixture.id,
+          score: null,
+          criticalGatePass: null,
+          acquisitionCostUsd: economics.invocationPriceUsd,
+          acquisitionEvidence: 'MODELED',
+        }));
+      }
+      samples.push(sample({
+        ...metadata,
+        phase: 'distillation',
+        profile: 'clone',
+        caseId: null,
+        appliedDistillationSeed: replicate.distillationSeed,
+        distillationSeedStatus: 'honored',
+        distillationSeedMechanism: 'provider_confirmed_distillation_seed',
+        score: null,
+        criticalGatePass: null,
+      }));
+      for (const fixture of heldout) {
+        for (const profile of ['target', 'clone', 'bad-clone']) {
+          samples.push(sample({ ...metadata, profile, caseId: fixture.id }));
+        }
+      }
+      for (const fixture of v2) {
+        for (const profile of ['target', 'clone']) {
+          samples.push(sample({
+            ...metadata,
+            profile,
+            caseId: fixture.id,
+            score: null,
+            criticalGatePass: null,
+          }));
+        }
+      }
+    }
+  }
+  return samples;
+}
+
 function fixtureContract(t, {
   sweepConfig = config,
   snapshot = approved,
   economicsContract = economics,
   samples = [normalizedLiveSample()],
+  publicationGate = null,
+  evidenceLabel = publicationGate?.publishableHighN
+    ? 'LIVE CANDIDATE — PUBLICATION GATE PASSED'
+    : 'LIVE CANDIDATE — CONCLUSIONS SUPPRESSED',
 } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'clone-live-contract-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -64,6 +146,12 @@ function fixtureContract(t, {
   writeJson(path.join(fixtures, 'sweep-v1.json'), sweepConfig);
   writeJson(path.join(fixtures, 'live-budget-v1.json'), snapshot);
   writeJson(path.join(fixtures, 'live-economics-v1.json'), economicsContract);
+  git(root, ['init']);
+  git(root, ['config', 'user.name', 'Evidence Test']);
+  git(root, ['config', 'user.email', 'evidence@example.invalid']);
+  git(root, ['add', 'fixtures']);
+  git(root, ['commit', '-m', 'fixture contract']);
+  const recordedCommit = git(root, ['rev-parse', 'HEAD']);
   const configBytes = fs.readFileSync(path.join(fixtures, 'sweep-v1.json'));
   const snapshotBytes = fs.readFileSync(path.join(fixtures, 'live-budget-v1.json'));
   const economicsBytes = fs.readFileSync(path.join(fixtures, 'live-economics-v1.json'));
@@ -86,15 +174,16 @@ function fixtureContract(t, {
     samples,
     manifest: {
       executionMode: 'live',
-      gitCommit: 'a'.repeat(40),
+      gitCommit: recordedCommit,
       gitDirty: false,
-      evidenceLabel: 'LIVE CANDIDATE — CONCLUSIONS SUPPRESSED',
+      evidenceLabel,
       sourceEvidence: null,
       modelProvider: 'Anthropic',
       model: snapshot.model,
       configuration: {
         sweepConfig,
         liveEconomics: economicsContract,
+        ...(publicationGate === null ? {} : { publicationGate }),
       },
       liveBudget: {
         configPath: 'fixtures/sweep-v1.json',
@@ -123,6 +212,71 @@ test('live contract derives exact committed counts, request budget, and per-row 
     fixture.manifest,
     fixture.root,
   ));
+});
+
+test('live verification rejects a syntactically valid commit that does not exist', (t) => {
+  const fixture = fixtureContract(t);
+  fixture.manifest.gitCommit = '0'.repeat(40);
+  assert.throws(
+    () => verifyLiveEvidenceContract(fixture.samples, fixture.manifest, fixture.root),
+    /recorded git commit does not resolve to a commit/i,
+  );
+});
+
+test('live verification reads contract blobs from the recorded commit despite working-copy changes', (t) => {
+  const fixture = fixtureContract(t);
+  for (const name of ['sweep-v1.json', 'live-budget-v1.json', 'live-economics-v1.json']) {
+    fs.writeFileSync(path.join(fixture.root, 'fixtures', name), '{"workingCopy":"changed"}\n');
+  }
+  assert.doesNotThrow(
+    () => verifyLiveEvidenceContract(fixture.samples, fixture.manifest, fixture.root),
+  );
+});
+
+test('live verification rejects hashes taken from a later tree than the recorded commit', (t) => {
+  const fixture = fixtureContract(t);
+  const configPath = path.join(fixture.root, 'fixtures', 'sweep-v1.json');
+  fs.writeFileSync(configPath, `${JSON.stringify(config)}\n`);
+  git(fixture.root, ['add', 'fixtures/sweep-v1.json']);
+  git(fixture.root, ['commit', '-m', 'reformat config']);
+  fixture.manifest.liveBudget.configSha256 = digest(fs.readFileSync(configPath));
+  assert.throws(
+    () => verifyLiveEvidenceContract(fixture.samples, fixture.manifest, fixture.root),
+    /config hash mismatch/i,
+  );
+});
+
+test('live publication gate is recomputed from complete committed-contract samples', (t) => {
+  const samples = completePublicationSamples();
+  assert.equal(samples.length, 1713);
+  const fixture = fixtureContract(t, {
+    samples,
+    publicationGate: { publishableHighN: true, suppressionReason: null },
+  });
+  assert.doesNotThrow(
+    () => verifyLiveEvidenceContract(fixture.samples, fixture.manifest, fixture.root),
+  );
+});
+
+test('live publication gate rejects a coordinated pass when one high-N target fails', (t) => {
+  const samples = completePublicationSamples();
+  const failed = samples.find((sample) => (
+    sample.n === 100
+    && sample.replicateId === 'r2'
+    && sample.profile === 'target'
+    && sample.phase === 'evaluation'
+    && sample.score !== null
+  ));
+  failed.score = 0;
+  failed.criticalGatePass = false;
+  const fixture = fixtureContract(t, {
+    samples,
+    publicationGate: { publishableHighN: true, suppressionReason: null },
+  });
+  assert.throws(
+    () => verifyLiveEvidenceContract(fixture.samples, fixture.manifest, fixture.root),
+    /publication gate.*HIGH_N_TARGET_INVALID|high-N publication gate.*samples/i,
+  );
 });
 
 test('live contract rejects non-approved budget or economics fixtures', (t) => {

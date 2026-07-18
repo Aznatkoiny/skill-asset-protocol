@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { recomputeSummary, verifyEvidenceBundle, writeEvidenceBundle } from '../src/evidence.mjs';
 import { readGitState } from '../src/git-state.mjs';
 import { normalizeSweepSamples, writeSweepEvidenceBundle } from '../src/sweep.mjs';
-import { config } from './fixtures/live-contract.mjs';
+import { approved, config } from './fixtures/live-contract.mjs';
 
 const normalizedSample = (overrides = {}) => ({
   sampleId: 'run:target-heldout:a',
@@ -474,9 +474,107 @@ test('sample scalar channels reject unsupported enums, unsafe IDs, and sensitive
   for (const mutation of mutations) {
     assert.throws(
       () => recomputeSummary([normalizedSample(mutation)]),
-      /unsupported|safe identifier|error-class token|sensitive evidence value/,
+      /unsupported|safe identifier|error-class token|sensitive evidence value|credential-shaped evidence value/,
     );
   }
+});
+
+test('every free-form evidence string rejects credential-shaped values', () => {
+  const fakeCredentialShapes = [
+    { providerRequestId: `sk-ant-test-${'A'.repeat(32)}` },
+    { sampleId: `AKIA${'X'.repeat(16)}` },
+    { caseId: `ghp_${'x'.repeat(32)}` },
+    { replicateId: `xoxb-${'1'.repeat(12)}-${'x'.repeat(24)}` },
+    { providerRequestId: `eyJ${'a'.repeat(20)}.${'b'.repeat(20)}.${'c'.repeat(20)}` },
+  ];
+  for (const mutation of fakeCredentialShapes) {
+    assert.throws(
+      () => recomputeSummary([normalizedSample(mutation)]),
+      /credential-shaped|sensitive evidence value|safe .*identifier/i,
+    );
+  }
+
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'clone-credential-shapes-'));
+  try {
+    const manifests = [
+      { experimentId: `ghp_${'x'.repeat(32)}` },
+      { model: `sk-test-${'x'.repeat(32)}` },
+      { command: `node sweep.mjs --token=xoxb-${'1'.repeat(12)}-${'x'.repeat(24)}` },
+      { configuration: { attemptCoverage: '-----BEGIN PRIVATE KEY-----' } },
+    ];
+    manifests.forEach((manifest, index) => {
+      const outputDir = path.join(parent, `bundle-${index}`);
+      assert.throws(
+        () => writeEvidenceBundle(evidenceInput(outputDir, { manifest })),
+        /credential-shaped|sensitive evidence value|safe .*identifier/i,
+      );
+      assert.equal(fs.existsSync(outputDir), false);
+    });
+  } finally {
+    fs.rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test('provider request IDs use a provider-ID format, not a generic text channel', () => {
+  assert.doesNotThrow(() => recomputeSummary([
+    normalizedSample({ providerRequestId: 'msg_01SyntheticRequestId' }),
+  ]));
+  assert.throws(
+    () => recomputeSummary([normalizedSample({ providerRequestId: 'request.id:with:punctuation' })]),
+    /providerRequestId.*provider request identifier/i,
+  );
+});
+
+test('distillation seed status is consistent with its allow-listed mechanism', () => {
+  assert.doesNotThrow(() => recomputeSummary([normalizedSample({
+    distillationSeedStatus: 'honored',
+    distillationSeedMechanism: 'provider_confirmed_distillation_seed',
+  })]));
+  assert.throws(() => recomputeSummary([normalizedSample({
+    distillationSeedStatus: 'honored',
+    distillationSeedMechanism: 'provider_seed_not_supported_by_adapter',
+  })]), /distillation seed status and mechanism are inconsistent/i);
+});
+
+test('manifest and configuration text channels use field-specific bounded formats', (t) => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'clone-field-formats-'));
+  t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+  const cases = [
+    [{ experimentId: 'run with spaces' }, /experimentId.*safe identifier/i],
+    [{ command: 'node sweep.mjs\nsecond command' }, /command.*safe command/i],
+    [{ modelProvider: 'Anthropic\nInjected' }, /modelProvider.*provider name/i],
+    [{ model: 'model with spaces' }, /model.*model identifier/i],
+    [{ configuration: { attemptCoverage: 'first line\nsecond line' } }, /attemptCoverage.*bounded evidence text/i],
+    [{ configuration: { replicateIds: ['r 1'] } }, /replicateIds\[0\].*safe identifier/i],
+    [{ configuration: {
+      pricingSnapshot: { ...approved, provider: 'Anthropic Injected' },
+    } }, /pricingSnapshot\.provider.*provider name/i],
+    [{ configuration: {
+      pricingSnapshot: {
+        ...approved,
+        pricing: { ...approved.pricing, source: 'https://user:pass@example.invalid/pricing' },
+      },
+    } }, /pricingSnapshot\.pricing\.source.*credential-free HTTPS URL/i],
+    [{ configuration: {
+      sweepConfig: {
+        ...config,
+        replicates: config.replicates.map((replicate, index) =>
+          index === 0 ? { ...replicate, replicateId: 'r 1' } : replicate),
+      },
+    } }, /replicateId.*safe identifier/i],
+  ];
+  cases.forEach(([manifest, pattern], index) => {
+    const outputDir = path.join(parent, `bundle-${index}`);
+    assert.throws(() => writeEvidenceBundle(evidenceInput(outputDir, { manifest })), pattern);
+    assert.equal(fs.existsSync(outputDir), false);
+  });
+
+  const runtimeDir = bundle(t);
+  const manifestPath = path.join(runtimeDir, 'manifest.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  manifest.runtime.platform = 'darwin\ninjected';
+  writeCanonicalJson(manifestPath, manifest);
+  assert.throws(() => verifyEvidenceBundle(runtimeDir), /runtime\.platform.*runtime token/i);
 });
 
 test('manifest and configuration string values reject secret and raw path markers', () => {
@@ -599,7 +697,7 @@ test('verifier requires exact runtime and file-entry schemas', (t) => {
   const runtimeManifest = JSON.parse(fs.readFileSync(runtimeManifestPath, 'utf8'));
   runtimeManifest.runtime.node = null;
   writeCanonicalJson(runtimeManifestPath, runtimeManifest);
-  assert.throws(() => verifyEvidenceBundle(runtimeDir), /manifest\.runtime\.node must be a non-empty string/);
+  assert.throws(() => verifyEvidenceBundle(runtimeDir), /manifest\.runtime\.node must be a bounded runtime token/);
 
   const filesDir = bundle(t);
   const filesManifestPath = path.join(filesDir, 'manifest.json');

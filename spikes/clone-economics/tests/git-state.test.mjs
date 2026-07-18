@@ -5,7 +5,12 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { assertLiveCheckoutClean, readGitState } from '../src/git-state.mjs';
+import {
+  assertLiveCheckoutClean,
+  readGitBlobAtCommit,
+  readGitState,
+  resolveGitCommit,
+} from '../src/git-state.mjs';
 
 function git(cwd, args) {
   return execFileSync('git', args, {
@@ -71,5 +76,26 @@ test('live checkout gate rejects a captured dirty state', () => {
   );
   assert.doesNotThrow(
     () => assertLiveCheckoutClean({ gitCommit: 'a'.repeat(40), gitDirty: false, porcelain: '' }),
+  );
+});
+
+test('recorded commit resolution rejects nonexistent object IDs', (t) => {
+  const { repo } = committedRepo(t);
+  const commit = git(repo, ['rev-parse', 'HEAD']);
+  assert.equal(resolveGitCommit(repo, commit), commit);
+  assert.throws(
+    () => resolveGitCommit(repo, '0'.repeat(40)),
+    /recorded git commit does not resolve to a commit/i,
+  );
+});
+
+test('committed blobs are read from the recorded tree, not the working copy', (t) => {
+  const { repo } = committedRepo(t);
+  const commit = git(repo, ['rev-parse', 'HEAD']);
+  fs.writeFileSync(path.join(repo, 'tracked.txt'), 'working-copy-only\n');
+  assert.equal(readGitBlobAtCommit(repo, commit, 'tracked.txt').toString('utf8'), 'committed\n');
+  assert.throws(
+    () => readGitBlobAtCommit(repo, commit, '../outside.txt'),
+    /repository-relative committed blob path/i,
   );
 });
