@@ -17,6 +17,8 @@ import {
   registrationSubjectsFromManifest,
   reduceAttestationEvents,
   repositoryStatementHash,
+  verifyAdminEventSignature,
+  verifyOrganizationApproval,
   type AttestationRevokedEvent,
   type ChallengeOpenedEvent,
   type ChallengeResolvedEvent,
@@ -175,6 +177,51 @@ test("organization approval requires repository evidence and an allow-listed sig
   assert.equal(state.registrations[base.registrationId].level, "organization_approved");
 });
 
+test("organization approval rejects inherited signer entries and exotic trust-map prototypes", async () => {
+  const creator = privateKeyToAccount(generatePrivateKey());
+  const approver = privateKeyToAccount(generatePrivateKey());
+  const unsigned = {
+    schemaVersion: 1 as const,
+    subject: subject(IP_A, creator.address),
+    organizationId: "example-org",
+    approverWallet: approver.address.toLowerCase() as `0x${string}`,
+    role: "ip_admin" as const,
+    approvedAt: NOW,
+  };
+  const approval = {
+    ...unsigned,
+    statementHash: organizationStatementHash(unsigned),
+    signature: await approver.signMessage({ message: canonicalOrganizationStatement(unsigned) }),
+  };
+  const trustedWallets = [unsigned.approverWallet] as const;
+
+  Object.defineProperty(Object.prototype, "example-org", {
+    configurable: true,
+    enumerable: false,
+    value: trustedWallets,
+  });
+  try {
+    await assert.rejects(
+      verifyOrganizationApproval(approval, {}),
+      /own property/,
+    );
+  } finally {
+    delete (Object.prototype as Record<string, unknown>)["example-org"];
+  }
+
+  const inherited = Object.create({ "example-org": trustedWallets }) as Record<string, readonly `0x${string}`[]>;
+  await assert.rejects(
+    verifyOrganizationApproval(approval, inherited),
+    /plain or null-prototype record/,
+  );
+
+  const exotic = Object.assign(Object.create({ unrelated: true }), { "example-org": trustedWallets }) as Record<string, readonly `0x${string}`[]>;
+  await assert.rejects(
+    verifyOrganizationApproval(approval, exotic),
+    /plain or null-prototype record/,
+  );
+});
+
 test("duplicate bytes under different wallets create a deterministic visible conflict", async () => {
   const first = privateKeyToAccount(generatePrivateKey());
   const second = privateKeyToAccount(generatePrivateKey());
@@ -261,6 +308,57 @@ test("signed challenges, resolutions, and revocations preserve history", async (
   assert.equal(state.events.length, 4);
 });
 
+test("admin events reject inherited signer entries and exotic trust-map prototypes", async () => {
+  const admin = privateKeyToAccount(generatePrivateKey());
+  const eventBase = {
+    type: "challenge_resolved" as const,
+    eventId: "resolution-trust-map",
+    sequence: 1,
+    occurredAt: NOW,
+    conflictId: "conflict-trust-map",
+    outcome: "rejected" as const,
+    rationale: "The signed resolution is valid; only verifier trust is under test.",
+    adminSignerId: "admin-1",
+    statementHash: HASH_A,
+    signature: "0x00" as `0x${string}`,
+  };
+  const statementHash = adminEventStatementHash(eventBase);
+  const event: ChallengeResolvedEvent = {
+    ...eventBase,
+    statementHash,
+    signature: await admin.signMessage({
+      message: canonicalAdminEventStatement({ ...eventBase, statementHash }),
+    }),
+  };
+  const trustedWallet = admin.address.toLowerCase() as `0x${string}`;
+
+  Object.defineProperty(Object.prototype, "admin-1", {
+    configurable: true,
+    enumerable: false,
+    value: trustedWallet,
+  });
+  try {
+    await assert.rejects(
+      verifyAdminEventSignature(event, {}),
+      /own property/,
+    );
+  } finally {
+    delete (Object.prototype as Record<string, unknown>)["admin-1"];
+  }
+
+  const inherited = Object.create({ "admin-1": trustedWallet }) as Record<string, `0x${string}`>;
+  await assert.rejects(
+    verifyAdminEventSignature(event, inherited),
+    /plain or null-prototype record/,
+  );
+
+  const exotic = Object.assign(Object.create({ unrelated: true }), { "admin-1": trustedWallet }) as Record<string, `0x${string}`>;
+  await assert.rejects(
+    verifyAdminEventSignature(event, exotic),
+    /plain or null-prototype record/,
+  );
+});
+
 test("sequence gaps, duplicate IDs, malformed normalized inputs, and overclaim text fail", async () => {
   const account = privateKeyToAccount(generatePrivateKey());
   const base = subject(IP_A, account.address);
@@ -293,14 +391,22 @@ test("human status output lists challenged registrations and every matching conf
   const second = privateKeyToAccount(generatePrivateKey());
   const a = subject(IP_A, first.address);
   const b = subject(IP_B, second.address);
-  const index = await reduceAttestationEvents([], { baseSubjects: [b, a] });
+  const forward = await reduceAttestationEvents([], { baseSubjects: [a, b] });
+  const reverse = await reduceAttestationEvents([], { baseSubjects: [b, a] });
   const conflictId = deterministicConflictId(a, b);
-  const lines = renderAttestationStatus(index, { artifactHash: a.artifactHash });
+  const lines = renderAttestationStatus(forward, { artifactHash: a.artifactHash });
+  const reverseLines = renderAttestationStatus(reverse, { artifactHash: a.artifactHash });
 
+  assert.deepEqual(lines, reverseLines);
+  assert.deepEqual(
+    lines.filter((line) => line.startsWith("registration: ")),
+    [a.registrationId, b.registrationId].sort().map((id) => `registration: ${id}`),
+  );
   assert.equal(lines.filter((line) => line === "status: challenged").length, 2);
-  assert.deepEqual(lines.slice(-7), [
+  assert.deepEqual(lines.slice(-8), [
     "conflicts: 1",
     `conflict: ${conflictId}`,
+    `conflict artifact hash: ${a.artifactHash}`,
     "conflict status: open",
     "conflict reason: duplicate_bytes",
     "conflict outcome: (none)",
@@ -308,8 +414,22 @@ test("human status output lists challenged registrations and every matching conf
     "conflict events: (none)",
   ]);
 
-  const json = JSON.parse(renderAttestationStatus(index, { artifactHash: a.artifactHash, json: true })[0]);
+  const unsortedArrayIndex = {
+    ...forward,
+    conflicts: forward.conflicts.map((conflict) => ({
+      ...conflict,
+      registrationIds: [...conflict.registrationIds].reverse(),
+      eventIds: ["event-z", "event-a"],
+    })),
+  };
+  const unsortedArrayLines = renderAttestationStatus(unsortedArrayIndex, { artifactHash: a.artifactHash });
+  assert.ok(unsortedArrayLines.includes(
+    `conflict registrations: ${[a.registrationId, b.registrationId].sort().join(", ")}`,
+  ));
+  assert.ok(unsortedArrayLines.includes("conflict events: event-a, event-z"));
+
+  const json = JSON.parse(renderAttestationStatus(forward, { artifactHash: a.artifactHash, json: true })[0]);
   assert.equal(json.registrations.length, 2);
   assert.ok(json.registrations.every((registration: { status: string }) => registration.status === "challenged"));
-  assert.deepEqual(json.conflicts, index.conflicts);
+  assert.deepEqual(json.conflicts, forward.conflicts);
 });

@@ -227,7 +227,8 @@ function statusPayload(index: AttestationIndex, options: AttestationCommandOptio
   if (options.artifactHash !== undefined && options.registrationId !== undefined) throw new Error("choose only one of --artifact-hash or --registration-id");
   const selected = Object.entries(index.registrations).filter(([id, registration]) =>
     (options.artifactHash === undefined || registration.subject.artifactHash === options.artifactHash)
-    && (options.registrationId === undefined || id === options.registrationId));
+    && (options.registrationId === undefined || id === options.registrationId))
+    .sort(([a], [b]) => a.localeCompare(b));
   const ids = new Set(selected.map(([id]) => id));
   return {
     registrations: selected.map(([registrationId, registration]) => ({
@@ -236,7 +237,9 @@ function statusPayload(index: AttestationIndex, options: AttestationCommandOptio
       ...displayAttestation(index, registrationId),
       revocations: registration.revocations,
     })),
-    conflicts: index.conflicts.filter((conflict) => conflict.registrationIds.some((id) => ids.has(id))),
+    conflicts: index.conflicts
+      .filter((conflict) => conflict.registrationIds.some((id) => ids.has(id)))
+      .sort((a, b) => a.conflictId.localeCompare(b.conflictId)),
   };
 }
 
@@ -258,11 +261,12 @@ export function renderAttestationStatus(index: AttestationIndex, options: Attest
   for (const conflictValue of payload.conflicts) {
     const conflict = conflictValue as AttestationIndex["conflicts"][number];
     lines.push(`conflict: ${conflict.conflictId}`);
+    lines.push(`conflict artifact hash: ${conflict.artifactHash ?? "(none)"}`);
     lines.push(`conflict status: ${conflict.status}`);
     lines.push(`conflict reason: ${conflict.reason}`);
     lines.push(`conflict outcome: ${conflict.outcome ?? "(none)"}`);
     lines.push(`conflict registrations: ${[...conflict.registrationIds].sort().join(", ")}`);
-    lines.push(`conflict events: ${conflict.eventIds.length > 0 ? conflict.eventIds.join(", ") : "(none)"}`);
+    lines.push(`conflict events: ${conflict.eventIds.length > 0 ? [...conflict.eventIds].sort().join(", ") : "(none)"}`);
   }
   return lines;
 }

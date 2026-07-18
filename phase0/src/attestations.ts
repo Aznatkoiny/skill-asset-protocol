@@ -218,6 +218,16 @@ function exactKeys(value: Record<string, unknown>, expected: readonly string[], 
   }
 }
 
+function assertTrustMap(value: unknown, label: string): asserts value is Readonly<Record<string, unknown>> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`${label} must be a plain or null-prototype record`);
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new Error(`${label} must be a plain or null-prototype record`);
+  }
+}
+
 function nonempty(value: unknown, label: string): asserts value is string {
   if (typeof value !== "string" || value.trim() !== value || value.length === 0) {
     throw new Error(`${label} must be a nonempty canonical string`);
@@ -536,7 +546,11 @@ export async function verifyOrganizationApproval(
     approvedAt: approval.approvedAt,
   };
   if (approval.statementHash !== organizationStatementHash(unsigned)) throw new Error("organization statement hash mismatch");
-  const trusted = organizationSigners[approval.organizationId] ?? [];
+  assertTrustMap(organizationSigners, "organization signer trust");
+  if (!Object.hasOwn(organizationSigners, approval.organizationId)) {
+    throw new Error("organization approver is not allow-listed; organization ID must be an own property of the trust map");
+  }
+  const trusted = organizationSigners[approval.organizationId];
   if (!trusted.includes(approval.approverWallet)) throw new Error("organization approver is not allow-listed");
   if (!await verifyMessage({ address: approval.approverWallet, message: canonicalOrganizationStatement(unsigned), signature: approval.signature })) {
     throw new Error("organization signature does not recover the approver wallet");
@@ -623,6 +637,10 @@ export async function verifyAdminEventSignature(
 ): Promise<void> {
   const event = parseAttestationEvent(eventValue);
   if (event.type !== "challenge_resolved" && event.type !== "attestation_revoked") throw new Error("admin event required");
+  assertTrustMap(adminSigners, "attestation admin trust");
+  if (!Object.hasOwn(adminSigners, event.adminSignerId)) {
+    throw new Error("admin signer is not provisioned; signer ID must be an own property of the trust map");
+  }
   const signer = adminSigners[event.adminSignerId];
   if (!signer) throw new Error("admin signer is not provisioned");
   address(signer, "admin signer address");
