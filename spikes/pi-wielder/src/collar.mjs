@@ -249,6 +249,10 @@ export function createCollar({
   };
 
   const app = new Hono();
+  app.onError(() => new Response(JSON.stringify({ error: 'internal Collar error' }), {
+    status: 500,
+    headers: { 'content-type': 'application/json; charset=UTF-8' },
+  }));
   app.get('/healthz', (c) => c.json({
     ok: true,
     skill: SKILL_ID,

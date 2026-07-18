@@ -315,7 +315,9 @@ test('crash after the provider returns leaves one unresolved attempt and never c
       afterExecutorReturned: async () => { throw new Error('crash after provider return'); },
     },
   });
-  assert.equal((await prepared.retry()).status, 500);
+  const crashed = await prepared.retry();
+  assert.equal(crashed.status, 500);
+  assert.doesNotMatch(await crashed.text(), /crash after provider return/);
   assert.equal(executions, 1);
   assert.equal((await prepared.retry()).status, 503);
   assert.equal(executions, 1);
