@@ -5,7 +5,12 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { chooseFacilitator, createCollar, SKILL_ID } from '../src/collar.mjs';
+import {
+  chooseFacilitator,
+  createAnthropicExecutor,
+  createCollar,
+  SKILL_ID,
+} from '../src/collar.mjs';
 import { createMockFacilitator } from '../src/facilitator-mock.mjs';
 import { verifySignedReceipt } from '../src/invocation-journal.mjs';
 import { payingFetch as policyPayingFetch } from '../src/proxy.mjs';
@@ -19,6 +24,12 @@ import { paymentPolicyFor } from './payment-policy-fixture.mjs';
 
 const invokeUrl = `http://collar.test/invoke/${SKILL_ID}`;
 const requestBody = JSON.stringify({ input: 'same bytes' });
+const KNOWN_USAGE = Object.freeze({
+  schemaVersion: 2,
+  model: 'claude-sonnet-4-6',
+  inputTokens: 42,
+  outputTokens: 42,
+});
 const payingFetch = (account, url, init, options = {}) => policyPayingFetch(account, url, init, {
   paymentPolicy: paymentPolicyFor(url),
   ...options,
@@ -255,7 +266,10 @@ test('response-loss reconciliation advances once and exact retry never duplicate
       txHash: lostSettlement.transaction,
       payer,
     }),
-    executeSkill: async ({ input }) => { executions += 1; return { output: `executed ${input}` }; },
+    executeSkill: async ({ input }) => {
+      executions += 1;
+      return { output: `executed ${input}`, usage: KNOWN_USAGE };
+    },
   });
   const idempotencyKey = 'idem-response-loss';
   const first = await withheldPayingFetch(throwawayAccount(), invokeUrl, {
@@ -334,7 +348,7 @@ test('crash after the provider returns leaves one unresolved attempt and never c
   const prepared = await prepareReconciledRetry({
     executeSkill: async () => {
       executions += 1;
-      return { output: 'completed but not journaled' };
+      return { output: 'completed but not journaled', usage: KNOWN_USAGE };
     },
     lifecycleFaults: {
       afterExecutorReturned: async () => { throw new Error('crash after provider return'); },
@@ -357,7 +371,7 @@ test('crash after finish but before receipt issuance replays without another pro
   const prepared = await prepareReconciledRetry({
     executeSkill: async () => {
       executions += 1;
-      return { output: 'journaled output' };
+      return { output: 'journaled output', usage: KNOWN_USAGE };
     },
     lifecycleFaults: {
       afterExecutionFinished: async () => {
@@ -394,7 +408,7 @@ test('overlapping paid retries atomically claim one execution attempt', async ()
       assert.match(executionAttemptId, /^attempt:/);
       announceStarted();
       await gate;
-      return { output: 'one output' };
+      return { output: 'one output', usage: KNOWN_USAGE };
     },
   });
   const winner = prepared.retry();
@@ -775,31 +789,25 @@ test('facilitator verification detail is absent from the response and durable jo
 
 test('Anthropic error response bodies are never copied into the failed receipt', async () => {
   const responseSecret = 'sk-ant-secret-inside-upstream-body';
-  const previousFetch = globalThis.fetch;
-  const previousKey = process.env.ANTHROPIC_API_KEY;
-  process.env.ANTHROPIC_API_KEY = 'test-only-key';
-  globalThis.fetch = async (url) => {
-    assert.equal(url, 'https://api.anthropic.com/v1/messages');
-    return new Response(JSON.stringify({ error: responseSecret }), {
-      status: 500,
-      headers: { 'content-type': 'application/json' },
-    });
-  };
-  try {
-    const collar = createCollar({ facilitatorTransport: mockTransport(), mockLlm: false });
-    const result = await payingFetch(throwawayAccount(), invokeUrl, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: requestBody,
-    }, {
-      idempotencyKey: 'idem-anthropic-secret-body',
-      fetchImpl: (url, init) => collar.app.request(url, init),
-    });
-    assert.equal(result.res.status, 500);
-    const text = await result.res.text();
-    assert.doesNotMatch(text, new RegExp(responseSecret));
-    assert.match(text, /Skill execution failed after settlement/);
-  } finally {
-    globalThis.fetch = previousFetch;
-    if (previousKey === undefined) delete process.env.ANTHROPIC_API_KEY;
-    else process.env.ANTHROPIC_API_KEY = previousKey;
-  }
+  const executeSkill = createAnthropicExecutor({
+    apiKey: 'test-only-key',
+    fetchImpl: async (url) => {
+      assert.equal(url, 'https://api.anthropic.com/v1/messages');
+      return new Response(JSON.stringify({ error: responseSecret }), {
+        status: 500,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+  const collar = createCollar({ facilitatorTransport: mockTransport(), executeSkill });
+  const result = await payingFetch(throwawayAccount(), invokeUrl, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: requestBody,
+  }, {
+    idempotencyKey: 'idem-anthropic-secret-body',
+    fetchImpl: (url, init) => collar.app.request(url, init),
+  });
+  assert.equal(result.res.status, 500);
+  const text = await result.res.text();
+  assert.doesNotMatch(text, new RegExp(responseSecret));
+  assert.match(text, /Skill execution failed after settlement/);
 });

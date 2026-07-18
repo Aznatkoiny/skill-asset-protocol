@@ -218,6 +218,15 @@ test('quote ID freezes Skill, artifact, Royalty graph, and catalog identity', ()
   });
   assert.equal(pending.executionCogs.catalogVersion, frozen.catalogVersion);
   assert.equal(pending.executionCogs.catalogDigest, frozen.catalogDigest);
+  const driftedKnownUsage = createPendingExecutionAccounting({
+    quote: frozen,
+    usage: { schemaVersion: 2, model: frozen.model, inputTokens: 42, outputTokens: 42 },
+    failureClass: 'CATALOG_DIGEST_DRIFT',
+    reason: 'current catalog changed',
+    catalog: driftedCatalog,
+  });
+  assert.equal(driftedKnownUsage.executionCogs.status, 'unknown');
+  assert.equal(driftedKnownUsage.executionCogs.actualAtomic, null);
 });
 
 test('strict v2 quote and usage schemas reject inherited, unknown, and unsafe values', () => {

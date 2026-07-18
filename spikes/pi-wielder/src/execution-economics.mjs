@@ -390,10 +390,13 @@ export function createExecutionQuote(input) {
   return frozenCopy({ quoteId: hash(body), ...body });
 }
 
-function pendingUsage(input, catalog) {
+function pendingUsage(input, catalog, quote) {
   if (input == null) return { actual: null, usage: null };
-  const usage = normalizeUsage(input);
   try {
+    const usage = normalizeUsage(input);
+    if (catalog.version !== quote.catalogVersion || catalogDigest(catalog) !== quote.catalogDigest) {
+      return { actual: null, usage: null };
+    }
     return { actual: usageCostAtomic(usage, catalog), usage };
   } catch {
     return { actual: null, usage: null };
@@ -406,7 +409,7 @@ export function createPendingExecutionAccounting(input) {
     'ACCOUNTING_SCHEMA', 'pending execution accounting');
   const quote = assertExecutionQuote(captured.quote);
   const catalog = captured.catalog ?? EXECUTION_CATALOG;
-  const { actual, usage } = pendingUsage(captured.usage ?? null, catalog);
+  const { actual, usage } = pendingUsage(captured.usage ?? null, catalog, quote);
   const quotedWorstCase = BigInt(quote.worstCaseExecutionCostAtomic);
   const overrun = actual != null && actual > quotedWorstCase ? actual - quotedWorstCase : 0n;
   const result = {

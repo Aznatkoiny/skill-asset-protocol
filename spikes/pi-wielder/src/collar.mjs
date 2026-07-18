@@ -13,7 +13,18 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 
-import { allocateExternalGross } from '../../../prototype/atomic-money.mjs';
+import { assertArtifactNotSerialized } from './artifact-boundary.mjs';
+import {
+  artifactDigest,
+  assertFrozenExecutionIdentity,
+  assertLiveCatalogApproval,
+  conservativeProviderPromptBound,
+  createPendingExecutionAccounting,
+  createExecutionQuote,
+  EXECUTION_CATALOG,
+  ExecutionEconomicsError,
+  finalizeExecutionAccounting,
+} from './execution-economics.mjs';
 import {
   APPROVED_LIVE_FACILITATOR_BASE,
   createLiveFacilitatorTransport,
@@ -31,6 +42,15 @@ const SKILL_PATH = fileURLToPath(
   new URL(`../../../.claude/skills/${SKILL_ID}/SKILL.md`, import.meta.url),
 );
 const DEFAULT_PRICE_USDC = '0.25';
+const DEFAULT_EXECUTION = Object.freeze({
+  model: 'claude-sonnet-4-6',
+  maxInputTokens: 16384,
+  maxOutputTokens: 2048,
+});
+const SETTLEMENT_COST_ATOMIC = '1000';
+const REFUND_RESERVE_ATOMIC = '5000';
+const MAX_REQUEST_BODY_BYTES = 4096;
+const SKILL_VERSION = 'optimizing-claude-code-prompts/2026-07-17-v1';
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
 
 const hash = (value) => `sha256:${crypto.createHash('sha256').update(value).digest('hex')}`;
@@ -43,31 +63,7 @@ const royaltyGraph = Object.freeze({
   }),
 });
 
-function serializeEntry(entry) {
-  return { ...entry, amountAtomic: entry.amountAtomic.toString() };
-}
-
-function serializeCredit(credit) {
-  return { ...credit, amountAtomic: credit.amountAtomic.toString() };
-}
-
-function serializeAccounting(result) {
-  return {
-    allocationState: 'finalized',
-    allocationPolicy: result.allocationPolicy,
-    grossAtomic: result.grossAtomic.toString(),
-    executionCostAtomic: result.executionCostAtomic.toString(),
-    settlementCostAtomic: result.settlementCostAtomic.toString(),
-    protocolFeeAtomic: result.protocolFeeAtomic.toString(),
-    royaltyPoolAtomic: result.royaltyPoolAtomic.toString(),
-    refundReserveAtomic: result.refundReserveAtomic.toString(),
-    holderCredits: result.holderCredits.map(serializeCredit),
-    ancestorCredits: result.ancestorCredits.map(serializeCredit),
-    journalEntries: result.journalEntries.map(serializeEntry),
-  };
-}
-
-function pendingFailureAccounting(amountAtomic) {
+function legacyPendingFailureAccounting(amountAtomic) {
   return {
     grossAtomic: String(amountAtomic),
     allocationState: 'pending_cogs_reconciliation',
@@ -80,6 +76,23 @@ function pendingFailureAccounting(amountAtomic) {
       amountAtomic: String(amountAtomic),
     }],
   };
+}
+
+function deepFreeze(value) {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) deepFreeze(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+function isExactPlainObject(value, keys) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || Object.getPrototypeOf(value) !== Object.prototype) return false;
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length
+    && actual.every((key, index) => key === expected[index]);
 }
 
 function validTxHash(value) {
@@ -115,7 +128,16 @@ export function createCollar({
   facilitatorTransport,
   payTo = process.env.PAY_TO_ADDRESS || '0x000000000000000000000000000000000000dead',
   priceUsdc = process.env.SKILL_PRICE_USDC || DEFAULT_PRICE_USDC,
-  mockLlm = process.env.MOCK_LLM === '1',
+  mockLlm = process.env.MOCK_LLM !== '0',
+  allowLiveProvider = process.env.ALLOW_LIVE_PROVIDER === '1',
+  executionCatalog = EXECUTION_CATALOG,
+  liveApproval = process.env.LIVE_CATALOG_DIGEST && process.env.LIVE_SPEND_CAP_ATOMIC
+    ? {
+      catalogDigest: process.env.LIVE_CATALOG_DIGEST,
+      spendCapAtomic: process.env.LIVE_SPEND_CAP_ATOMIC,
+    }
+    : null,
+  liveExecutorFactory = () => createAnthropicExecutor(),
   journal = null,
   journalFile = process.env.COLLAR_JOURNAL_FILE || null,
   signingKeyFile = process.env.COLLAR_SIGNING_KEY_FILE || null,
@@ -149,12 +171,107 @@ export function createCollar({
   const skillContent = fs.readFileSync(SKILL_PATH, 'utf8');
   const skillVersionHash = hash(skillContent);
   const priceAtomic = usdcToAtomic(priceUsdc);
-  const executor = executeSkill ?? (mockLlm
-    ? async ({ input }) => ({ output: mockSkillOutput(input) })
-    : async ({ input }) => ({ output: await runSkillViaAnthropic(skillContent, input) }));
+  const frozenExecutionCatalog = deepFreeze(structuredClone(executionCatalog));
+  let executor = executeSkill;
+  if (!executor && mockLlm) {
+    executor = async ({ input }) => ({
+      output: mockSkillOutput(input),
+      usage: {
+        schemaVersion: 2,
+        model: 'claude-sonnet-4-6',
+        inputTokens: 42,
+        outputTokens: 42,
+      },
+    });
+  }
+  if (!executor) {
+    if (!allowLiveProvider) {
+      throw new ExecutionEconomicsError(
+        'LIVE_PRICING_UNAPPROVED',
+        'live provider execution requires an explicit gate',
+      );
+    }
+    assertLiveCatalogApproval({
+      catalog: frozenExecutionCatalog,
+      approval: liveApproval,
+      grossAtomic: priceAtomic,
+    });
+    executor = liveExecutorFactory();
+  }
+  if (typeof executor !== 'function') {
+    throw new TypeError('Skill executor must be a function');
+  }
+
+  const readInvocationBody = async (c) => {
+    const cached = c.get('invocationBody');
+    if (cached) return cached;
+    const raw = await c.req.text();
+    const requestBodyBytes = Buffer.byteLength(raw, 'utf8');
+    if (requestBodyBytes > MAX_REQUEST_BODY_BYTES) {
+      throw new ExecutionEconomicsError(
+        'REQUEST_BODY_TOO_LARGE',
+        'request body exceeds the pre-payment byte cap',
+      );
+    }
+    let body;
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      throw new ExecutionEconomicsError('INVALID_REQUEST', 'body must be JSON');
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+        || Object.getPrototypeOf(body) !== Object.prototype
+        || typeof body.input !== 'string' || !body.input) {
+      throw new ExecutionEconomicsError(
+        'INVALID_REQUEST',
+        'body must contain a non-empty string input',
+      );
+    }
+    const execution = body.execution ?? {};
+    if (!isExactPlainObject(execution, Object.keys(execution))
+        || Object.keys(execution).some((key) => !Object.hasOwn(DEFAULT_EXECUTION, key))) {
+      throw new ExecutionEconomicsError(
+        'EXECUTION_REQUEST_SCHEMA',
+        'execution options contain unknown fields',
+      );
+    }
+    const parsed = { body, requestBodyBytes };
+    c.set('invocationBody', parsed);
+    return parsed;
+  };
+
+  const buildQuote = async (c) => {
+    const { body, requestBodyBytes } = await readInvocationBody(c);
+    const requested = { ...DEFAULT_EXECUTION, ...(body.execution ?? {}) };
+    const promptBound = conservativeProviderPromptBound({
+      systemPrompt: skillContent,
+      userInput: body.input,
+      requestBodyBytes,
+      maxRequestBodyBytes: MAX_REQUEST_BODY_BYTES,
+      maxInputTokens: requested.maxInputTokens,
+    });
+    return createExecutionQuote({
+      schemaVersion: 2,
+      grossAtomic: priceAtomic,
+      model: requested.model,
+      maxInputTokens: requested.maxInputTokens,
+      maxOutputTokens: requested.maxOutputTokens,
+      promptBytes: promptBound.promptBytes,
+      estimatedInputTokens: promptBound.estimatedInputTokens,
+      settlementCostAtomic: SETTLEMENT_COST_ATOMIC,
+      refundReserveAtomic: REFUND_RESERVE_ATOMIC,
+      protocolFeeBps: 250,
+      leafSkillId: SKILL_ID,
+      skillId: SKILL_ID,
+      skillVersion: SKILL_VERSION,
+      artifactHash: artifactDigest(skillContent),
+      skills: royaltyGraph,
+      catalog: frozenExecutionCatalog,
+    });
+  };
 
   const lifecycle = {
-    async onOffered({ idempotencyKey, requirements, expiresAt }) {
+    async onOffered({ idempotencyKey, requirements, expiresAt, executionQuote }) {
       journal.requestInvocation({
         idempotencyKey,
         mode: 'external',
@@ -176,40 +293,85 @@ export function createCollar({
         requirementsHash: hash(canonicalJson(requirements)),
         expiresAt,
         requirements,
+        executionQuote,
       });
     },
 
-    async loadFrozenOffer({ idempotencyKey }) {
-      return journal.getByIdempotencyKey(idempotencyKey)?.quote?.requirements ?? null;
+    async loadFrozenOffer({ idempotencyKey, paymentHeaderPresent = false }) {
+      const record = journal.getByIdempotencyKey(idempotencyKey);
+      const persistedQuote = record?.quote;
+      if (!persistedQuote) return null;
+      if (record.schemaVersion === 1 && !paymentHeaderPresent) {
+        throw new Error('legacy v1 frozen offers cannot authorize a new payment');
+      }
+      return {
+        requirements: persistedQuote.requirements,
+        executionQuote: persistedQuote.executionQuote ?? null,
+      };
     },
 
-    async onSigned({ idempotencyKey, settlementReference, payer, requirements }) {
+    async onSigned({
+      idempotencyKey, settlementReference, payer, requirements, executionQuote,
+    }) {
       const existing = journal.getByIdempotencyKey(idempotencyKey);
       if (!existing?.quote) throw new Error('paid retry has no prior quoted Invocation');
       if (existing.quote.requirementsHash !== hash(canonicalJson(requirements))
           || existing.quote.requestHash !== requirements.extra.requestHash) {
         throw new Error('paid retry does not match the frozen x402 requirements');
       }
-      const claim = journal.claimExternalPaymentSigned(idempotencyKey, { settlementReference, payer });
-      const record = claim.record;
-      if (TERMINAL.has(record.execution.state)) {
-        if (!['settled', 'refunded'].includes(record.payment.state) || !record.payment.txHash) {
+      if (existing.schemaVersion === 2
+          && canonicalJson(existing.quote.executionQuote) !== canonicalJson(executionQuote)) {
+        throw new Error('paid retry does not match the frozen execution quote');
+      }
+      // A terminal record is immutable historical authority. Replay it before
+      // consulting current catalog or artifact configuration.
+      if (TERMINAL.has(existing.execution.state)) {
+        if (!['settled', 'refunded'].includes(existing.payment.state) || !existing.payment.txHash) {
           throw new Error('terminal Invocation does not carry a replayable settled payment');
         }
         return {
           kind: 'terminal',
-          paymentState: record.payment.state,
-          receipt: record.receipt ?? journal.issueReceipt(idempotencyKey),
-          txHash: record.payment.txHash,
-          payer: record.payment.payer,
-          httpStatus: record.execution.httpStatus,
+          paymentState: existing.payment.state,
+          receipt: existing.receipt ?? journal.issueReceipt(idempotencyKey),
+          txHash: existing.payment.txHash,
+          payer: existing.payment.payer,
+          httpStatus: existing.execution.httpStatus,
         };
       }
-      if (record.execution.state === 'executing') {
-        return { kind: 'execution_unresolved', executionAttemptId: record.execution.executionAttemptId };
+      if (existing.execution.state === 'executing') {
+        return {
+          kind: 'execution_unresolved',
+          executionAttemptId: existing.execution.executionAttemptId,
+        };
       }
+      if (existing.schemaVersion === 1) {
+        if (existing.payment.state === 'settled' && existing.execution.state === 'authorized') {
+          return {
+            kind: 'settled',
+            txHash: existing.payment.txHash,
+            payer: existing.payment.payer,
+            legacySchemaVersion: 1,
+          };
+        }
+        throw new Error('legacy v1 nonterminal payment cannot continue');
+      }
+      // Before the seller records payment.signed or calls the facilitator, the
+      // current execution identity must still match the persisted full quote.
+      assertFrozenExecutionIdentity({
+        quote: executionQuote,
+        skillId: SKILL_ID,
+        skillVersion: SKILL_VERSION,
+        artifactContent: skillContent,
+        skills: royaltyGraph,
+        catalog: frozenExecutionCatalog,
+      });
+      const claim = journal.claimExternalPaymentSigned(idempotencyKey, { settlementReference, payer });
+      const record = claim.record;
       if (record.payment.state === 'unresolved' || (!claim.claimed && record.payment.state === 'signed')) {
-        return { kind: 'payment_unresolved', settlementReference: record.payment.settlementReference };
+        return {
+          kind: 'payment_unresolved',
+          settlementReference: record.payment.settlementReference,
+        };
       }
       if (record.payment.state === 'settled' && record.execution.state === 'authorized') {
         return {
@@ -221,7 +383,14 @@ export function createCollar({
       return null;
     },
 
-    async onSettled({ idempotencyKey, settlementReference, txHash, payer }) {
+    async onSettled({
+      idempotencyKey, settlementReference, txHash, payer, executionQuote,
+    }) {
+      const persisted = journal.getByIdempotencyKey(idempotencyKey);
+      if (persisted?.schemaVersion === 2
+          && canonicalJson(persisted.quote.executionQuote) !== canonicalJson(executionQuote)) {
+        throw new Error('settlement does not match the frozen execution quote');
+      }
       await lifecycleFaults.beforeSettlementRecorded?.({ idempotencyKey, settlementReference, txHash, payer });
       const record = journal.markExternalPaymentSettled(idempotencyKey, {
         settlementReference,
@@ -463,6 +632,7 @@ export function createCollar({
     },
     x402Paywall({
       price: priceUsdc,
+      quote: buildQuote,
       payTo,
       facilitatorTransport,
       description: `hosted-skill Invocation: ${SKILL_ID}`,
@@ -479,7 +649,7 @@ export function createCollar({
         }, 503);
       }
       const executionAttemptId = claim.record.execution.executionAttemptId;
-      const finishFailure = (failureClass, message, status) => {
+      const finishFailure = (failureClass, message, status, accounting) => {
         journal.finishExecution(key, {
           executionAttemptId,
           outcome: 'failed',
@@ -487,14 +657,48 @@ export function createCollar({
           message,
           outcomeHash: null,
           httpStatus: status,
-          accounting: pendingFailureAccounting(payment.amountAtomic),
+          accounting,
         });
         return c.json({ error: message, receipt: journal.issueReceipt(key) }, status);
       };
 
-      const body = await c.req.json().catch(() => null);
-      if (typeof body?.input !== 'string' || !body.input) {
-        return finishFailure('INVALID_REQUEST', 'body must be JSON: { "input": "..." }', 400);
+      if (payment.legacySchemaVersion === 1) {
+        return finishFailure(
+          'LEGACY_ACCOUNTING_UNSUPPORTED',
+          'legacy settled Invocation cannot execute without a frozen COGS quote',
+          500,
+          legacyPendingFailureAccounting(payment.amountAtomic),
+        );
+      }
+
+      const { body } = await readInvocationBody(c);
+      const frozenQuote = payment.executionQuote;
+      try {
+        assertFrozenExecutionIdentity({
+          quote: frozenQuote,
+          skillId: SKILL_ID,
+          skillVersion: SKILL_VERSION,
+          artifactContent: skillContent,
+          skills: royaltyGraph,
+          catalog: frozenExecutionCatalog,
+        });
+      } catch (error) {
+        const failureClass = error instanceof ExecutionEconomicsError
+          ? error.code
+          : 'EXECUTION_IDENTITY_DRIFT';
+        const accounting = createPendingExecutionAccounting({
+          quote: frozenQuote,
+          usage: null,
+          failureClass,
+          reason: 'frozen execution identity changed after settlement',
+          catalog: frozenExecutionCatalog,
+        });
+        return finishFailure(
+          failureClass,
+          'frozen execution identity changed after settlement',
+          500,
+          accounting,
+        );
       }
 
       let execution;
@@ -505,35 +709,114 @@ export function createCollar({
           skillContent,
           input: body.input,
           executionAttemptId,
+          model: frozenQuote.model,
+          maxInputTokens: frozenQuote.maxInputTokens,
+          maxOutputTokens: frozenQuote.maxOutputTokens,
+          promptBytes: frozenQuote.promptBytes,
+          estimatedInputTokens: frozenQuote.estimatedInputTokens,
         });
       } catch (error) {
-        return finishFailure('UPSTREAM_500', 'Skill execution failed after settlement', 500);
-      }
-      if (!execution || typeof execution.output !== 'string') {
-        return finishFailure('INVALID_EXECUTOR_RESULT', 'executor must return { output: string }', 500);
+        let retainedUsage = null;
+        try { retainedUsage = error?.usage ?? null; } catch { retainedUsage = null; }
+        const accounting = createPendingExecutionAccounting({
+          quote: frozenQuote,
+          usage: retainedUsage,
+          failureClass: 'UPSTREAM_PROVIDER_ERROR',
+          reason: 'provider execution failed after settlement',
+          catalog: frozenExecutionCatalog,
+        });
+        return finishFailure(
+          'UPSTREAM_PROVIDER_ERROR',
+          'Skill execution failed after settlement',
+          500,
+          accounting,
+        );
       }
       await lifecycleFaults.afterExecutorReturned?.({ idempotencyKey: key, executionAttemptId });
 
-      const allocation = allocateExternalGross({
-        grossAtomic: BigInt(payment.amountAtomic),
-        executionCostAtomic: 0n,
-        settlementCostAtomic: 0n,
-        protocolFeeBps: 250,
-        refundReserveAtomic: 0n,
-        leafSkillId: SKILL_ID,
-        skills: royaltyGraph,
-      });
+      let capturedExecution = null;
+      try { capturedExecution = structuredClone(execution); } catch { /* invalid result below */ }
+      if (!isExactPlainObject(capturedExecution, ['output', 'usage'])
+          || typeof capturedExecution.output !== 'string'
+          || !(capturedExecution.usage === null
+            || (capturedExecution.usage && typeof capturedExecution.usage === 'object'))) {
+        const accounting = createPendingExecutionAccounting({
+          quote: frozenQuote,
+          usage: capturedExecution?.usage ?? null,
+          failureClass: 'INVALID_EXECUTOR_RESULT',
+          reason: 'executor returned an invalid result',
+          catalog: frozenExecutionCatalog,
+        });
+        return finishFailure(
+          'INVALID_EXECUTOR_RESULT',
+          'executor must return exactly output:string and usage:object|null',
+          500,
+          accounting,
+        );
+      }
+
+      let accounting;
+      try {
+        accounting = finalizeExecutionAccounting({
+          quote: frozenQuote,
+          usage: capturedExecution.usage,
+          unknownReason: 'provider response omitted usage',
+          leafSkillId: SKILL_ID,
+          skills: royaltyGraph,
+          catalog: frozenExecutionCatalog,
+        });
+      } catch (error) {
+        if (!(error instanceof ExecutionEconomicsError)) throw error;
+        const pending = createPendingExecutionAccounting({
+          quote: frozenQuote,
+          usage: capturedExecution.usage,
+          failureClass: error.code,
+          reason: 'provider usage violated the frozen execution quote',
+          catalog: frozenExecutionCatalog,
+        });
+        return finishFailure(
+          error.code,
+          'provider usage violated the frozen execution quote',
+          500,
+          pending,
+        );
+      }
+      if (accounting.executionCogs.status === 'unknown') {
+        return finishFailure(
+          'COGS_UNKNOWN',
+          'provider usage is unavailable; full gross held pending trusted COGS reconciliation or refund',
+          500,
+          accounting,
+        );
+      }
+      try {
+        assertArtifactNotSerialized({ output: capturedExecution.output, artifact: skillContent });
+      } catch {
+        const pending = createPendingExecutionAccounting({
+          quote: frozenQuote,
+          usage: capturedExecution.usage,
+          failureClass: 'ARTIFACT_SERIALIZATION',
+          reason: 'direct artifact serialization detected',
+          catalog: frozenExecutionCatalog,
+        });
+        return finishFailure(
+          'ARTIFACT_SERIALIZATION',
+          'Skill output violated the direct artifact serialization boundary',
+          500,
+          pending,
+        );
+      }
       journal.finishExecution(key, {
         executionAttemptId,
         outcome: 'succeeded',
         failureClass: null,
         message: null,
-        outcomeHash: hash(execution.output),
+        outcomeHash: hash(capturedExecution.output),
         httpStatus: 200,
-        accounting: serializeAccounting(allocation),
+        accounting,
       });
       await lifecycleFaults.afterExecutionFinished?.({ idempotencyKey: key, executionAttemptId });
-      return c.json({ output: execution.output, receipt: journal.issueReceipt(key) });
+      return c.json({ output: capturedExecution.output, receipt: journal.issueReceipt(key) });
     },
   );
 
@@ -551,26 +834,76 @@ function mockSkillOutput(input) {
   ].join('\n');
 }
 
-async function runSkillViaAnthropic(skillContent, input) {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY required unless MOCK_LLM=1');
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 2048,
-      system: skillContent,
-      messages: [{ role: 'user', content: String(input) }],
-    }),
-  });
-  if (!response.ok) throw new Error(`Anthropic API returned HTTP ${response.status}`);
-  const data = await response.json();
-  return data.content?.map((block) => block.text ?? '').join('') ?? '';
+export function createAnthropicExecutor({
+  apiKey = process.env.ANTHROPIC_API_KEY,
+  fetchImpl = fetch,
+} = {}) {
+  if (typeof apiKey !== 'string' || !apiKey) {
+    throw new Error('Anthropic API key is required for the live executor');
+  }
+  if (typeof fetchImpl !== 'function') throw new TypeError('Anthropic executor requires fetch');
+  return async ({
+    skillContent,
+    input,
+    model,
+    maxInputTokens,
+    maxOutputTokens,
+    promptBytes,
+    estimatedInputTokens,
+  }) => {
+    const rebound = conservativeProviderPromptBound({
+      systemPrompt: skillContent,
+      userInput: input,
+      requestBodyBytes: 0,
+      maxRequestBodyBytes: MAX_REQUEST_BODY_BYTES,
+      maxInputTokens,
+    });
+    if (rebound.promptBytes !== promptBytes
+        || rebound.estimatedInputTokens !== estimatedInputTokens) {
+      throw new ExecutionEconomicsError(
+        'FROZEN_PROMPT_MISMATCH',
+        'provider prompt differs from the accepted quote',
+      );
+    }
+    let response;
+    try {
+      response = await fetchImpl('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        redirect: 'error',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model,
+          max_tokens: maxOutputTokens,
+          system: skillContent,
+          messages: [{ role: 'user', content: input }],
+        }),
+      });
+    } catch {
+      throw new ExecutionEconomicsError('UPSTREAM_PROVIDER_ERROR', 'provider request failed');
+    }
+    if (!response?.ok) {
+      throw new ExecutionEconomicsError('UPSTREAM_PROVIDER_ERROR', 'provider request failed');
+    }
+    let data;
+    try { data = await response.json(); } catch {
+      throw new ExecutionEconomicsError('UPSTREAM_PROVIDER_ERROR', 'provider response was not JSON');
+    }
+    return {
+      output: Array.isArray(data?.content)
+        ? data.content.map((block) => (typeof block?.text === 'string' ? block.text : '')).join('')
+        : '',
+      usage: data?.usage ? {
+        schemaVersion: 2,
+        model,
+        inputTokens: data.usage.input_tokens,
+        outputTokens: data.usage.output_tokens,
+      } : null,
+    };
+  };
 }
 
 export function startCollar({ port = 0, ...options } = {}) {
