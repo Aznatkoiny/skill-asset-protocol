@@ -32,7 +32,12 @@ const facilitator = createMockFacilitator();
 const facilitatorTransport = createMockFacilitatorTransport(
   (url, init) => facilitator.request(url, init),
 );
-const collar = createCollar({ facilitatorTransport, mockLlm: true });
+const collar = createCollar({
+  facilitatorTransport,
+  mockLlm: true,
+  journalFile: null,
+  signingKeyFile: null,
+});
 const gateway = createGateway({ facilitatorTransport, mockLlm: true });
 const proxy = createProxy({
   account,
@@ -40,6 +45,7 @@ const proxy = createProxy({
   collarUrl: 'http://collar.test',
   gatewayFetch: (url, init) => gateway.request(url, init),
   collarFetch: (url, init) => collar.app.request(url, init),
+  ledgerFile: null,
   trustedCollarPublicKeyPem: collar.journal.signingPublicKeyPem,
   trustedCollarKeyId: collar.journal.signingKeyId,
 });
@@ -186,6 +192,8 @@ const lossyTransport = createMockFacilitatorTransport(async (url, init) => {
 const unresolvedCollar = createCollar({
   facilitatorTransport: lossyTransport,
   mockLlm: true,
+  journalFile: null,
+  signingKeyFile: null,
 });
 const unresolvedKey = 'e2e-unresolved-payment';
 const unresolved = await payingFetch(account, `http://unresolved.test/invoke/${SKILL_ID}`, {

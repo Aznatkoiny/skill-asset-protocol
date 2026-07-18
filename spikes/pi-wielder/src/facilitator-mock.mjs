@@ -1,5 +1,5 @@
 // facilitator-mock.mjs — an in-process stand-in for https://x402.org/facilitator
-// (MOCK_FACILITATOR=1). Zero network, zero keys, zero funds.
+// through createMockFacilitatorTransport(). Zero network, zero keys, zero funds.
 //
 // It is deliberately NOT a rubber stamp:
 //   /verify  really recovers the EIP-712 signer of the EIP-3009

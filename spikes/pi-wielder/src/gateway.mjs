@@ -8,8 +8,8 @@
 // completions under MOCK_LLM=1.
 //
 // Economically this leg is plain pass-through: no royalty table, no split.
-// The interesting part is that it lands in the SAME session ledger as the
-// skill leg — that contrast is the spike's whole point.
+// The Wielder displays this observation beside its pinned Collar receipt view;
+// that payer-side display is useful, but it is not a shared accounting authority.
 
 import { pathToFileURL } from 'node:url';
 import { Hono } from 'hono';

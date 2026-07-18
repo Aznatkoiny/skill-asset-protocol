@@ -68,7 +68,7 @@ export default function activate(pi: Pi) {
         reasoning: false,
         input: ["text"],
         // pi tracks per-token cost; ours is flat per-call and lands on the
-        // /ledger — zeros here so pi's meter doesn't double-count.
+        // /ledger receipt view — zeros here so pi's meter doesn't double-count.
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: 200_000,
         maxTokens: 8_192,
@@ -79,7 +79,7 @@ export default function activate(pi: Pi) {
         reasoning: false,
         input: ["text"],
         // pi tracks per-token cost; ours is flat per-call and lands on the
-        // /ledger — zeros here so pi's meter doesn't double-count.
+        // /ledger receipt view — zeros here so pi's meter doesn't double-count.
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: 128_000,
         maxTokens: 8_192,
@@ -93,8 +93,8 @@ export default function activate(pi: Pi) {
     description:
       "Invoke the hosted, x402-paid skill 'optimizing-claude-code-prompts'. " +
       "Send a rough prompt/request as `input`; returns the optimized prompt. " +
-      "Costs testnet USDC per call; the payment, royalty split, and ledger " +
-      "entry are handled by the local paying proxy.",
+      "Costs testnet USDC per call; payment and the pinned Collar receipt view " +
+      "are handled by the local paying proxy.",
     parameters: {
       type: "object",
       properties: {
@@ -132,7 +132,7 @@ export default function activate(pi: Pi) {
     },
   });
 
-  // --- /ledger: the unified session meter, rendered by the proxy -----------
+  // --- /ledger: the session-local receipt view rendered by the proxy -------
   pi.registerCommand("ledger", {
     description: "Show this session's local x402 receipt view (inference + Skills)",
     async handler() {

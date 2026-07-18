@@ -7,7 +7,9 @@
   "scripts": {
     "test": "node --test tests/*.test.mjs",
     "test:journal": "node --test tests/invocation-journal.test.mjs",
-    "e2e": "MOCK_FACILITATOR=1 MOCK_LLM=1 node e2e.mjs",
+    "test:collar": "node --test tests/collar-failure.test.mjs tests/x402-lifecycle.test.mjs",
+    "test:proxy": "node --test tests/proxy-trust.test.mjs",
+    "e2e": "MOCK_LLM=1 node e2e.mjs",
     "collar": "node src/collar.mjs",
     "gateway": "node src/gateway.mjs",
     "proxy": "node src/proxy.mjs"

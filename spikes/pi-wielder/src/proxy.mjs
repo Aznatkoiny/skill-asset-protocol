@@ -192,7 +192,7 @@ export function createProxy({
   const app = new Hono();
 
   // One handler for both asset classes: /v1/* -> inference gateway (leg:
-  // "model"), /invoke/* -> collar (leg: "skill"). Same wallet, same ledger.
+  // "model"), /invoke/* -> collar (leg: "skill"). Same wallet, one local view.
   const forward = (upstreamBase, leg, fetchImpl) => async (c) => {
     const path = c.req.path;
     const bodyText = await c.req.text();
@@ -275,7 +275,7 @@ export function createProxy({
   app.post('/v1/*', forward(gatewayUrl, 'model', gatewayFetch));
   app.post('/invoke/*', forward(collarUrl, 'skill', collarFetch));
 
-  // The unified session ledger — what Pi's /ledger command renders.
+  // The payer's session-local receipt view — what Pi's /ledger command renders.
   app.get('/ledger', (c) =>
     c.req.query('format') === 'json' ? c.json(ledger.entries) : c.text(renderLedger(ledger.entries)));
 
