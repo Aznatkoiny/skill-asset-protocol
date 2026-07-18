@@ -19,11 +19,135 @@ export interface HttpMetadataProviderOptions {
   stageUris?: StageMetadataUris;
   pinataJwt?: string;
   publicGatewayBaseUrl?: string;
+  signal?: AbortSignal;
 }
 
 const PINATA_PUBLIC_UPLOAD_URL = "https://uploads.pinata.cloud/v3/files";
 const DEFAULT_PUBLIC_GATEWAY_BASE_URL = "https://gateway.pinata.cloud/ipfs/";
 const STAGES: readonly DemoStage[] = ["root", "child", "grandchild"];
+
+/** Total wall-clock budget for one upload or gateway verification, including its body. */
+export const METADATA_HTTP_TIMEOUT_MS = 15_000;
+/** Pinata's upload acknowledgement is JSON metadata, never an artifact body. */
+export const PINATA_UPLOAD_RESPONSE_MAX_BYTES = 16 * 1024;
+/** One sentinel byte distinguishes an exact gateway match from a chunked overflow. */
+export const METADATA_VERIFICATION_OVERFLOW_PROBE_BYTES = 1;
+
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException("The operation was aborted", "AbortError");
+}
+
+async function withHttpDeadline<T>(
+  label: string,
+  callerSignal: AbortSignal | undefined,
+  operation: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const deadline = new AbortController();
+  const timeoutError = new Error(`${label} timed out after ${METADATA_HTTP_TIMEOUT_MS} ms`);
+  timeoutError.name = "TimeoutError";
+  const timeout = setTimeout(() => deadline.abort(timeoutError), METADATA_HTTP_TIMEOUT_MS);
+  const signal = callerSignal
+    ? AbortSignal.any([callerSignal, deadline.signal])
+    : deadline.signal;
+  let onAbort: (() => void) | undefined;
+
+  try {
+    if (signal.aborted) throw abortReason(signal);
+    const aborted = new Promise<never>((_resolve, reject) => {
+      onAbort = () => reject(abortReason(signal));
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+    return await Promise.race([operation(signal), aborted]);
+  } finally {
+    clearTimeout(timeout);
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  }
+}
+
+async function cancelReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  reason?: unknown,
+): Promise<void> {
+  try {
+    await reader.cancel(reason);
+  } catch {
+    // Cancellation is best-effort; retain the bounded operation's sanitized error.
+  }
+}
+
+async function readBoundedResponseBody(input: {
+  response: Response;
+  maxBytes: number;
+  overflowProbeBytes?: number;
+  label: string;
+  signal: AbortSignal;
+}): Promise<Uint8Array> {
+  const overflowProbeBytes = input.overflowProbeBytes ?? 0;
+  if (
+    !Number.isSafeInteger(input.maxBytes)
+    || input.maxBytes < 0
+    || !Number.isSafeInteger(overflowProbeBytes)
+    || overflowProbeBytes < 0
+    || input.maxBytes > Number.MAX_SAFE_INTEGER - overflowProbeBytes
+  ) {
+    throw new Error("Metadata response byte limit is invalid");
+  }
+  if (input.signal.aborted) throw abortReason(input.signal);
+  const readLimitBytes = input.maxBytes + overflowProbeBytes;
+  const limitError = () => new Error(`${input.label} exceeds ${input.maxBytes}-byte limit`);
+  const contentLength = input.response.headers.get("content-length");
+  if (contentLength !== null) {
+    if (!/^\d+$/.test(contentLength)) {
+      throw new Error(`${input.label} has an invalid Content-Length`);
+    }
+    if (BigInt(contentLength) > BigInt(input.maxBytes)) throw limitError();
+  }
+  if (!input.response.body) return new Uint8Array();
+
+  const reader = input.response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  const onAbort = () => {
+    void cancelReader(reader, abortReason(input.signal));
+  };
+  input.signal.addEventListener("abort", onAbort, { once: true });
+
+  try {
+    while (true) {
+      if (input.signal.aborted) throw abortReason(input.signal);
+      let result: ReadableStreamReadResult<Uint8Array>;
+      try {
+        result = await reader.read();
+      } catch {
+        if (input.signal.aborted) throw abortReason(input.signal);
+        throw new Error(`${input.label} could not be read`);
+      }
+      if (result.done) break;
+      const chunk = result.value;
+      if (chunk.byteLength > readLimitBytes - totalBytes) {
+        await cancelReader(reader);
+        throw limitError();
+      }
+      if (chunk.byteLength === 0) continue;
+      chunks.push(chunk);
+      totalBytes += chunk.byteLength;
+      if (totalBytes > input.maxBytes) {
+        await cancelReader(reader);
+        throw limitError();
+      }
+    }
+  } finally {
+    input.signal.removeEventListener("abort", onAbort);
+  }
+
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
 
 function sha256Hex(bytes: Uint8Array): `0x${string}` {
   return `0x${createHash("sha256").update(bytes).digest("hex")}`;
@@ -88,27 +212,49 @@ async function pinPublicJson(input: {
   gatewayBaseUrl: string;
   name: string;
   bytes: Uint8Array;
+  signal?: AbortSignal;
 }): Promise<string> {
   const form = new FormData();
   form.set("network", "public");
   form.set("name", input.name);
   form.set("file", new Blob([Buffer.from(input.bytes)], { type: "application/json" }), input.name);
-  const response = await input.fetcher(PINATA_PUBLIC_UPLOAD_URL, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${input.jwt}` },
-    body: form,
-    redirect: "error",
+  return withHttpDeadline("Metadata pin request", input.signal, async (signal) => {
+    let response: Response;
+    try {
+      response = await input.fetcher(PINATA_PUBLIC_UPLOAD_URL, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${input.jwt}` },
+        body: form,
+        redirect: "error",
+        signal,
+      });
+    } catch {
+      if (signal.aborted) throw abortReason(signal);
+      throw new Error("Metadata pin request failed");
+    }
+    if (signal.aborted) throw abortReason(signal);
+    if (!response.ok) throw new Error(`Metadata pin failed (${response.status})`);
+    const responseBytes = await readBoundedResponseBody({
+      response,
+      maxBytes: PINATA_UPLOAD_RESPONSE_MAX_BYTES,
+      label: "Metadata pin response",
+      signal,
+    });
+    let body: { data?: { cid?: string } };
+    try {
+      body = JSON.parse(Buffer.from(responseBytes).toString("utf8")) as typeof body;
+    } catch {
+      throw new Error("Metadata pin response is not valid JSON");
+    }
+    const cid = body?.data?.cid;
+    if (!cid || !/^b[a-z0-9]+$/.test(cid)) {
+      throw new Error("Pinata response is missing a public CID");
+    }
+    return new URL(
+      cid,
+      input.gatewayBaseUrl.endsWith("/") ? input.gatewayBaseUrl : `${input.gatewayBaseUrl}/`,
+    ).toString();
   });
-  if (!response.ok) throw new Error(`Metadata pin failed (${response.status})`);
-  const body = await response.json() as { data?: { cid?: string } };
-  const cid = body.data?.cid;
-  if (!cid || !/^b[a-z0-9]+$/.test(cid)) {
-    throw new Error("Pinata response is missing a public CID");
-  }
-  return new URL(
-    cid,
-    input.gatewayBaseUrl.endsWith("/") ? input.gatewayBaseUrl : `${input.gatewayBaseUrl}/`,
-  ).toString();
 }
 
 async function verifyExactBytes(
@@ -116,18 +262,34 @@ async function verifyExactBytes(
   uri: string,
   expectedBytes: Uint8Array,
   expectedHash: `0x${string}`,
+  callerSignal?: AbortSignal,
 ): Promise<void> {
-  const response = await fetcher(uri, { redirect: "error" });
-  if (!response.ok) {
-    throw new Error(`Metadata fetch failed (${response.status}) for ${uri}`);
-  }
-  const fetched = new Uint8Array(await response.arrayBuffer());
-  if (!Buffer.from(fetched).equals(Buffer.from(expectedBytes))) {
-    throw new Error(`Fetched metadata bytes do not match the serialized metadata for ${uri}`);
-  }
-  if (sha256Hex(fetched) !== expectedHash) {
-    throw new Error(`Fetched metadata SHA-256 does not match the expected hash for ${uri}`);
-  }
+  await withHttpDeadline("Metadata fetch request", callerSignal, async (signal) => {
+    let response: Response;
+    try {
+      response = await fetcher(uri, { redirect: "error", signal });
+    } catch {
+      if (signal.aborted) throw abortReason(signal);
+      throw new Error(`Metadata fetch request failed for ${uri}`);
+    }
+    if (signal.aborted) throw abortReason(signal);
+    if (!response.ok) {
+      throw new Error(`Metadata fetch failed (${response.status}) for ${uri}`);
+    }
+    const fetched = await readBoundedResponseBody({
+      response,
+      maxBytes: expectedBytes.byteLength,
+      overflowProbeBytes: METADATA_VERIFICATION_OVERFLOW_PROBE_BYTES,
+      label: "Fetched metadata",
+      signal,
+    });
+    if (!Buffer.from(fetched).equals(Buffer.from(expectedBytes))) {
+      throw new Error(`Fetched metadata bytes do not match the serialized metadata for ${uri}`);
+    }
+    if (sha256Hex(fetched) !== expectedHash) {
+      throw new Error(`Fetched metadata SHA-256 does not match the expected hash for ${uri}`);
+    }
+  });
 }
 
 function envStageUris(): StageMetadataUris {
@@ -146,6 +308,7 @@ export class HttpMetadataProvider implements DemoMetadataProvider {
   private readonly rawStageUris: StageMetadataUris;
   private readonly pinataJwt?: string;
   private readonly rawPublicGatewayBaseUrl: string;
+  private readonly signal?: AbortSignal;
   private validated?: { gatewayBaseUrl: string; stageUris: StageMetadataUris };
 
   constructor(options: HttpMetadataProviderOptions = {}) {
@@ -157,6 +320,7 @@ export class HttpMetadataProvider implements DemoMetadataProvider {
     this.rawPublicGatewayBaseUrl = options.publicGatewayBaseUrl
       ?? process.env.IPFS_PUBLIC_GATEWAY_BASE_URL?.trim()
       ?? DEFAULT_PUBLIC_GATEWAY_BASE_URL;
+    this.signal = options.signal;
   }
 
   private configuration(): { gatewayBaseUrl: string; stageUris: StageMetadataUris } {
@@ -212,6 +376,7 @@ export class HttpMetadataProvider implements DemoMetadataProvider {
       gatewayBaseUrl: configuration.gatewayBaseUrl,
       name: `${input.stage}-ip-metadata.json`,
       bytes: ipBytes,
+      signal: this.signal,
     });
     const nftMetadataURI = override?.nft ?? await pinPublicJson({
       fetcher: this.fetcher,
@@ -219,10 +384,11 @@ export class HttpMetadataProvider implements DemoMetadataProvider {
       gatewayBaseUrl: configuration.gatewayBaseUrl,
       name: `${input.stage}-nft-metadata.json`,
       bytes: nftBytes,
+      signal: this.signal,
     });
 
-    await verifyExactBytes(this.fetcher, ipMetadataURI, ipBytes, ipMetadataHash);
-    await verifyExactBytes(this.fetcher, nftMetadataURI, nftBytes, nftMetadataHash);
+    await verifyExactBytes(this.fetcher, ipMetadataURI, ipBytes, ipMetadataHash, this.signal);
+    await verifyExactBytes(this.fetcher, nftMetadataURI, nftBytes, nftMetadataHash, this.signal);
 
     const artifactPath = isAbsolute(input.artifactPath)
       ? relative(process.cwd(), input.artifactPath)

@@ -209,6 +209,16 @@ gateway hosts are `gateway.pinata.cloud` and HTTPS subdomains of
 document is serialized once, hashed, fetched, and byte-compared before a new
 transaction is prepared.
 
+Each upload and each gateway verification has a fixed 15-second total
+wall-clock deadline covering both response headers and streamed body reads. An
+optional caller `AbortSignal` is composed with that deadline without replacing
+the caller's abort reason. Pinata upload acknowledgements are streamed into a
+fixed 16 KiB maximum before JSON parsing. Gateway bodies are streamed against
+the exact canonical metadata byte length, with only one additional sentinel
+byte permitted to detect chunked overflow. Oversized declared `Content-Length`
+values fail before body reads; chunked overflow is cancelled on its first
+observed excess byte. These runtime bounds are intentionally not configurable.
+
 ## Native gas and WIP are separate prerequisites
 
 Run `npm run check` before each human testnet step. It reports pending recovery,

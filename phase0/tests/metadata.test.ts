@@ -5,7 +5,12 @@ import { join } from "node:path";
 import test from "node:test";
 
 import type { DemoStage } from "../src/registrations";
-import { HttpMetadataProvider } from "../src/metadata";
+import {
+  HttpMetadataProvider,
+  METADATA_HTTP_TIMEOUT_MS,
+  METADATA_VERIFICATION_OVERFLOW_PROBE_BYTES,
+  PINATA_UPLOAD_RESPONSE_MAX_BYTES,
+} from "../src/metadata";
 
 const WALLET = "0x00000000000000000000000000000000000000aa" as const;
 const ARTIFACT = "# Fixture Skill\n\nReturn one concise answer.\n";
@@ -14,6 +19,16 @@ const IP_HASH = "0x6c42a18b50e58fbe307da28995b381d6c5690f7815070733946c20344b58b
 const NFT_HASH = "0xdb24ac9487196af7c830b213c8127f08b3b2c12eb2baeb1fcc6625281ab16098";
 const UPLOAD_URL = "https://uploads.pinata.cloud/v3/files";
 const DEFAULT_GATEWAY = "https://gateway.pinata.cloud/ipfs/";
+const IP_METADATA_JSON = JSON.stringify({
+  title: "Fixture Skill",
+  description: "fixture",
+  createdAt: "0",
+  ipType: "skill",
+  creators: [{ name: "creator", address: WALLET, contributionPercent: 100 }],
+  mediaHash: ARTIFACT_HASH,
+  mediaType: "text/markdown",
+});
+const NFT_METADATA_JSON = JSON.stringify({ name: "Fixture Skill", description: "fixture" });
 
 const INVALID_STAGE_URIS = [
   "http://gateway.pinata.cloud/ipfs/bafyvalidcid123",
@@ -58,6 +73,16 @@ function input(artifactPath: string, stage: DemoStage = "root") {
 
 function headerValue(headers: HeadersInit | undefined, name: string): string | null {
   return new Headers(headers).get(name);
+}
+
+function pinataJsonAtSize(cid: string, byteLength: number): string {
+  const prefix = `{"data":{"cid":"${cid}"},"padding":"`;
+  const suffix = '"}';
+  const paddingLength = byteLength - Buffer.byteLength(prefix) - Buffer.byteLength(suffix);
+  assert.ok(paddingLength >= 0);
+  const body = `${prefix}${"x".repeat(paddingLength)}${suffix}`;
+  assert.equal(Buffer.byteLength(body), byteLength);
+  return body;
 }
 
 test("default publication pins two exact byte documents and verifies them without credentials", async (t) => {
@@ -287,4 +312,281 @@ test("altered fetched metadata bytes are rejected", async (t) => {
   });
 
   await assert.rejects(provider.prepare(input(artifactPath)), /fetched metadata bytes do not match/i);
+});
+
+test("Pinata upload has a hard wall-clock deadline even when fetch ignores abort", async (t) => {
+  const artifactPath = await withArtifact(t);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let requestSignal: AbortSignal | null | undefined;
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const provider = new HttpMetadataProvider({
+    pinataJwt: "fixture-token",
+    fetcher: async (_request, init) => {
+      requestSignal = init?.signal;
+      markStarted();
+      return new Promise<Response>(() => undefined);
+    },
+  });
+
+  const pending = provider.prepare(input(artifactPath));
+  await started;
+  assert.ok(requestSignal instanceof AbortSignal);
+  t.mock.timers.tick(METADATA_HTTP_TIMEOUT_MS);
+
+  await assert.rejects(
+    pending,
+    new RegExp(`Metadata pin request timed out after ${METADATA_HTTP_TIMEOUT_MS} ms`, "i"),
+  );
+  assert.equal(requestSignal.aborted, true);
+});
+
+test("Pinata upload accepts a valid JSON response exactly at its fixed byte ceiling", async (t) => {
+  const artifactPath = await withArtifact(t);
+  const pinned = new Map<string, Uint8Array>();
+  const cids = ["bafyboundaryip123", "bafyboundarynft456"];
+  const provider = new HttpMetadataProvider({
+    pinataJwt: "fixture-token",
+    fetcher: async (request, init) => {
+      const url = String(request);
+      if (init?.method === "POST") {
+        assert.ok(init.body instanceof FormData);
+        const file = init.body.get("file");
+        assert.ok(file instanceof Blob);
+        const cid = cids[pinned.size];
+        assert.ok(cid);
+        pinned.set(`${DEFAULT_GATEWAY}${cid}`, new Uint8Array(await file.arrayBuffer()));
+        const body = pinataJsonAtSize(cid, PINATA_UPLOAD_RESPONSE_MAX_BYTES);
+        return new Response(body, {
+          headers: { "content-length": String(PINATA_UPLOAD_RESPONSE_MAX_BYTES) },
+        });
+      }
+      const bytes = pinned.get(url);
+      assert.ok(bytes);
+      return new Response(Buffer.from(bytes));
+    },
+  });
+
+  const prepared = await provider.prepare(input(artifactPath));
+  assert.equal(prepared.onchain.ipMetadataURI, `${DEFAULT_GATEWAY}${cids[0]}`);
+  assert.equal(prepared.onchain.nftMetadataURI, `${DEFAULT_GATEWAY}${cids[1]}`);
+});
+
+test("Pinata upload rejects an oversized Content-Length before reading the body", async (t) => {
+  const artifactPath = await withArtifact(t);
+  let readers = 0;
+  const provider = new HttpMetadataProvider({
+    pinataJwt: "fixture-token",
+    fetcher: async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({
+        "content-length": String(PINATA_UPLOAD_RESPONSE_MAX_BYTES + 1),
+      }),
+      body: {
+        getReader() {
+          readers += 1;
+          throw new Error("body must not be read");
+        },
+      },
+    }) as unknown as Response,
+  });
+
+  await assert.rejects(
+    provider.prepare(input(artifactPath)),
+    new RegExp(`Metadata pin response exceeds ${PINATA_UPLOAD_RESPONSE_MAX_BYTES}-byte limit`, "i"),
+  );
+  assert.equal(readers, 0);
+});
+
+test("Pinata upload rejects a chunked response on the first byte over its ceiling", async (t) => {
+  const artifactPath = await withArtifact(t);
+  let cancelled = false;
+  const provider = new HttpMetadataProvider({
+    pinataJwt: "fixture-token",
+    fetcher: async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(PINATA_UPLOAD_RESPONSE_MAX_BYTES));
+        controller.enqueue(Uint8Array.of(1));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    })),
+  });
+
+  await assert.rejects(
+    provider.prepare(input(artifactPath)),
+    new RegExp(`Metadata pin response exceeds ${PINATA_UPLOAD_RESPONSE_MAX_BYTES}-byte limit`, "i"),
+  );
+  assert.equal(cancelled, true);
+});
+
+test("gateway verification accepts exactly the canonical byte length", async (t) => {
+  const artifactPath = await withArtifact(t);
+  const ip = `${DEFAULT_GATEWAY}bafyrootip123`;
+  const nft = `${DEFAULT_GATEWAY}bafyrootnft456`;
+  const expected = new Map<string, string>([
+    [ip, IP_METADATA_JSON],
+    [nft, NFT_METADATA_JSON],
+  ]);
+  const provider = new HttpMetadataProvider({
+    stageUris: { root: { ip, nft } },
+    fetcher: async (request) => {
+      const body = expected.get(String(request));
+      assert.ok(body);
+      return new Response(body, {
+        headers: { "content-length": String(Buffer.byteLength(body)) },
+      });
+    },
+  });
+
+  const prepared = await provider.prepare(input(artifactPath));
+  assert.equal(prepared.onchain.ipMetadataHash, IP_HASH);
+  assert.equal(prepared.onchain.nftMetadataHash, NFT_HASH);
+});
+
+test("gateway verification rejects Content-Length one byte over canonical before reading", async (t) => {
+  const artifactPath = await withArtifact(t);
+  const ip = `${DEFAULT_GATEWAY}bafyrootip123`;
+  const nft = `${DEFAULT_GATEWAY}bafyrootnft456`;
+  let readers = 0;
+  const provider = new HttpMetadataProvider({
+    stageUris: { root: { ip, nft } },
+    fetcher: async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({
+        "content-length": String(Buffer.byteLength(IP_METADATA_JSON) + 1),
+      }),
+      body: {
+        getReader() {
+          readers += 1;
+          throw new Error("body must not be read");
+        },
+      },
+    }) as unknown as Response,
+  });
+
+  await assert.rejects(
+    provider.prepare(input(artifactPath)),
+    new RegExp(`Fetched metadata exceeds ${Buffer.byteLength(IP_METADATA_JSON)}-byte limit`, "i"),
+  );
+  assert.equal(readers, 0);
+});
+
+test("gateway verification reads only one overflow byte from a chunked response", async (t) => {
+  const artifactPath = await withArtifact(t);
+  const ip = `${DEFAULT_GATEWAY}bafyrootip123`;
+  const nft = `${DEFAULT_GATEWAY}bafyrootnft456`;
+  let cancelled = false;
+  assert.equal(METADATA_VERIFICATION_OVERFLOW_PROBE_BYTES, 1);
+  const provider = new HttpMetadataProvider({
+    stageUris: { root: { ip, nft } },
+    fetcher: async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Buffer.from(IP_METADATA_JSON));
+        controller.enqueue(new Uint8Array(METADATA_VERIFICATION_OVERFLOW_PROBE_BYTES));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    })),
+  });
+
+  await assert.rejects(
+    provider.prepare(input(artifactPath)),
+    new RegExp(`Fetched metadata exceeds ${Buffer.byteLength(IP_METADATA_JSON)}-byte limit`, "i"),
+  );
+  assert.equal(cancelled, true);
+});
+
+test("gateway verification body consumption shares the hard wall-clock deadline", async (t) => {
+  const artifactPath = await withArtifact(t);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const ip = `${DEFAULT_GATEWAY}bafyrootip123`;
+  const nft = `${DEFAULT_GATEWAY}bafyrootnft456`;
+  let requestSignal: AbortSignal | null | undefined;
+  let markPullStarted!: () => void;
+  const pullStarted = new Promise<void>((resolve) => {
+    markPullStarted = resolve;
+  });
+  const provider = new HttpMetadataProvider({
+    stageUris: { root: { ip, nft } },
+    fetcher: async (_request, init) => {
+      requestSignal = init?.signal;
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(Buffer.from(IP_METADATA_JSON).subarray(0, 1));
+        },
+        pull() {
+          markPullStarted();
+          return new Promise<void>(() => undefined);
+        },
+      }));
+    },
+  });
+
+  const pending = provider.prepare(input(artifactPath));
+  await pullStarted;
+  assert.ok(requestSignal instanceof AbortSignal);
+  t.mock.timers.tick(METADATA_HTTP_TIMEOUT_MS);
+
+  await assert.rejects(
+    pending,
+    new RegExp(`Metadata fetch request timed out after ${METADATA_HTTP_TIMEOUT_MS} ms`, "i"),
+  );
+  assert.equal(requestSignal.aborted, true);
+});
+
+test("caller abort is composed with the deadline and preserves the caller reason", async (t) => {
+  const artifactPath = await withArtifact(t);
+  const caller = new AbortController();
+  const reason = new Error("operator cancelled metadata publication");
+  let requestSignal: AbortSignal | null | undefined;
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const provider = new HttpMetadataProvider({
+    pinataJwt: "fixture-token",
+    signal: caller.signal,
+    fetcher: async (_request, init) => {
+      requestSignal = init?.signal;
+      markStarted();
+      return new Promise<Response>(() => undefined);
+    },
+  });
+
+  const pending = provider.prepare(input(artifactPath));
+  await started;
+  caller.abort(reason);
+
+  await assert.rejects(pending, (error) => {
+    assert.equal(error, reason);
+    return true;
+  });
+  assert.ok(requestSignal instanceof AbortSignal);
+  assert.equal(requestSignal.aborted, true);
+  assert.equal(requestSignal.reason, reason);
+});
+
+test("Pinata transport errors are sanitized and do not expose the JWT", async (t) => {
+  const artifactPath = await withArtifact(t);
+  const secret = "fixture-token";
+  const provider = new HttpMetadataProvider({
+    pinataJwt: secret,
+    fetcher: async () => {
+      throw new Error(`transport echoed ${secret}`);
+    },
+  });
+
+  await assert.rejects(provider.prepare(input(artifactPath)), (error) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /Metadata pin request failed/);
+    assert.doesNotMatch(error.message, new RegExp(secret));
+    return true;
+  });
 });
