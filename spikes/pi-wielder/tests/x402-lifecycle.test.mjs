@@ -358,3 +358,75 @@ test('malformed facilitator success evidence is unresolved and never authorizes 
   assert.equal(unresolvedCalls, 1);
   assert.equal(executions, 0);
 });
+
+test('missing or malformed settle result is ambiguous unresolved, while explicit failure is rejected', async () => {
+  for (const [settleBody, expectedStatus] of [[{}, 503], [{ success: 'false' }, 503], [{ success: false, errorReason: 'declined' }, 402]]) {
+    let unresolvedCalls = 0;
+    let rejectedCalls = 0;
+    const transport = createMockFacilitatorTransport(async (url) => {
+      const operation = new URL(url).pathname.slice(1);
+      const body = operation === 'verify' ? { isValid: true } : settleBody;
+      return new Response(JSON.stringify(body), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    });
+    const app = resourceApp({
+      facilitatorTransport: transport,
+      lifecycle: {
+        async onUnresolved() { unresolvedCalls += 1; },
+        async onRejected() { rejectedCalls += 1; },
+      },
+    });
+    const result = await payingFetch(throwawayAccount(), 'http://seller.test/resource', {
+      method: 'POST', body: '{}',
+    }, {
+      idempotencyKey: `idem-settle-shape-${expectedStatus}-${JSON.stringify(settleBody)}`,
+      fetchImpl: (url, init) => app.request(url, init),
+    });
+    assert.equal(result.res.status, expectedStatus);
+    assert.equal(unresolvedCalls, expectedStatus === 503 ? 1 : 0);
+    assert.equal(rejectedCalls, expectedStatus === 402 ? 1 : 0);
+  }
+});
+
+test('onUnresolved may observe an already-settled append without turning the response into 500', async () => {
+  const facilitator = createMockFacilitator();
+  let settled = false;
+  let settleCalls = 0;
+  let executions = 0;
+  const transport = createMockFacilitatorTransport(async (url, init) => {
+    if (new URL(url).pathname === '/settle') settleCalls += 1;
+    return facilitator.request(url, init);
+  });
+  const app = resourceApp({
+    facilitatorTransport: transport,
+    lifecycle: {
+      async onSigned({ payer }) {
+        return settled ? {
+          kind: 'settled', txHash: `0x${'8'.repeat(64)}`, payer,
+        } : null;
+      },
+      async onSettled() {
+        settled = true;
+        throw new Error('lease release failed after append');
+      },
+      async onUnresolved() { throw new Error('journal already settled'); },
+    },
+    handler: (c) => { executions += 1; return c.json({ ok: true }); },
+  });
+  const first = await payingFetch(throwawayAccount(), 'http://seller.test/resource', {
+    method: 'POST', body: '{}',
+  }, {
+    idempotencyKey: 'idem-settled-append-then-error',
+    fetchImpl: (url, init) => app.request(url, init),
+  });
+  assert.equal(first.res.status, 503);
+  const retry = await app.request('http://seller.test/resource', {
+    method: 'POST',
+    headers: { 'Idempotency-Key': first.idempotencyKey, 'X-PAYMENT': first.xPayment },
+    body: '{}',
+  });
+  assert.equal(retry.status, 200);
+  assert.equal(settleCalls, 1);
+  assert.equal(executions, 1);
+});

@@ -117,6 +117,15 @@ export function x402Paywall({
   const locallyUnresolvedSettlements = new Set();
 
   return async (c, next) => {
+    const notifyUnresolved = async (payload) => {
+      try {
+        await lifecycle.onUnresolved?.(payload);
+      } catch {
+        // A settlement append can win and then report a lease-release error.
+        // The next retry re-reads authority through onSigned; never turn this
+        // ambiguity into a second settlement attempt or an unstructured 500.
+      }
+    };
     const idempotencyKey = c.req.header('Idempotency-Key')?.trim();
     if (!idempotencyKey) return c.json({ error: 'Idempotency-Key header is required' }, 400);
     const paymentHeader = c.req.header('X-PAYMENT');
@@ -299,7 +308,7 @@ export function x402Paywall({
         settle = await postJson(transport, 'settle', facilitatorBody);
       } catch (error) {
         locallyUnresolvedSettlements.add(idempotencyKey);
-        await lifecycle.onUnresolved?.({
+        await notifyUnresolved({
           idempotencyKey,
           settlementReference,
           payer,
@@ -309,7 +318,17 @@ export function x402Paywall({
       }
       facilitatorMs = performance.now() - started;
     }
-    if (!settle?.success) {
+    if (settle?.success !== true) {
+      if (settle?.success !== false) {
+        locallyUnresolvedSettlements.add(idempotencyKey);
+        await notifyUnresolved({
+          idempotencyKey,
+          settlementReference,
+          payer,
+          reason: 'facilitator returned an ambiguous settlement result',
+        });
+        return c.json({ error: 'payment settlement unresolved', settlementReference }, 503);
+      }
       const reason = `payment settlement failed: ${settle?.errorReason ?? 'unknown'}`;
       await lifecycle.onRejected?.({ idempotencyKey, reason, settlementReference, payer });
       return c.json({
@@ -324,7 +343,7 @@ export function x402Paywall({
         || settledPayer !== payer
         || settle.network !== NETWORK) {
       locallyUnresolvedSettlements.add(idempotencyKey);
-      await lifecycle.onUnresolved?.({
+      await notifyUnresolved({
         idempotencyKey,
         settlementReference,
         payer,
@@ -347,7 +366,7 @@ export function x402Paywall({
         });
       } catch (error) {
         locallyUnresolvedSettlements.add(idempotencyKey);
-        await lifecycle.onUnresolved?.({
+        await notifyUnresolved({
           idempotencyKey,
           settlementReference,
           payer,
