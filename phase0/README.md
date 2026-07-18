@@ -59,6 +59,22 @@ higher evidence level and does not delete registration, event, conflict, or
 chain history. The `wallet_asserted` confirmed-proof floor cannot be created or
 revoked through the sidecar.
 
+Signed repository, organization, challenge, resolution, and revocation
+statements use domain-separated `v2` canonical JSON with fixed key order and
+real JSON arrays. Free-text fields and URI arrays are never newline- or
+comma-joined, so delimiter redistribution cannot preserve a signature while
+changing semantics. Event timestamps must be nondecreasing. Organization
+approval must follow active repository evidence and precede its event envelope;
+resolution must follow a signed challenge; revocation must follow the active
+evidence it removes.
+
+A repository statement hash, challenge nonce, wallet signature, and bound forge
+observation are single-use credentials across the entire log. An organization
+statement hash and signature are also single-use. Revocation does not make an
+old credential reusable under a fresh event ID or sequence. Reactivation
+requires genuinely fresh signed repository evidence and, where applicable, a
+fresh organization approval.
+
 Inspect evidence without a network or chain write:
 
 ```bash
@@ -104,6 +120,22 @@ in-repository override must equal the exact ignored default path. Missing
 configuration fails with `repository snapshot mapping unavailable` before Git
 runs. This machine-local mapping must never be staged, copied into a bundle, or
 used as claimant evidence.
+
+The verifier invokes the fixed absolute `/usr/bin/git` executable with a minimal
+allow-listed environment. It does not inherit `PATH`, `GIT_DIR`,
+`GIT_WORK_TREE`, object-directory, namespace, or config-injection variables.
+Global and system config are disabled, replacement objects are ignored, all
+protocol transports are disabled, and lazy fetching is disabled. Missing local
+objects therefore fail offline rather than contacting a promisor remote.
+
+At mapping load, the verifier pins the checkout directory's device and inode.
+It reopens and compares that identity before, between, and after external Git
+operations. This detects ordinary checkout-path replacement, but the spike
+cannot portably keep one directory file descriptor bound across every external
+Git process. A privileged same-machine attacker capable of replacing and
+restoring the path inside a single check-to-exec interval remains a residual
+local-verifier risk. Production hardening would require a platform-specific
+descriptor-bound execution boundary or an isolated immutable snapshot.
 
 `repository_control_verified` means a trusted forge observer and a
 verifier-provisioned Git snapshot matched the wallet-signed bytes at an

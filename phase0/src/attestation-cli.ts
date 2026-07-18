@@ -160,6 +160,7 @@ export async function createAttestationRuntime(input: AttestationRuntimeInput = 
   const baseSubjects = registrationSubjectsFromManifest(manifest);
   const organizations = await organizationSigners(selectedPaths.organizations);
   const admins = await adminSigners(selectedPaths.admins);
+  const now = input.now ?? (() => new Date());
   let contextPromise: Promise<AttestationRepositoryContext> | null = null;
   const repositoryContext = () => {
     contextPromise ??= (async () => {
@@ -184,29 +185,32 @@ export async function createAttestationRuntime(input: AttestationRuntimeInput = 
     organizationSigners: organizations,
     adminSigners: admins,
     repositoryContext,
-    now: input.now ?? (() => new Date()),
+    now,
     store: new FileAttestationStore(selectedPaths.attestations, {
       baseSubjects,
       organizationSigners: organizations,
       adminSigners: admins,
       repositoryContextLoader: repositoryContext,
+      now,
     }),
   };
 }
 
 async function loadIndex(runtime: AttestationRuntime): Promise<AttestationIndex> {
   const events = await runtime.store.load();
+  const now = runtime.now();
   let verifier: ((event: Extract<AttestationEvent, { type: "repository_control_verified" }>) => Promise<void>) | undefined;
   if (events.some((event) => event.type === "repository_control_verified")) {
     const context = await runtime.repositoryContext();
     const { reverifyRepositoryEvent } = await import("./attestation-git");
-    verifier = (event) => reverifyRepositoryEvent(event, context);
+    verifier = (event) => reverifyRepositoryEvent(event, { ...context, now });
   }
   return reduceAttestationEvents(events, {
     baseSubjects: runtime.baseSubjects,
     organizationSigners: runtime.organizationSigners,
     adminSigners: runtime.adminSigners,
     repositoryVerifier: verifier,
+    now,
   });
 }
 

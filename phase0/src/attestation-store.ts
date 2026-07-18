@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { link, mkdir, open, rename, stat, unlink, type FileHandle } from "node:fs/promises";
 import { dirname } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import {
   parseAttestationEvent,
@@ -26,9 +27,11 @@ export interface AttestationStoreOptions {
   forgeSigners?: Readonly<Record<string, string>>;
   git?: GitReader;
   repositoryContextLoader?: () => Promise<AttestationRepositoryContext>;
+  now?: () => Date;
   hooks?: {
     afterLockCreated?(): void | Promise<void>;
     beforeAppendWrite?(): void | Promise<void>;
+    afterAppendSync?(): void | Promise<void>;
     afterLockClaim?(claimPath: string): void | Promise<void>;
   };
 }
@@ -167,13 +170,15 @@ export class FileAttestationStore {
         const bytes = Buffer.from(`${JSON.stringify(event)}\n`, "utf8");
         await writeAll(handle, bytes);
         await handle.sync();
+        await this.options.hooks?.afterAppendSync?.();
       } finally {
         await handle?.close();
       }
       await syncDirectory(dirname(this.path));
-      const replayed = await this.loadUnlocked();
-      if (replayed.length !== candidate.length || replayed.at(-1)?.eventId !== event.eventId) {
-        throw new Error("attestation append did not replay as the exact candidate event");
+      const replayed = await this.readLogSnapshot();
+      const candidateBytes = `${candidate.map((candidateEvent) => JSON.stringify(candidateEvent)).join("\n")}\n`;
+      if (replayed.bytes !== candidateBytes || !isDeepStrictEqual(replayed.events, candidate)) {
+        throw new Error("attestation append did not replay byte-for-byte as the exact candidate log");
       }
     });
   }
@@ -208,13 +213,15 @@ export class FileAttestationStore {
     const hasRepositoryEvidence = events.some((event) => event.type === "repository_control_verified");
     let context: AttestationRepositoryContext | null = null;
     if (hasRepositoryEvidence) context = await this.repositoryContext();
+    const now = this.options.now?.();
     await reduceAttestationEvents(events, {
       baseSubjects: this.options.baseSubjects,
       organizationSigners: this.options.organizationSigners,
       adminSigners: this.options.adminSigners,
       repositoryVerifier: context
-        ? (event: RepositoryControlEvent) => reverifyRepositoryEvent(event, context!)
+        ? (event: RepositoryControlEvent) => reverifyRepositoryEvent(event, { ...context!, now })
         : undefined,
+      now,
     });
   }
 
