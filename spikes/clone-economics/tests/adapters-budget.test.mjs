@@ -251,6 +251,22 @@ test('live provider body deadline cancels a stalled stream reader', async () => 
   });
 });
 
+test('live provider security ceilings cannot be raised by runtime configuration', () => {
+  const make = (runtime) => live({
+    budget: createAttemptBudget({ capMicroUsd: 200n, worstCaseCallMicroUsd: 100n }),
+    fetchImpl: async () => { throw new Error('must not fetch during construction'); },
+    runtime,
+  });
+  assert.throws(
+    () => make({ requestTimeoutMs: 30_001 }),
+    /requestTimeoutMs cannot exceed 30000/,
+  );
+  assert.throws(
+    () => make({ maxResponseBytes: 1_048_577 }),
+    /maxResponseBytes cannot exceed 1048576/,
+  );
+});
+
 test('missing usage retains a reservation, locks unknown_cost, and permits no later fetch', async () => {
   const budget = createAttemptBudget({ capMicroUsd: 200n, worstCaseCallMicroUsd: 100n });
   let fetches = 0;

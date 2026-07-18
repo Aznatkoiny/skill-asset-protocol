@@ -300,9 +300,15 @@ export class LiveAnthropicAdapter {
     if (!Number.isSafeInteger(this.requestTimeoutMs) || this.requestTimeoutMs <= 0) {
       throw new Error('requestTimeoutMs must be a positive safe integer');
     }
+    if (this.requestTimeoutMs > DEFAULT_LIVE_REQUEST_TIMEOUT_MS) {
+      throw new Error(`requestTimeoutMs cannot exceed ${DEFAULT_LIVE_REQUEST_TIMEOUT_MS}`);
+    }
     this.maxResponseBytes = config.maxResponseBytes ?? DEFAULT_LIVE_RESPONSE_BYTES;
     if (!Number.isSafeInteger(this.maxResponseBytes) || this.maxResponseBytes <= 0) {
       throw new Error('maxResponseBytes must be a positive safe integer');
+    }
+    if (this.maxResponseBytes > DEFAULT_LIVE_RESPONSE_BYTES) {
+      throw new Error(`maxResponseBytes cannot exceed ${DEFAULT_LIVE_RESPONSE_BYTES}`);
     }
     this.capturedRequests = [];
     this.records = [];
