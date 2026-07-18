@@ -213,6 +213,12 @@ export function createCollar({
       approval: liveApproval,
       grossAtomic: priceAtomic,
     });
+    if (facilitatorTransport?.mode !== 'live') {
+      throw new ExecutionEconomicsError(
+        'LIVE_SETTLEMENT_REQUIRED',
+        'live provider execution requires live x402 settlement',
+      );
+    }
     executor = liveExecutorFactory();
   }
   if (typeof executor !== 'function') {

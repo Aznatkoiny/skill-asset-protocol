@@ -258,7 +258,8 @@ Withheld paid output and unsuccessful facilitator or provider response bodies ar
 cancelled without being consumed or exposed.
 
 Live model execution requires the exact combination of `MOCK_LLM=0`,
-`ALLOW_LIVE_PROVIDER=1`, a `human_verified` immutable catalog, its exact operator-approved
+`ALLOW_LIVE_PROVIDER=1`, live x402 settlement through the pinned approved facilitator,
+a `human_verified` immutable catalog, its exact operator-approved
 digest, a cumulative process-run spend cap covering at least the maximum worst-case
 request across all allowed models, and the relevant provider key. Each live call reserves
 its request's worst-case catalog cost after payment verification and before facilitator
@@ -275,6 +276,8 @@ detail.
 - Base Sepolia only; no mainnet and no real funds in automated verification.
 - Live facilitator construction accepts only the byte-exact approved HTTPS base and
   disables redirects for `/verify` and `/settle`.
+- A mock facilitator can authorize mock execution only. Both the Collar and gateway
+  reject live-provider construction unless the authorized facilitator transport is live.
 - Live settlement requires paired absolute journal/private-key paths outside the
   checkout plus injected trusted settlement, refund-execution, and refund-resolution
   adapters. The standalone CLI intentionally provides no such live adapters and refuses

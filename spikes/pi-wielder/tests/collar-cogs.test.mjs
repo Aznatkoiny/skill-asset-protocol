@@ -232,6 +232,34 @@ test('live approval is rechecked against canonical catalog bytes before adapter 
   assert.equal(constructions, 0);
 });
 
+test('Collar refuses live provider execution behind mock x402 settlement', () => {
+  const catalog = structuredClone(EXECUTION_CATALOG);
+  Object.assign(catalog, {
+    evidenceLabel: 'human_verified',
+    source: 'https://provider.example/pricing/2026-07-18',
+    asOf: '2026-07-18T00:00:00.000Z',
+  });
+  const liveApproval = {
+    catalogDigest: catalogDigest(catalog),
+    spendCapAtomic: '250000',
+  };
+  let constructions = 0;
+  assert.throws(() => createCollar({
+    facilitatorTransport: createMockFacilitatorTransport(async () => {
+      throw new Error('mock facilitator must not run');
+    }),
+    mockLlm: false,
+    allowLiveProvider: true,
+    executionCatalog: catalog,
+    liveApproval,
+    liveExecutorFactory: () => {
+      constructions += 1;
+      return async () => ({ output: '', usage: null });
+    },
+  }), /live provider execution requires live x402 settlement/i);
+  assert.equal(constructions, 0);
+});
+
 test('a restarted Collar rejects pre-settlement quote drift before facilitator or payment.signed', async () => {
   const facilitator = createMockFacilitator();
   let facilitatorCalls = 0;

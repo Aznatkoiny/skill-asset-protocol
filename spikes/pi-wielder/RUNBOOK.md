@@ -205,8 +205,9 @@ The Collar and gateway use separate operator approvals:
 - Collar construction receives `LIVE_CATALOG_DIGEST` and `LIVE_SPEND_CAP_ATOMIC`.
 - The standalone gateway reads `GATEWAY_LIVE_CATALOG_DIGEST` and
   `GATEWAY_LIVE_SPEND_CAP_ATOMIC`.
-- Both require `ALLOW_LIVE_PROVIDER=1` and `MOCK_LLM=0`; the provider credential is
-  supplied only through operator secret injection.
+- Both require `ALLOW_LIVE_PROVIDER=1`, `MOCK_LLM=0`, and live x402 settlement through
+  the pinned approved facilitator; the provider credential is supplied only through
+  operator secret injection. A live provider can never run behind mock settlement.
 
 The Collar approval checks the gross ceiling for one Invocation. The gateway approval
 instead funds one cumulative in-memory process-run budget. After facilitator verification

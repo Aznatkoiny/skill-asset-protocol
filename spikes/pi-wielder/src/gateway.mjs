@@ -519,6 +519,9 @@ export function createGateway({
     if (allowLiveProvider !== true) {
       throw new Error('live gateway execution requires an explicit live provider gate');
     }
+    if (facilitatorTransport?.mode !== 'live') {
+      throw new Error('live provider execution requires live x402 settlement');
+    }
     if (typeof providerFetch !== 'function') throw new TypeError('gateway providerFetch must be a function');
     approvedLiveBoundary = assertLiveGatewayApproval({
       catalog,

@@ -6,7 +6,11 @@ import { createGateway, MODEL_PRICES_USDC, startGateway } from '../src/gateway.m
 import { catalogDigest } from '../src/execution-economics.mjs';
 import { payingFetch as policyPayingFetch } from '../src/proxy.mjs';
 import { throwawayAccount } from '../src/wallet.mjs';
-import { createMockFacilitatorTransport } from '../src/x402-seller.mjs';
+import {
+  APPROVED_LIVE_FACILITATOR_BASE,
+  createLiveFacilitatorTransport,
+  createMockFacilitatorTransport,
+} from '../src/x402-seller.mjs';
 import { paymentPolicyFor } from './payment-policy-fixture.mjs';
 
 const payingFetch = (account, url, init, options = {}) => policyPayingFetch(account, url, init, {
@@ -53,9 +57,21 @@ function facilitatorTransport() {
   return createMockFacilitatorTransport((url, init) => facilitator.request(url, init));
 }
 
+function liveTestFacilitatorTransport(fetchImpl = null) {
+  const facilitator = createMockFacilitator();
+  const injectedFetch = fetchImpl ?? ((url, init) => facilitator.request(url, init));
+  return createLiveFacilitatorTransport(
+    APPROVED_LIVE_FACILITATOR_BASE,
+    (url, init) => {
+      const operation = new URL(url).pathname.split('/').at(-1);
+      return injectedFetch(`http://facilitator.test/${operation}`, init);
+    },
+  );
+}
+
 function liveGatewayOptions(providerFetch, overrides = {}) {
   return {
-    facilitatorTransport: facilitatorTransport(),
+    facilitatorTransport: liveTestFacilitatorTransport(),
     mockLlm: false,
     allowLiveProvider: true,
     providerCatalog: structuredClone(HUMAN_VERIFIED_CATALOG),
@@ -224,6 +240,17 @@ test('live gateway construction requires the explicit gate, human catalog digest
   assert.equal(providerCalls, 0);
 });
 
+test('live gateway provider execution refuses mock x402 settlement', () => {
+  let providerCalls = 0;
+  assert.throws(() => createGateway(liveGatewayOptions(async () => {
+    providerCalls += 1;
+    return Response.json(openAiCompletion());
+  }, {
+    facilitatorTransport: facilitatorTransport(),
+  })), /live provider execution requires live x402 settlement/i);
+  assert.equal(providerCalls, 0);
+});
+
 test('gateway rejects unknown models and request token bounds before offering payment', async () => {
   let providerCalls = 0;
   const gateway = createGateway(liveGatewayOptions(async () => {
@@ -268,7 +295,7 @@ test('gateway rejects unknown models and request token bounds before offering pa
 test('gateway rejects malformed message structure before offering payment', async () => {
   const facilitator = createMockFacilitator();
   let facilitatorCalls = 0;
-  const transport = createMockFacilitatorTransport(async (url, init) => {
+  const transport = liveTestFacilitatorTransport(async (url, init) => {
     facilitatorCalls += 1;
     return facilitator.request(url, init);
   });
@@ -326,7 +353,7 @@ test('gateway rejects malformed message structure before offering payment', asyn
 test('gateway rejects malformed tool definitions before offering payment', async () => {
   const facilitator = createMockFacilitator();
   let facilitatorCalls = 0;
-  const transport = createMockFacilitatorTransport(async (url, init) => {
+  const transport = liveTestFacilitatorTransport(async (url, init) => {
     facilitatorCalls += 1;
     return facilitator.request(url, init);
   });
@@ -378,7 +405,7 @@ test('gateway rejects malformed tool definitions before offering payment', async
 test('gateway rejects malformed tool-call messages before offering payment', async () => {
   const facilitator = createMockFacilitator();
   let facilitatorCalls = 0;
-  const transport = createMockFacilitatorTransport(async (url, init) => {
+  const transport = liveTestFacilitatorTransport(async (url, init) => {
     facilitatorCalls += 1;
     return facilitator.request(url, init);
   });
@@ -437,7 +464,7 @@ test('gateway rejects malformed tool-call messages before offering payment', asy
 test('gateway rejects unknown and malformed provider options before offering payment', async () => {
   const facilitator = createMockFacilitator();
   let facilitatorCalls = 0;
-  const transport = createMockFacilitatorTransport(async (url, init) => {
+  const transport = liveTestFacilitatorTransport(async (url, init) => {
     facilitatorCalls += 1;
     return facilitator.request(url, init);
   });
@@ -773,7 +800,7 @@ test('concurrent paid retries reserve provider budget before facilitator settlem
   let settleCalls = 0;
   let releaseVerifiers;
   const bothVerifiersReady = new Promise((resolve) => { releaseVerifiers = resolve; });
-  const transport = createMockFacilitatorTransport(async (url, init) => {
+  const transport = liveTestFacilitatorTransport(async (url, init) => {
     const operation = new URL(url).pathname;
     if (operation === '/verify') {
       verifyCalls += 1;
