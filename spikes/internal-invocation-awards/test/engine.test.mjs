@@ -178,6 +178,7 @@ test('authorization reserves before signing and successful execution conserves e
   const authorized = await authorize(fx, q);
   assert.equal(authorized.reservation.state, 'reserved');
   assert.equal(authorized.credentialPayload.expiresAt, q.expiresAt);
+  assert.deepEqual(authorized.invocation.credentialPayload, authorized.credentialPayload);
   assert.equal(authorized.invocation.state, 'authorized');
   assert.equal(authorized.invocation.externalRoyaltyCreditsAtomic, '0');
   assert.equal(authorized.invocation.employerSelfCreditAtomic, '0');

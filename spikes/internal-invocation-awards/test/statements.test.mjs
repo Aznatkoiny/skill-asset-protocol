@@ -190,6 +190,13 @@ test('employer and employee verify identical exact receipt bytes through a trust
     () => verifyReceipt({ ...signed, publicKeyPem: 'self-declared' }, { trustedReceiptSigners: signers.receiptTrust }),
     /unknown key publicKeyPem/,
   );
+  const wrongJournal = {
+    ...unsigned,
+    journalEntries: unsigned.journalEntries.map((entry, index) => (
+      index === 3 ? { ...entry, creditAccountId: 'employee:attacker' } : entry
+    )),
+  };
+  assert.throws(() => signReceipt(wrongJournal, signers.receipt.privateKey), /shared atomic allocation/);
 });
 
 test('unresolved receipt claims neither zero COGS nor release nor award', () => {

@@ -164,13 +164,27 @@ function validateReceiptPayload(input) {
     if (journalTotal !== consumed || journalEntries.length !== 4) {
       throw new Error('receipt journal entries do not conserve consumed gross');
     }
+    const expectedJournal = [
+      ['execution-cogs', 'provider:execution', input.executionCostAtomic],
+      ['protocol-fee', 'protocol:treasury', input.protocolFeeAtomic],
+      ['refund-reserve', 'reserve:refund', input.refundReserveAtomic],
+      ['invocation-award', `employee:${input.creatorId}`, input.invocationAwardAtomic],
+    ];
+    for (const [index, [category, creditAccountId, amountAtomic]] of expectedJournal.entries()) {
+      const entry = journalEntries[index];
+      if (entry.category !== category
+          || entry.creditAccountId !== creditAccountId
+          || entry.amountAtomic !== amountAtomic) {
+        throw new Error('receipt journal entries do not match the shared atomic allocation');
+      }
+    }
   } else if (input.invocationState === 'failed') {
     if (input.receiptType !== 'internal_invocation_finalized'
         || input.reservationState !== 'released'
         || input.executionCostStatus !== 'known'
         || input.executionCostAtomic === null
         || input.outputHash !== null
-        || typeof input.failureClass !== 'string'
+        || !['provider_error', 'skill_error', 'invalid_output'].includes(input.failureClass)
         || input.unresolvedReason !== null
         || input.protocolFeeAtomic !== '0'
         || input.refundReserveAtomic !== '0'
@@ -187,7 +201,7 @@ function validateReceiptPayload(input) {
         || input.executionCostAtomic !== null
         || input.outputHash !== null
         || input.failureClass !== null
-        || typeof input.unresolvedReason !== 'string'
+        || !['executor_threw', 'malformed_outcome', 'cost_unknown'].includes(input.unresolvedReason)
         || input.protocolFeeAtomic !== '0'
         || input.refundReserveAtomic !== '0'
         || input.invocationAwardAtomic !== '0'

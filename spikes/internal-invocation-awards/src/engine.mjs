@@ -302,6 +302,13 @@ export async function authorizeInternalInvocation(input) {
     const issuedAt = parseUtc(input.credentialIssuedAt, 'credential issuedAt');
     const at = parseUtc(input.now, 'now');
     if (issuedAt > at) throw new Error('credential issuedAt cannot be in the future');
+    const earliestIssue = Math.max(
+      parseUtc(validatedPolicy.effectiveAt, 'policy effectiveAt'),
+      parseUtc(current.budget.authorization.effectiveAt, 'budget effectiveAt'),
+    );
+    if (issuedAt < earliestIssue) {
+      throw new Error('credential issuedAt precedes the effective policy or budget');
+    }
     if (requestedExpiry <= issuedAt || requestedExpiry <= at) {
       throw new Error('credential expiry must follow issuance and authorization');
     }
@@ -358,6 +365,7 @@ export async function authorizeInternalInvocation(input) {
       atomicScale: current.budget.atomicScale,
       state: 'authorized',
       revision: 0,
+      credentialPayload,
       credentialNonce: input.credentialNonce,
       credentialIssuedAt: input.credentialIssuedAt,
       credentialExpiresAt: expiresAt,
@@ -414,22 +422,7 @@ export async function authorizeInternalInvocation(input) {
     budget: state.budget,
     invocation,
     reservation,
-    credentialPayload: state.invocations[input.quote.invocationId]
-      ? deepFreeze({
-        schemaVersion: 1,
-        credentialAuthorizerId: input.credentialAuthorizerId,
-        invocationId: invocation.invocationId,
-        reservationId: reservation.reservationId,
-        idempotencyKey: invocation.idempotencyKey,
-        skillId: invocation.skillId,
-        skillVersionHash: invocation.skillVersionHash,
-        policyId: invocation.policyId,
-        policyVersion: invocation.policyVersion,
-        nonce: invocation.credentialNonce,
-        issuedAt: invocation.credentialIssuedAt,
-        expiresAt: invocation.credentialExpiresAt,
-      })
-      : null,
+    credentialPayload: invocation?.credentialPayload ?? null,
     events: deepFreeze(state.events.slice(beforeCount)),
   });
 }
@@ -512,20 +505,7 @@ export async function executeAuthorizedInvocation(input) {
     const trustedKey = current.credentialAuthorizers[authorizerId];
     if (!trustedKey) throw new Error('credential authorizer is not provisioned');
     const credentialPayload = verifyCredential(input.credential, trustedKey, input.now);
-    const expectedPayload = {
-      schemaVersion: 1,
-      credentialAuthorizerId: authorizerId,
-      invocationId: invocation.invocationId,
-      reservationId: reservation.reservationId,
-      idempotencyKey: invocation.idempotencyKey,
-      skillId: invocation.skillId,
-      skillVersionHash: invocation.skillVersionHash,
-      policyId: invocation.policyId,
-      policyVersion: invocation.policyVersion,
-      nonce: invocation.credentialNonce,
-      issuedAt: invocation.credentialIssuedAt,
-      expiresAt: invocation.credentialExpiresAt,
-    };
+    const expectedPayload = invocation.credentialPayload;
     if (!Buffer.from(canonicalCredentialBytes(credentialPayload))
       .equals(Buffer.from(canonicalCredentialBytes(expectedPayload)))) {
       throw new Error('credential does not match persisted authorization');
