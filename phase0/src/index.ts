@@ -3,6 +3,7 @@ import { parseArgs } from "node:util";
 
 import { FileOperationJournal } from "./transactions";
 import type { AttestationCommand, AttestationCommandOptions } from "./attestation-cli";
+import { renderTopLevelError } from "./terminal";
 
 const registrationsPath = fileURLToPath(new URL("../registrations.json", import.meta.url));
 const pendingTransactionsPath = fileURLToPath(
@@ -196,7 +197,7 @@ async function main(): Promise<void> {
 const invokedPath = process.argv[1];
 if (invokedPath && import.meta.url === pathToFileURL(invokedPath).href) {
   main().catch((error) => {
-    console.error("\n✗ " + (error instanceof Error ? error.message : String(error)));
+    console.error(renderTopLevelError(error));
     process.exitCode = 1;
   });
 }

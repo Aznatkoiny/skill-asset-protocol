@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
@@ -290,6 +291,54 @@ test("organization approval rejects malformed own signer allow-lists before acce
   );
 });
 
+test("organization trust rejects root and array accessors without invoking them", async () => {
+  const creator = privateKeyToAccount(generatePrivateKey());
+  const approver = privateKeyToAccount(generatePrivateKey());
+  const unsigned = {
+    schemaVersion: 1 as const,
+    subject: subject(IP_A, creator.address),
+    organizationId: "example-org",
+    approverWallet: approver.address.toLowerCase() as `0x${string}`,
+    role: "ip_admin" as const,
+    approvedAt: NOW,
+  };
+  const approval = {
+    ...unsigned,
+    statementHash: organizationStatementHash(unsigned),
+    signature: await approver.signMessage({ message: canonicalOrganizationStatement(unsigned) }),
+  };
+
+  let rootGetterCalls = 0;
+  const rootAccessor = {} as Record<string, readonly `0x${string}`[]>;
+  Object.defineProperty(rootAccessor, "example-org", {
+    enumerable: true,
+    get() {
+      rootGetterCalls += 1;
+      return [unsigned.approverWallet];
+    },
+  });
+  await assert.rejects(
+    verifyOrganizationApproval(approval, rootAccessor),
+    /own data properties/,
+  );
+  assert.equal(rootGetterCalls, 0);
+
+  let indexGetterCalls = 0;
+  const indexedAccessor = new Array(1) as `0x${string}`[];
+  Object.defineProperty(indexedAccessor, "0", {
+    enumerable: true,
+    get() {
+      indexGetterCalls += 1;
+      return unsigned.approverWallet;
+    },
+  });
+  await assert.rejects(
+    verifyOrganizationApproval(approval, { "example-org": indexedAccessor }),
+    /own indexed entries/,
+  );
+  assert.equal(indexGetterCalls, 0);
+});
+
 test("duplicate bytes under different wallets create a deterministic visible conflict", async () => {
   const first = privateKeyToAccount(generatePrivateKey());
   const second = privateKeyToAccount(generatePrivateKey());
@@ -424,6 +473,65 @@ test("admin events reject inherited signer entries and exotic trust-map prototyp
   await assert.rejects(
     verifyAdminEventSignature(event, exotic),
     /plain or null-prototype record/,
+  );
+});
+
+test("admin trust snapshots reject accessors, malformed unused entries, and duplicate wallets", async () => {
+  const admin = privateKeyToAccount(generatePrivateKey());
+  const trustedWallet = admin.address.toLowerCase() as `0x${string}`;
+  const eventBase = {
+    type: "challenge_resolved" as const,
+    eventId: "resolution-admin-descriptors",
+    sequence: 1,
+    occurredAt: NOW,
+    conflictId: "conflict-admin-descriptors",
+    outcome: "rejected" as const,
+    rationale: "Only verifier-provisioned admin trust is under test.",
+    adminSignerId: "admin-1",
+    statementHash: HASH_A,
+    signature: "0x00" as `0x${string}`,
+  };
+  const statementHash = adminEventStatementHash(eventBase);
+  const event: ChallengeResolvedEvent = {
+    ...eventBase,
+    statementHash,
+    signature: await admin.signMessage({
+      message: canonicalAdminEventStatement({ ...eventBase, statementHash }),
+    }),
+  };
+
+  let getterCalls = 0;
+  const accessorTrust = { "admin-1": trustedWallet } as Record<string, `0x${string}`>;
+  Object.defineProperty(accessorTrust, "unused-admin", {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      return trustedWallet;
+    },
+  });
+  await assert.rejects(verifyAdminEventSignature(event, accessorTrust), /own enumerable data properties/);
+  assert.equal(getterCalls, 0);
+
+  await assert.rejects(
+    verifyAdminEventSignature(event, {
+      "admin-1": trustedWallet,
+      "unused-admin": "not-an-address" as `0x${string}`,
+    }),
+    /canonical lowercase address/,
+  );
+  await assert.rejects(
+    verifyAdminEventSignature(event, {
+      "admin-1": trustedWallet,
+      "unused-admin": trustedWallet,
+    }),
+    /globally unique/,
+  );
+
+  await assert.rejects(
+    reduceAttestationEvents([], {
+      adminSigners: { "unused-admin": "not-an-address" as `0x${string}` },
+    }),
+    /canonical lowercase address/,
   );
 });
 
@@ -577,4 +685,73 @@ test("human status output lists challenged registrations and every matching conf
   assert.equal(json.registrations.length, 2);
   assert.ok(json.registrations.every((registration: { status: string }) => registration.status === "challenged"));
   assert.deepEqual(json.conflicts, forward.conflicts);
+});
+
+test("signed Unicode conflicts have identical ordinal human and JSON ordering under en-US and sv-SE", async () => {
+  const challenged = privateKeyToAccount(generatePrivateKey());
+  const challenger = privateKeyToAccount(generatePrivateKey());
+  const a = subject(IP_A, challenged.address, HASH_A);
+  const b = subject(IP_B, challenger.address, HASH_B);
+
+  const signedChallenge = async (sequence: number, conflictId: string): Promise<ChallengeOpenedEvent> => {
+    const unsigned = {
+      type: "challenge_opened" as const,
+      eventId: `event-${sequence}-${conflictId}`,
+      sequence,
+      occurredAt: NOW,
+      conflictId,
+      challengedRegistrationId: a.registrationId,
+      challengerRegistrationId: b.registrationId,
+      challengerWallet: b.wallet,
+      evidenceUris: [`https://example.com/evidence/${sequence}`],
+      reason: "misattributed_creator" as const,
+      statementHash: HASH_A,
+      signature: "0x00" as `0x${string}`,
+    };
+    const statementHash = challengeEventStatementHash(unsigned);
+    return {
+      ...unsigned,
+      statementHash,
+      signature: await challenger.signMessage({
+        message: canonicalChallengeEventStatement({ ...unsigned, statementHash }),
+      }),
+    };
+  };
+  const payload = Buffer.from(JSON.stringify({
+    baseSubjects: [a, b],
+    events: [
+      await signedChallenge(1, "conflict-z"),
+      await signedChallenge(2, "conflict-ä"),
+    ],
+  })).toString("base64");
+  const source = `
+    import { reduceAttestationEvents } from "./src/attestations.ts";
+    import { renderAttestationStatus } from "./src/attestation-cli.ts";
+    const input = JSON.parse(Buffer.from(process.env.ATTESTATION_ORDER_PAYLOAD, "base64").toString("utf8"));
+    const index = await reduceAttestationEvents(input.events, { baseSubjects: input.baseSubjects });
+    process.stdout.write(JSON.stringify({
+      human: renderAttestationStatus(index),
+      json: JSON.parse(renderAttestationStatus(index, { json: true })[0]),
+    }));
+  `;
+  const outputs = ["en_US.UTF-8", "sv_SE.UTF-8"].map((locale) => {
+    const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", source], {
+      cwd: new URL("..", import.meta.url),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        LANG: locale,
+        LC_ALL: locale,
+        ATTESTATION_ORDER_PAYLOAD: payload,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  });
+
+  assert.deepEqual(outputs[0], outputs[1]);
+  assert.deepEqual(
+    outputs[0].json.conflicts.map((conflict: { conflictId: string }) => conflict.conflictId),
+    ["conflict-z", "conflict-ä"],
+  );
 });

@@ -527,42 +527,111 @@ test("organization approval credentials remain consumed after close and reopen",
   assert.deepEqual(await readFile(f.path), beforeReplay);
 });
 
-test("store replay rejects a malformed injected organization signer root before append", async (t) => {
+test("store construction rejects a malformed injected organization signer root before append", async (t) => {
   const f = await repositoryFixture(t);
   const malformedOrganizationSigners = {
     "example-org": f.approver.address.toLowerCase(),
   } as unknown as Record<string, readonly `0x${string}`[]>;
   const validStore = new FileAttestationStore(f.path, f.options);
   await validStore.append(f.repositoryEvent);
-  const store = new FileAttestationStore(f.path, {
-    ...f.options,
-    organizationSigners: malformedOrganizationSigners,
-  });
   const before = await readFile(f.path);
-  const unsignedApproval = {
-    schemaVersion: 1 as const,
-    subject: f.base,
-    organizationId: "example-org",
-    approverWallet: f.approver.address.toLowerCase() as `0x${string}`,
-    role: "ip_admin" as const,
-    approvedAt: "2026-07-18T12:30:00.000Z",
-  };
-  const approval = {
-    ...unsignedApproval,
-    statementHash: organizationStatementHash(unsignedApproval),
-    signature: await f.approver.signMessage({ message: canonicalOrganizationStatement(unsignedApproval) }),
-  };
-  const organization: OrganizationApprovedEvent = {
-    type: "organization_approved",
-    eventId: "organization-malformed-root",
-    sequence: 2,
-    occurredAt: "2026-07-18T13:00:00.000Z",
-    subject: f.base,
-    approval,
-  };
-
-  await assert.rejects(store.append(organization), /organization signer allow-list.*array/i);
+  assert.throws(
+    () => new FileAttestationStore(f.path, {
+      ...f.options,
+      organizationSigners: malformedOrganizationSigners,
+    }),
+    /organization signer allow-list.*array/i,
+  );
   assert.deepEqual(await readFile(f.path), before);
+});
+
+test("store constructor snapshots all trust maps through descriptors before structured cloning", () => {
+  const admin = privateKeyToAccount(generatePrivateKey());
+  const wallet = admin.address.toLowerCase() as `0x${string}`;
+  const forge = generateKeyPairSync("ed25519");
+  const forgeKey = forge.publicKey.export({ type: "spki", format: "pem" }).toString();
+  const path = "/tmp/phase0-attestation-descriptor-snapshot.jsonl";
+
+  let organizationRootGetterCalls = 0;
+  const organizationRootAccessor = {} as Record<string, readonly `0x${string}`[]>;
+  Object.defineProperty(organizationRootAccessor, "example-org", {
+    enumerable: true,
+    get() {
+      organizationRootGetterCalls += 1;
+      return [wallet];
+    },
+  });
+  assert.throws(
+    () => new FileAttestationStore(path, {
+      baseSubjects: [],
+      organizationSigners: organizationRootAccessor,
+    }),
+    /organization signer trust entries must be own data properties/,
+  );
+  assert.equal(organizationRootGetterCalls, 0);
+
+  let organizationIndexGetterCalls = 0;
+  const organizationIndexAccessor = new Array(1) as `0x${string}`[];
+  Object.defineProperty(organizationIndexAccessor, "0", {
+    enumerable: true,
+    get() {
+      organizationIndexGetterCalls += 1;
+      return wallet;
+    },
+  });
+  assert.throws(
+    () => new FileAttestationStore(path, {
+      baseSubjects: [],
+      organizationSigners: { "example-org": organizationIndexAccessor },
+    }),
+    /organization signer allow-list must have own indexed entries/,
+  );
+  assert.equal(organizationIndexGetterCalls, 0);
+
+  let adminGetterCalls = 0;
+  const adminAccessor = { "admin-1": wallet } as Record<string, `0x${string}`>;
+  Object.defineProperty(adminAccessor, "unused-admin", {
+    enumerable: true,
+    get() {
+      adminGetterCalls += 1;
+      return wallet;
+    },
+  });
+  assert.throws(
+    () => new FileAttestationStore(path, { baseSubjects: [], adminSigners: adminAccessor }),
+    /attestation admin trust entries must be own enumerable data properties/,
+  );
+  assert.equal(adminGetterCalls, 0);
+
+  let forgeGetterCalls = 0;
+  const forgeAccessor = { "forge-1": forgeKey } as Record<string, string>;
+  Object.defineProperty(forgeAccessor, "unused-forge", {
+    enumerable: true,
+    get() {
+      forgeGetterCalls += 1;
+      return forgeKey;
+    },
+  });
+  assert.throws(
+    () => new FileAttestationStore(path, { baseSubjects: [], forgeSigners: forgeAccessor }),
+    /forge signer trust entries must be own enumerable data properties/,
+  );
+  assert.equal(forgeGetterCalls, 0);
+
+  assert.throws(
+    () => new FileAttestationStore(path, {
+      baseSubjects: [],
+      adminSigners: { "admin-1": wallet, "unused-admin": "invalid" as `0x${string}` },
+    }),
+    /canonical lowercase address/,
+  );
+  assert.throws(
+    () => new FileAttestationStore(path, {
+      baseSubjects: [],
+      forgeSigners: { "forge-1": forgeKey, "unused-forge": "not-a-key" },
+    }),
+    /canonical Ed25519 SPKI public key/,
+  );
 });
 
 test("store replay applies the injected verifier clock deterministically", async (t) => {

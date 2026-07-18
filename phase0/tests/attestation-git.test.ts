@@ -209,6 +209,48 @@ test("forge observation trust rejects inherited signer entries and exotic map pr
   );
 });
 
+test("forge observation snapshots every own signer entry without invoking accessors", async (t) => {
+  const f = await fixture(t);
+  const trusted = f.repositories.resolve("demo", REPOSITORY_URL);
+  const canonicalPublicKey = f.forge.publicKey.export({ type: "spki", format: "pem" }).toString();
+  let getterCalls = 0;
+  const accessorTrust = { "forge-1": canonicalPublicKey } as Record<string, string>;
+  Object.defineProperty(accessorTrust, "unused-forge", {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      return canonicalPublicKey;
+    },
+  });
+
+  assert.throws(
+    () => verifyForgeObservation(f.forgeObservation, trusted, accessorTrust),
+    /own enumerable data properties/,
+  );
+  assert.equal(getterCalls, 0);
+  assert.throws(
+    () => verifyForgeObservation(f.forgeObservation, trusted, {
+      "forge-1": canonicalPublicKey,
+      "unused-forge": "not-a-public-key",
+    }),
+    /canonical Ed25519 SPKI public key/,
+  );
+
+  const symbolTrust = { "forge-1": canonicalPublicKey } as Record<PropertyKey, string>;
+  Object.defineProperty(symbolTrust, Symbol("unused-forge"), {
+    enumerable: true,
+    value: canonicalPublicKey,
+  });
+  assert.throws(
+    () => verifyForgeObservation(
+      f.forgeObservation,
+      trusted,
+      symbolTrust as Readonly<Record<string, string>>,
+    ),
+    /string identifier keys/,
+  );
+});
+
 test("repository verification rejects signed-binding and snapshot tampering", async (t) => {
   const f = await fixture(t);
   const base = {

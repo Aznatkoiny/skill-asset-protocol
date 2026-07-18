@@ -2,6 +2,7 @@ import { readFile, realpath } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import {
+  compareOrdinalStrings,
   displayAttestation,
   parseAttestationEvent,
   reduceAttestationEvents,
@@ -32,6 +33,7 @@ import {
   type AttestationRepositoryContext,
 } from "./attestation-store";
 import { FileRegistrationStore } from "./registrations";
+import { quoteTerminalText } from "./terminal";
 
 export type AttestationCommand =
   | "attestation-status"
@@ -84,8 +86,8 @@ function object(value: unknown, label: string): Record<string, unknown> {
 }
 
 function exactKeys(value: Record<string, unknown>, expected: readonly string[], label: string): void {
-  const actual = Object.keys(value).sort();
-  const wanted = [...expected].sort();
+  const actual = Object.keys(value).sort(compareOrdinalStrings);
+  const wanted = [...expected].sort(compareOrdinalStrings);
   if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index])) throw new Error(`${label} has unexpected or missing fields`);
 }
 
@@ -233,7 +235,7 @@ function statusPayload(index: AttestationIndex, options: AttestationCommandOptio
   const selected = Object.entries(index.registrations).filter(([id, registration]) =>
     (options.artifactHash === undefined || registration.subject.artifactHash === options.artifactHash)
     && (options.registrationId === undefined || id === options.registrationId))
-    .sort(([a], [b]) => a.localeCompare(b));
+    .sort(([a], [b]) => compareOrdinalStrings(a, b));
   const ids = new Set(selected.map(([id]) => id));
   return {
     registrations: selected.map(([registrationId, registration]) => ({
@@ -244,55 +246,21 @@ function statusPayload(index: AttestationIndex, options: AttestationCommandOptio
     })),
     conflicts: index.conflicts
       .filter((conflict) => conflict.registrationIds.some((id) => ids.has(id)))
-      .sort((a, b) => a.conflictId.localeCompare(b.conflictId)),
+      .sort((a, b) => compareOrdinalStrings(a.conflictId, b.conflictId)),
   };
 }
 
-function quoteHumanIdentifier(value: string): string {
-  let quoted = '"';
-  for (let index = 0; index < value.length; index += 1) {
-    const codeUnit = value.charCodeAt(index);
-    if (codeUnit === 0x22) {
-      quoted += '\\"';
-    } else if (codeUnit === 0x5c) {
-      quoted += "\\\\";
-    } else if (
-      codeUnit <= 0x1f
-      || (codeUnit >= 0x7f && codeUnit <= 0x9f)
-      || codeUnit === 0x061c
-      || codeUnit === 0x200e
-      || codeUnit === 0x200f
-      || (codeUnit >= 0x2028 && codeUnit <= 0x202e)
-      || (codeUnit >= 0x2066 && codeUnit <= 0x2069)
-      || (codeUnit >= 0xd800 && codeUnit <= 0xdfff
-        && !(codeUnit <= 0xdbff
-          && index + 1 < value.length
-          && value.charCodeAt(index + 1) >= 0xdc00
-          && value.charCodeAt(index + 1) <= 0xdfff))
-    ) {
-      quoted += `\\u${codeUnit.toString(16).padStart(4, "0")}`;
-    } else {
-      quoted += value[index];
-      if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
-        index += 1;
-        quoted += value[index];
-      }
-    }
-  }
-  return `${quoted}"`;
-}
-
 function renderAttestationConflicts(conflictsValue: readonly AttestationConflict[]): string[] {
-  const conflicts = [...conflictsValue].sort((a, b) => a.conflictId.localeCompare(b.conflictId));
+  const conflicts = [...conflictsValue].sort((a, b) => compareOrdinalStrings(a.conflictId, b.conflictId));
   const lines = [`conflicts: ${conflicts.length}`];
   for (const conflict of conflicts) {
-    lines.push(`conflict: ${quoteHumanIdentifier(conflict.conflictId)}`);
-    lines.push(`conflict artifact hash: ${conflict.artifactHash === null ? "(none)" : quoteHumanIdentifier(conflict.artifactHash)}`);
+    lines.push(`conflict: ${quoteTerminalText(conflict.conflictId)}`);
+    lines.push(`conflict artifact hash: ${conflict.artifactHash === null ? "(none)" : quoteTerminalText(conflict.artifactHash)}`);
     lines.push(`conflict status: ${conflict.status}`);
     lines.push(`conflict reason: ${conflict.reason}`);
     lines.push(`conflict outcome: ${conflict.outcome ?? "(none)"}`);
-    lines.push(`conflict registrations: ${[...conflict.registrationIds].sort().map(quoteHumanIdentifier).join(", ")}`);
-    lines.push(`conflict events: ${conflict.eventIds.length > 0 ? [...conflict.eventIds].sort().map(quoteHumanIdentifier).join(", ") : "(none)"}`);
+    lines.push(`conflict registrations: ${[...conflict.registrationIds].sort(compareOrdinalStrings).map(quoteTerminalText).join(", ")}`);
+    lines.push(`conflict events: ${conflict.eventIds.length > 0 ? [...conflict.eventIds].sort(compareOrdinalStrings).map(quoteTerminalText).join(", ") : "(none)"}`);
   }
   return lines;
 }
@@ -300,14 +268,14 @@ function renderAttestationConflicts(conflictsValue: readonly AttestationConflict
 function renderAppendSuccess(event: AttestationEvent, json: boolean): string[] {
   const payload = { appended: event.eventId, type: event.type };
   if (json) return [JSON.stringify(payload, null, 2)];
-  return [`appended: ${quoteHumanIdentifier(event.eventId)}; type: ${quoteHumanIdentifier(event.type)}`];
+  return [`appended: ${quoteTerminalText(event.eventId)}; type: ${quoteTerminalText(event.type)}`];
 }
 
 function renderRecoveredLock(metadata: AttestationLockMetadata, json: boolean): string[] {
   const payload = { recovered: true, lock: metadata };
   if (json) return [JSON.stringify(payload, null, 2)];
   return [
-    `recovered: true; lock pid: ${metadata.pid}; token: ${quoteHumanIdentifier(metadata.token)}; target path: ${quoteHumanIdentifier(metadata.targetPath)}; acquired at: ${quoteHumanIdentifier(metadata.acquiredAt)}`,
+    `recovered: true; lock pid: ${metadata.pid}; token: ${quoteTerminalText(metadata.token)}; target path: ${quoteTerminalText(metadata.targetPath)}; acquired at: ${quoteTerminalText(metadata.acquiredAt)}`,
   ];
 }
 
@@ -318,7 +286,7 @@ export function renderAttestationStatus(index: AttestationIndex, options: Attest
   const lines: string[] = [];
   for (const itemValue of payload.registrations) {
     const item = itemValue as ReturnType<typeof displayAttestation> & { registrationId: string };
-    lines.push(`registration: ${quoteHumanIdentifier(item.registrationId)}`);
+    lines.push(`registration: ${quoteTerminalText(item.registrationId)}`);
     lines.push(`status: ${item.status}`);
     lines.push(`attestation: ${item.level}`);
     lines.push(`claim: ${item.claim}`);

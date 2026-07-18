@@ -277,7 +277,7 @@ export function normalizeForgePublicKey(value: unknown): string {
   return canonical;
 }
 
-function assertForgeSignerMap(value: unknown): asserts value is Readonly<Record<string, string>> {
+export function snapshotForgeSignerTrust(value: unknown): Readonly<Record<string, string>> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error("forge signer trust must be a plain or null-prototype record");
   }
@@ -285,6 +285,18 @@ function assertForgeSignerMap(value: unknown): asserts value is Readonly<Record<
   if (prototype !== Object.prototype && prototype !== null) {
     throw new Error("forge signer trust must be a plain or null-prototype record");
   }
+  const snapshot: Record<string, string> = Object.create(null) as Record<string, string>;
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== "string" || !/^[a-z0-9][a-z0-9._-]{0,127}$/.test(key)) {
+      throw new Error("forge signer trust must use only string identifier keys");
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+      throw new Error("forge signer trust entries must be own enumerable data properties");
+    }
+    snapshot[key] = normalizeForgePublicKey(descriptor.value);
+  }
+  return Object.freeze(snapshot);
 }
 
 export function verifyForgeObservation(
@@ -293,6 +305,7 @@ export function verifyForgeObservation(
   forgeSigners: Readonly<Record<string, string>>,
 ): void {
   const observation = parseForgeObservation(observationValue);
+  const trustedForgeSigners = snapshotForgeSignerTrust(forgeSigners);
   if (observation.repositoryId !== trusted.repositoryId
       || observation.repositoryUrl !== trusted.repositoryUrl
       || observation.trustedRef !== trusted.trustedRef) {
@@ -301,12 +314,10 @@ export function verifyForgeObservation(
   if (!trusted.permittedForgeSignerIds.includes(observation.forgeSignerId)) {
     throw new Error("forge signer is not permitted for this repository");
   }
-  assertForgeSignerMap(forgeSigners);
-  if (!Object.hasOwn(forgeSigners, observation.forgeSignerId)) {
+  if (!Object.hasOwn(trustedForgeSigners, observation.forgeSignerId)) {
     throw new Error("forge signer is unknown; signer ID must be an own property of the trust map");
   }
-  const publicKey = forgeSigners[observation.forgeSignerId];
-  const canonicalPublicKey = normalizeForgePublicKey(publicKey);
+  const canonicalPublicKey = trustedForgeSigners[observation.forgeSignerId];
   let signatureBytes: Buffer;
   try {
     signatureBytes = Buffer.from(observation.signature, "base64");

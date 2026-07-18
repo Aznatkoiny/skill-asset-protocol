@@ -7,11 +7,18 @@ import { isDeepStrictEqual } from "node:util";
 import {
   parseAttestationEvent,
   reduceAttestationEvents,
+  snapshotAdminSignerTrust,
+  snapshotOrganizationSignerTrust,
   type AttestationEvent,
   type RegistrationSubject,
   type RepositoryControlEvent,
 } from "./attestations";
-import { reverifyRepositoryEvent, type GitReader, type TrustedRepositoryResolver } from "./attestation-git";
+import {
+  reverifyRepositoryEvent,
+  snapshotForgeSignerTrust,
+  type GitReader,
+  type TrustedRepositoryResolver,
+} from "./attestation-git";
 
 export interface AttestationRepositoryContext {
   repositories: TrustedRepositoryResolver;
@@ -137,14 +144,21 @@ export class FileAttestationStore {
     }
     this.path = path;
     this.lockPath = `${path}.lock`;
+    const organizationSigners = options.organizationSigners === undefined
+      ? undefined
+      : snapshotOrganizationSignerTrust(options.organizationSigners);
+    const adminSigners = options.adminSigners === undefined
+      ? undefined
+      : snapshotAdminSignerTrust(options.adminSigners);
+    const forgeSigners = options.forgeSigners === undefined
+      ? undefined
+      : snapshotForgeSignerTrust(options.forgeSigners);
     this.options = {
       ...options,
       baseSubjects: deepFreeze(structuredClone(options.baseSubjects)),
-      organizationSigners: options.organizationSigners
-        ? deepFreeze(structuredClone(options.organizationSigners))
-        : undefined,
-      adminSigners: options.adminSigners ? deepFreeze(structuredClone(options.adminSigners)) : undefined,
-      forgeSigners: options.forgeSigners ? deepFreeze(structuredClone(options.forgeSigners)) : undefined,
+      organizationSigners,
+      adminSigners,
+      forgeSigners,
     };
   }
 
@@ -222,7 +236,10 @@ export class FileAttestationStore {
     if (this.options.repositories && this.options.forgeSigners && this.options.git) {
       return { repositories: this.options.repositories, forgeSigners: this.options.forgeSigners, git: this.options.git };
     }
-    if (this.options.repositoryContextLoader) return this.options.repositoryContextLoader();
+    if (this.options.repositoryContextLoader) {
+      const context = await this.options.repositoryContextLoader();
+      return { ...context, forgeSigners: snapshotForgeSignerTrust(context.forgeSigners) };
+    }
     throw new Error("repository verifier context required");
   }
 

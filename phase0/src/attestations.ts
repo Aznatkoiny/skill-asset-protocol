@@ -163,6 +163,14 @@ const REGISTRATION_ID = /^eip155:1315:0x[0-9a-f]{40}$/;
 const IDENTIFIER = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 const TRUSTED_REF = /^refs\/(?:heads|remotes)\/[A-Za-z0-9._\/-]+$/;
 
+/**
+ * Locale-independent lexicographic ordering by JavaScript UTF-16 code units.
+ * Signed and displayed identifiers must never change order with the host locale.
+ */
+export function compareOrdinalStrings(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 const SUBJECT_KEYS = [
   "registrationId",
   "ipId",
@@ -211,8 +219,8 @@ function record(value: unknown, label: string): Record<string, unknown> {
 }
 
 function exactKeys(value: Record<string, unknown>, expected: readonly string[], label: string): void {
-  const actual = Object.keys(value).sort();
-  const wanted = [...expected].sort();
+  const actual = Object.keys(value).sort(compareOrdinalStrings);
+  const wanted = [...expected].sort(compareOrdinalStrings);
   if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index])) {
     throw new Error(`${label} has unexpected or missing fields`);
   }
@@ -236,16 +244,18 @@ function parseOrganizationSignerAllowList(value: unknown): readonly `0x${string}
   if (!lengthDescriptor || !("value" in lengthDescriptor) || !Number.isSafeInteger(lengthDescriptor.value)) {
     throw new Error("organization signer allow-list must have own indexed entries");
   }
-  const expectedKeys = new Set<string>(["length"]);
-  for (let index = 0; index < lengthDescriptor.value; index += 1) expectedKeys.add(String(index));
+  const length = lengthDescriptor.value as number;
   const ownKeys = Reflect.ownKeys(value);
-  if (ownKeys.some((key) => typeof key !== "string" || !expectedKeys.has(key)) || ownKeys.length !== expectedKeys.size) {
+  if (lengthDescriptor.enumerable
+      || ownKeys.length !== length + 1
+      || ownKeys.some((key) => typeof key !== "string"
+        || (key !== "length" && (!/^(?:0|[1-9][0-9]*)$/.test(key) || Number(key) >= length)))) {
     throw new Error("organization signer allow-list has unexpected schema properties or inherited entries");
   }
 
   const wallets: `0x${string}`[] = [];
   const seen = new Set<string>();
-  for (let index = 0; index < lengthDescriptor.value; index += 1) {
+  for (let index = 0; index < length; index += 1) {
     const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
     if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
       throw new Error("organization signer allow-list must have own indexed entries");
@@ -255,10 +265,10 @@ function parseOrganizationSignerAllowList(value: unknown): readonly `0x${string}
     seen.add(descriptor.value);
     wallets.push(descriptor.value);
   }
-  return wallets;
+  return Object.freeze(wallets);
 }
 
-function parseOrganizationSignerTrust(
+export function snapshotOrganizationSignerTrust(
   value: unknown,
 ): Readonly<Record<string, readonly `0x${string}`[]>> {
   assertTrustMap(value, "organization signer trust");
@@ -273,7 +283,31 @@ function parseOrganizationSignerTrust(
     }
     parsed[key] = parseOrganizationSignerAllowList(descriptor.value);
   }
-  return parsed;
+  return Object.freeze(parsed);
+}
+
+export function snapshotAdminSignerTrust(
+  value: unknown,
+): Readonly<Record<string, `0x${string}`>> {
+  assertTrustMap(value, "attestation admin trust");
+  const parsed: Record<string, `0x${string}`> = Object.create(null) as Record<string, `0x${string}`>;
+  const wallets = new Set<string>();
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== "string" || !IDENTIFIER.test(key)) {
+      throw new Error("attestation admin trust must use only string identifier keys");
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+      throw new Error("attestation admin trust entries must be own enumerable data properties");
+    }
+    address(descriptor.value, "attestation admin trust canonical lowercase address");
+    if (wallets.has(descriptor.value)) {
+      throw new Error("attestation admin trust addresses must be globally unique");
+    }
+    wallets.add(descriptor.value);
+    parsed[key] = descriptor.value;
+  }
+  return Object.freeze(parsed);
 }
 
 function nonempty(value: unknown, label: string): asserts value is string {
@@ -525,7 +559,7 @@ export function canonicalRepositoryStatement(challengeValue: RepositoryControlCh
     ipId: challenge.subject.ipId,
     wallet: challenge.subject.wallet,
     artifactSha256: challenge.subject.artifactHash,
-    declaredParentIpIds: [...challenge.subject.declaredParentIpIds].sort(),
+    declaredParentIpIds: [...challenge.subject.declaredParentIpIds].sort(compareOrdinalStrings),
     repository: challenge.repositoryUrl,
     artifactCommit: challenge.artifactCommitSha,
     artifactPath: challenge.artifactPath,
@@ -568,7 +602,7 @@ export function canonicalOrganizationStatement(approvalValue: UnsignedApproval):
     ipId: approval.subject.ipId,
     wallet: approval.subject.wallet,
     artifactSha256: approval.subject.artifactHash,
-    declaredParentIpIds: [...approval.subject.declaredParentIpIds].sort(),
+    declaredParentIpIds: [...approval.subject.declaredParentIpIds].sort(compareOrdinalStrings),
     organizationId: approval.organizationId,
     approverWallet: approval.approverWallet,
     role: approval.role,
@@ -585,7 +619,7 @@ export async function verifyOrganizationApproval(
   organizationSigners: Readonly<Record<string, readonly `0x${string}`[]>>,
 ): Promise<void> {
   const approval = parseApproval(approvalValue);
-  const trustedOrganizations = parseOrganizationSignerTrust(organizationSigners);
+  const trustedOrganizations = snapshotOrganizationSignerTrust(organizationSigners);
   const unsigned: UnsignedApproval = {
     schemaVersion: approval.schemaVersion,
     subject: approval.subject,
@@ -621,7 +655,7 @@ export function canonicalChallengeEventStatement(eventValue: ChallengeOpenedEven
     challengedRegistrationId: event.challengedRegistrationId,
     challengerRegistrationId: event.challengerRegistrationId,
     challengerWallet: event.challengerWallet,
-    evidenceUris: [...event.evidenceUris].sort(),
+    evidenceUris: [...event.evidenceUris].sort(compareOrdinalStrings),
     reason: event.reason,
   });
 }
@@ -685,11 +719,11 @@ export async function verifyAdminEventSignature(
 ): Promise<void> {
   const event = parseAttestationEvent(eventValue);
   if (event.type !== "challenge_resolved" && event.type !== "attestation_revoked") throw new Error("admin event required");
-  assertTrustMap(adminSigners, "attestation admin trust");
-  if (!Object.hasOwn(adminSigners, event.adminSignerId)) {
+  const trustedAdmins = snapshotAdminSignerTrust(adminSigners);
+  if (!Object.hasOwn(trustedAdmins, event.adminSignerId)) {
     throw new Error("admin signer is not provisioned; signer ID must be an own property of the trust map");
   }
-  const signer = adminSigners[event.adminSignerId];
+  const signer = trustedAdmins[event.adminSignerId];
   if (!signer) throw new Error("admin signer is not provisioned");
   address(signer, "admin signer address");
   if (event.statementHash !== adminEventStatementHash(event)) throw new Error("admin statement hash mismatch");
@@ -711,7 +745,7 @@ export function registrationSubjectsFromManifest(manifest: RegistrationManifest)
 }
 
 export function deterministicConflictId(a: RegistrationSubject, b: RegistrationSubject): string {
-  const [first, second] = [a.registrationId, b.registrationId].sort();
+  const [first, second] = [a.registrationId, b.registrationId].sort(compareOrdinalStrings);
   return `sha256:${createHash("sha256").update(`${first}\n${second}`).digest("hex")}`;
 }
 
@@ -731,7 +765,8 @@ export async function reduceAttestationEvents(
     now?: Date;
   } = {},
 ): Promise<AttestationIndex> {
-  const organizationSigners = parseOrganizationSignerTrust(trust.organizationSigners ?? {});
+  const organizationSigners = snapshotOrganizationSignerTrust(trust.organizationSigners ?? {});
+  const adminSigners = snapshotAdminSignerTrust(trust.adminSigners ?? {});
   const verifierNow = trust.now?.getTime();
   if (verifierNow !== undefined && !Number.isFinite(verifierNow)) throw new Error("attestation verifier clock is invalid");
   const subjects: Record<string, RegistrationSubject> = {};
@@ -777,7 +812,7 @@ export async function reduceAttestationEvents(
       conflicts.set(conflictId, {
         conflictId,
         artifactHash: subject.artifactHash,
-        registrationIds: [prior.registrationId, subject.registrationId].sort(),
+        registrationIds: [prior.registrationId, subject.registrationId].sort(compareOrdinalStrings),
         status: "open",
         reason: "duplicate_bytes",
         outcome: null,
@@ -888,7 +923,7 @@ export async function reduceAttestationEvents(
         conflicts.set(event.conflictId, {
           conflictId: event.conflictId,
           artifactHash: challenged.artifactHash === challenger.artifactHash ? challenged.artifactHash : null,
-          registrationIds: [event.challengedRegistrationId, event.challengerRegistrationId].sort(),
+          registrationIds: [event.challengedRegistrationId, event.challengerRegistrationId].sort(compareOrdinalStrings),
           status: "open",
           reason: event.reason,
           outcome: null,
@@ -896,7 +931,7 @@ export async function reduceAttestationEvents(
         });
       }
     } else if (event.type === "challenge_resolved") {
-      await verifyAdminEventSignature(event, trust.adminSigners ?? {});
+      await verifyAdminEventSignature(event, adminSigners);
       const conflict = conflicts.get(event.conflictId);
       if (!conflict) throw new Error("resolution targets an unknown conflict");
       const openedAt = challengeOpenedAt.get(event.conflictId);
@@ -905,7 +940,7 @@ export async function reduceAttestationEvents(
       if (conflict.status === "resolved") throw new Error("conflict is already resolved");
       conflicts.set(event.conflictId, { ...conflict, status: "resolved", outcome: event.outcome, eventIds: [...conflict.eventIds, event.eventId] });
     } else {
-      await verifyAdminEventSignature(event, trust.adminSigners ?? {});
+      await verifyAdminEventSignature(event, adminSigners);
       const registration = registrations[event.registrationId];
       if (!registration) throw new Error("revocation targets an unknown registration");
       if (event.level === "repository_control_verified") {
@@ -961,7 +996,7 @@ export async function reduceAttestationEvents(
   }));
   return deepFreeze({
     registrations: publicRegistrations,
-    conflicts: [...conflicts.values()].sort((a, b) => a.conflictId.localeCompare(b.conflictId)),
+    conflicts: [...conflicts.values()].sort((a, b) => compareOrdinalStrings(a.conflictId, b.conflictId)),
     events: parsedEvents,
   });
 }
