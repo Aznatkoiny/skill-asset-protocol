@@ -15,6 +15,17 @@ const SAMPLE_KEYS = new Set([
   'acquisitionCostUsd', 'acquisitionEvidence', 'score', 'criticalGatePass',
   'failureClass', 'providerRequestId',
 ]);
+const SAMPLE_PHASES = new Set(['acquisition', 'distillation', 'evaluation']);
+const SAMPLE_PROFILES = new Set(['target', 'clone', 'bad-clone']);
+const DISTILLATION_SEED_STATUSES = new Set([
+  'not_requested', 'synthetic_honored', 'honored', 'unsupported', 'not_recorded',
+]);
+const DISTILLATION_SEED_MECHANISMS = new Set([
+  'no_seed_requested',
+  'deterministic_mock_fixture_selection',
+  'provider_seed_not_supported_by_adapter',
+  'historical_source_not_recorded',
+]);
 const FORBIDDEN_KEYS = new Set([
   'prompt', 'payload', 'output', 'rawResponse', 'apiKey', 'authorization',
   'headers', 'skillText', 'targetSkill', 'targetSkillText', 'referenceText',
@@ -31,12 +42,12 @@ const REQUIRED_BUNDLE_FILES = ['samples.jsonl', 'summary.json', 'report.md', 'RE
 const ALL_BUNDLE_FILES = [...REQUIRED_BUNDLE_FILES, 'manifest.json'];
 const MANIFEST_INPUT_KEYS = [
   'experimentId', 'recordedAtUtc', 'gitCommit', 'command', 'modelProvider', 'model',
-  'evidenceLabel', 'sourceEvidence', 'liveBudget', 'configuration',
+  'evidenceLabel', 'sourceEvidence', 'liveBudget', 'configuration', 'readmeInputs',
 ];
 const MANIFEST_KEYS = [
   'schemaVersion', 'experimentId', 'recordedAtUtc', 'gitCommit', 'command', 'runtime',
   'modelProvider', 'model', 'evidenceLabel', 'sourceEvidence', 'liveBudget',
-  'configuration', 'reportInputs', 'files',
+  'configuration', 'reportInputs', 'readmeInputs', 'files',
 ];
 const REPORT_INPUT_KEYS = ['evidenceLabel', 'verdict', 'suppressionReason', 'limitations'];
 const EVIDENCE_LABELS = new Set([
@@ -65,6 +76,21 @@ const LIMITATIONS = new Set([
 ]);
 const rounded = (value) => Number(value.toFixed(12));
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
+const SENSITIVE_VALUE_TOKENS = new Set([
+  'apikey', 'authorization', 'authorisation', 'bearer', 'header', 'headers',
+  'raw', 'rawresponse', 'rawpayload', 'rawoutput', 'tmp', 'temp', 'temporary',
+  'path', 'paths',
+]);
+
+function containsSensitiveValue(value) {
+  const tokens = value
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[^A-Za-z0-9]+/)
+    .filter(Boolean)
+    .map((token) => token.toLowerCase());
+  if (tokens.some((token) => SENSITIVE_VALUE_TOKENS.has(token))) return true;
+  return tokens.some((token, index) => token === 'api' && tokens[index + 1] === 'key');
+}
 
 function assertExactKeys(value, keys, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -77,8 +103,15 @@ function assertExactKeys(value, keys, label) {
   }
 }
 
-function assertPortableJson(value, label = 'evidence input', active = new WeakSet()) {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
+function assertPortableJson(value, label = 'evidence input', active = new WeakSet(), checkSensitive = true) {
+  if (value === null || typeof value === 'boolean') return;
+  if (typeof value === 'string') {
+    if (value.length > 4096) throw new Error(`${label} exceeds the evidence string length limit`);
+    if (checkSensitive && containsSensitiveValue(value)) {
+      throw new Error(`${label} contains a sensitive evidence value`);
+    }
+    return;
+  }
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) throw new Error(`${label} must contain only finite JSON numbers`);
     return;
@@ -102,7 +135,7 @@ function assertPortableJson(value, label = 'evidence input', active = new WeakSe
         throw new Error(`${label} must not contain sparse arrays or extra array properties`);
       }
       for (let index = 0; index < value.length; index += 1) {
-        assertPortableJson(value[index], `${label}[${index}]`, active);
+        assertPortableJson(value[index], `${label}[${index}]`, active, checkSensitive);
       }
       return;
     }
@@ -119,7 +152,7 @@ function assertPortableJson(value, label = 'evidence input', active = new WeakSe
         throw new Error(`${label}.${key} must be a data property`);
       }
       if (FORBIDDEN_KEYS.has(key)) throw new Error(`forbidden evidence field: ${label}.${key}`);
-      assertPortableJson(descriptor.value, `${label}.${key}`, active);
+      assertPortableJson(descriptor.value, `${label}.${key}`, active, checkSensitive);
     }
   } finally {
     active.delete(value);
@@ -144,6 +177,15 @@ function finiteNonNegative(value, label, { nullable = false } = {}) {
   }
 }
 
+function safeIdentifier(value, label, maxLength) {
+  if (typeof value !== 'string'
+      || value.length === 0
+      || value.length > maxLength
+      || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)) {
+    throw new Error(`${label} must be a bounded safe identifier`);
+  }
+}
+
 function validateSample(sample) {
   if (!sample || typeof sample !== 'object' || Array.isArray(sample)) throw new Error('Sample must be an object');
   for (const key of Object.keys(sample)) {
@@ -152,16 +194,24 @@ function validateSample(sample) {
   }
   assertPortableJson(sample, 'sample');
   assertExactKeys(sample, SAMPLE_KEYS, 'Sample');
-  if (typeof sample.sampleId !== 'string' || sample.sampleId.trim() === '') throw new Error('sampleId is required');
-  if (typeof sample.phase !== 'string' || sample.phase.trim() === '') throw new Error('sample phase is required');
-  if (typeof sample.profile !== 'string' || sample.profile.trim() === '') throw new Error('sample profile is required');
-  for (const key of ['caseId', 'replicateId', 'acquisitionEvidence', 'failureClass', 'providerRequestId']) {
-    if (!(sample[key] === null || (typeof sample[key] === 'string' && sample[key] !== ''))) {
-      throw new Error(`${key} must be string or null`);
-    }
+  safeIdentifier(sample.sampleId, 'sampleId', 256);
+  if (!SAMPLE_PHASES.has(sample.phase)) throw new Error('sample phase is unsupported');
+  if (!SAMPLE_PROFILES.has(sample.profile)) throw new Error('sample profile is unsupported');
+  if (sample.caseId !== null) safeIdentifier(sample.caseId, 'caseId', 128);
+  if (sample.replicateId !== null) safeIdentifier(sample.replicateId, 'replicateId', 64);
+  if (sample.providerRequestId !== null) safeIdentifier(sample.providerRequestId, 'providerRequestId', 128);
+  if (sample.failureClass !== null
+      && !(typeof sample.failureClass === 'string' && /^[A-Z][A-Za-z0-9]{0,63}$/.test(sample.failureClass))) {
+    throw new Error('failureClass must be an error-class token or null');
   }
-  for (const key of ['distillationSeedStatus', 'distillationSeedMechanism']) {
-    if (typeof sample[key] !== 'string' || sample[key] === '') throw new Error(`${key} must be a non-empty string`);
+  if (!(sample.acquisitionEvidence === null || sample.acquisitionEvidence === 'MODELED')) {
+    throw new Error('acquisitionEvidence is unsupported');
+  }
+  if (!DISTILLATION_SEED_STATUSES.has(sample.distillationSeedStatus)) {
+    throw new Error('distillationSeedStatus is unsupported');
+  }
+  if (!DISTILLATION_SEED_MECHANISMS.has(sample.distillationSeedMechanism)) {
+    throw new Error('distillationSeedMechanism is unsupported');
   }
   if (typeof sample.success !== 'boolean') throw new Error('sample success must be boolean');
   finiteNonNegative(sample.latencyMs, 'sample latencyMs');
@@ -553,13 +603,27 @@ function renderReport(summary, reportInputs) {
 `;
 }
 
-function renderReadme(reproduction) {
+function validateReadmeInputs(readmeInputs) {
+  assertPortableJson(readmeInputs, 'readmeInputs');
+  assertExactKeys(readmeInputs, ['bundlePath'], 'readmeInputs');
+  const { bundlePath } = readmeInputs;
+  if (typeof bundlePath !== 'string'
+      || bundlePath.length > 240
+      || !/^(?:evidence|runs\/mock-sweep\/evidence)\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(bundlePath)
+      || bundlePath.includes('//')
+      || bundlePath.split('/').includes('..')) {
+    throw new Error('readmeInputs.bundlePath must be a safe repository-relative evidence path');
+  }
+  return { bundlePath };
+}
+
+function renderReadme(readmeInputs) {
   return `# Evidence bundle
 
 Verify and reproduce:
 
 \`\`\`bash
-${reproduction}
+node scripts/verify-bundle.mjs ${readmeInputs.bundlePath}
 \`\`\`
 
 Samples are normalized and allow-listed. Prompt payloads, output text, API keys,
@@ -587,6 +651,7 @@ function validateManifest(manifest) {
   validateLiveBudget(manifest.liveBudget);
   const configuration = validateConfiguration(manifest.configuration);
   validateReportInputs(manifest.reportInputs, manifest.evidenceLabel, configuration);
+  validateReadmeInputs(manifest.readmeInputs);
   assertExactKeys(manifest.files, REQUIRED_BUNDLE_FILES, 'manifest.files');
   for (const name of REQUIRED_BUNDLE_FILES) {
     const file = manifest.files[name];
@@ -613,14 +678,13 @@ function validateOutputDirectory(outputDir) {
 }
 
 export function writeEvidenceBundle(input) {
-  assertPortableJson(input, 'writer input');
-  assertExactKeys(input, ['outputDir', 'manifest', 'samples', 'reportInputs', 'reproduction'], 'Evidence writer input');
+  assertPortableJson(input, 'writer input', new WeakSet(), false);
+  assertExactKeys(input, ['outputDir', 'manifest', 'samples', 'reportInputs'], 'Evidence writer input');
   const {
     outputDir,
     manifest,
     samples,
     reportInputs,
-    reproduction,
   } = input;
   if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
     throw new Error('Evidence manifest input must be an object');
@@ -628,19 +692,19 @@ export function writeEvidenceBundle(input) {
   for (const key of Object.keys(manifest)) {
     if (!MANIFEST_INPUT_KEYS.includes(key)) throw new Error(`Unsupported evidence manifest field: ${key}`);
   }
+  assertPortableJson(manifest, 'manifest input');
   nonEmptyString(manifest.experimentId, 'manifest.experimentId');
   nonEmptyString(manifest.command, 'manifest.command');
   if (!EVIDENCE_LABELS.has(manifest.evidenceLabel)) throw new Error('Evidence manifest evidenceLabel is unsupported');
   for (const key of ['gitCommit', 'modelProvider', 'model']) {
     if (Object.hasOwn(manifest, key)) nonEmptyString(manifest[key], `manifest.${key}`, { nullable: key !== 'gitCommit' });
   }
-  nonEmptyString(reproduction, 'Evidence reproduction command');
-  if (reproduction.includes('```')) throw new Error('Evidence reproduction command must not contain a code-fence delimiter');
   const recordedAtUtc = manifest.recordedAtUtc === undefined ? new Date().toISOString() : manifest.recordedAtUtc;
   validateRecordedAtUtc(recordedAtUtc);
   const sourceEvidence = validateSourceEvidence(manifest.sourceEvidence);
   const liveBudget = validateLiveBudget(manifest.liveBudget);
   const configuration = validateConfiguration(manifest.configuration);
+  const validatedReadmeInputs = validateReadmeInputs(manifest.readmeInputs);
   if (recordedAtUtc === null
       && !(configuration.historicalRunDate && configuration.sourceTimestamp === 'not-recorded')) {
     throw new Error('A null recordedAtUtc requires a historical date and sourceTimestamp not-recorded');
@@ -652,7 +716,7 @@ export function writeEvidenceBundle(input) {
     'samples.jsonl': `${samples.map(stableLine).join('\n')}\n`,
     'summary.json': stableJson(summary),
     'report.md': renderReport(summary, validatedReportInputs),
-    'README.md': renderReadme(reproduction),
+    'README.md': renderReadme(validatedReadmeInputs),
   };
   const finalManifest = {
     schemaVersion: 1,
@@ -668,6 +732,7 @@ export function writeEvidenceBundle(input) {
     liveBudget,
     configuration,
     reportInputs: validatedReportInputs,
+    readmeInputs: validatedReadmeInputs,
     files: Object.fromEntries(REQUIRED_BUNDLE_FILES.map((name) => [name, {
       sha256: sha256(contents[name]),
       bytes: Buffer.byteLength(contents[name]),
@@ -755,7 +820,9 @@ export function verifyEvidenceBundle(dir) {
     if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(`Evidence bundle entry must be a regular file: ${name}`);
   }
   const manifestPath = path.join(dir, 'manifest.json');
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const manifestText = fs.readFileSync(manifestPath, 'utf8');
+  const manifest = JSON.parse(manifestText);
+  if (manifestText !== stableJson(manifest)) throw new Error('manifest.json must use canonical JSON');
   validateManifest(manifest);
   for (const name of REQUIRED_BUNDLE_FILES) {
     const filePath = path.join(dir, name);
@@ -780,6 +847,9 @@ export function verifyEvidenceBundle(dir) {
   }
   if (fs.readFileSync(path.join(dir, 'report.md'), 'utf8') !== renderReport(summary, manifest.reportInputs)) {
     throw new Error('report.md differs from deterministic rendering');
+  }
+  if (fs.readFileSync(path.join(dir, 'README.md'), 'utf8') !== renderReadme(manifest.readmeInputs)) {
+    throw new Error('README.md differs from deterministic rendering');
   }
   verifyLiveRows(samples, manifest, dir);
   return { valid: true, manifest, summary, samples };

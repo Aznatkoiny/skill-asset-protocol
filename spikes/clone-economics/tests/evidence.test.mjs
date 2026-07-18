@@ -45,6 +45,8 @@ const syntheticReportInputs = (overrides = {}) => ({
   ...overrides,
 });
 
+const readmeInputs = (bundlePath = 'evidence/adversarial-fixture') => ({ bundlePath });
+
 function evidenceInput(outputDir, overrides = {}) {
   return {
     outputDir,
@@ -53,11 +55,11 @@ function evidenceInput(outputDir, overrides = {}) {
       evidenceLabel: 'SYNTHETIC',
       command: 'test',
       configuration: {},
+      readmeInputs: readmeInputs(),
       ...(overrides.manifest ?? {}),
     },
     samples,
     reportInputs: syntheticReportInputs(overrides.reportInputs),
-    reproduction: 'verify adversarial fixture',
   };
 }
 
@@ -94,10 +96,14 @@ test('bundle hashes and summary recompute from normalized samples', (t) => {
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   writeEvidenceBundle({
     outputDir: dir,
-    manifest: { experimentId: 'fixture-run', evidenceLabel: 'SYNTHETIC', command: 'npm run sweep:mock' },
+    manifest: {
+      experimentId: 'fixture-run',
+      evidenceLabel: 'SYNTHETIC',
+      command: 'npm run sweep:mock',
+      readmeInputs: readmeInputs('evidence/fixture-run'),
+    },
     samples,
     reportInputs: syntheticReportInputs(),
-    reproduction: 'node scripts/verify-bundle.mjs evidence/fixture-run',
   });
   const verified = verifyEvidenceBundle(dir);
   assert.equal(verified.valid, true);
@@ -123,7 +129,7 @@ test('sample and configuration schemas reject nested values and secrets', () => 
   );
   assert.throws(
     () => recomputeSummary([{ ...samples[0], failureClass: { code: 'ProviderError' } }]),
-    /failureClass must be string or null/,
+    /failureClass must be an error-class token or null/,
   );
 
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'clone-evidence-preflight-'));
@@ -135,6 +141,7 @@ test('sample and configuration schemas reject nested values and secrets', () => 
         experimentId: 'nested-config',
         evidenceLabel: 'SYNTHETIC',
         command: 'test',
+        readmeInputs: readmeInputs('evidence/nested-config'),
         configuration: {
           publicationGate: {
             publishableHighN: false,
@@ -144,13 +151,24 @@ test('sample and configuration schemas reject nested values and secrets', () => 
       },
       samples,
       reportInputs: syntheticReportInputs(),
-      reproduction: 'verify rejected fixture',
     }), /forbidden evidence field|publicationGate\.suppressionReason must be string or null/);
     assert.equal(fs.existsSync(outputDir), false, 'invalid input must not create an output directory');
   } finally {
     fs.rmSync(parent, { recursive: true, force: true });
   }
 });
+
+function canonicalizeForTest(value) {
+  if (value === null || ['string', 'number', 'boolean'].includes(typeof value)) return value;
+  if (Array.isArray(value)) return value.map(canonicalizeForTest);
+  return Object.fromEntries(
+    Object.keys(value).sort().map((key) => [key, canonicalizeForTest(value[key])]),
+  );
+}
+
+function writeCanonicalJson(filePath, value) {
+  fs.writeFileSync(filePath, `${JSON.stringify(canonicalizeForTest(value), null, 2)}\n`);
+}
 
 function rewriteManifestHash(dir, name) {
   const manifestPath = path.join(dir, 'manifest.json');
@@ -160,7 +178,7 @@ function rewriteManifestHash(dir, name) {
     sha256: createHash('sha256').update(bytes).digest('hex'),
     bytes: bytes.length,
   };
-  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  writeCanonicalJson(manifestPath, manifest);
 }
 
 function bundle(t) {
@@ -168,10 +186,14 @@ function bundle(t) {
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   writeEvidenceBundle({
     outputDir: dir,
-    manifest: { experimentId: 'strict-run', evidenceLabel: 'SYNTHETIC', command: 'test' },
+    manifest: {
+      experimentId: 'strict-run',
+      evidenceLabel: 'SYNTHETIC',
+      command: 'test',
+      readmeInputs: readmeInputs('evidence/strict-run'),
+    },
     samples,
     reportInputs: syntheticReportInputs(),
-    reproduction: 'verify strict fixture',
   });
   return dir;
 }
@@ -211,7 +233,7 @@ test('verifier validates the exact manifest shape and nested scalar values', (t)
   const extraManifestPath = path.join(extraFieldDir, 'manifest.json');
   const extraManifest = JSON.parse(fs.readFileSync(extraManifestPath, 'utf8'));
   extraManifest.rawResponse = { private: true };
-  fs.writeFileSync(extraManifestPath, `${JSON.stringify(extraManifest, null, 2)}\n`);
+  writeCanonicalJson(extraManifestPath, extraManifest);
   assert.throws(() => verifyEvidenceBundle(extraFieldDir), /forbidden evidence field|Evidence manifest has unexpected or missing fields/);
 
   const nonFiniteDir = bundle(t);
@@ -219,7 +241,16 @@ test('verifier validates the exact manifest shape and nested scalar values', (t)
   const nonFiniteText = fs.readFileSync(nonFiniteManifestPath, 'utf8')
     .replace('"configuration": {}', '"configuration": {"nValues": [1e400]}');
   fs.writeFileSync(nonFiniteManifestPath, nonFiniteText);
-  assert.throws(() => verifyEvidenceBundle(nonFiniteDir), /finite JSON numbers|configuration\.nValues\[0\] must be a positive safe integer/);
+  assert.throws(() => verifyEvidenceBundle(nonFiniteDir), /canonical JSON|finite JSON numbers|configuration\.nValues\[0\] must be a positive safe integer/);
+});
+
+test('verifier rejects duplicate manifest keys and noncanonical manifest bytes', (t) => {
+  const dir = bundle(t);
+  const manifestPath = path.join(dir, 'manifest.json');
+  const manifest = fs.readFileSync(manifestPath, 'utf8')
+    .replace('{\n', '{\n  "command": "authorization: Bearer private",\n');
+  fs.writeFileSync(manifestPath, manifest);
+  assert.throws(() => verifyEvidenceBundle(dir), /manifest\.json must use canonical JSON/);
 });
 
 test('verifier rejects duplicate IDs and forbidden fields after a manifest rehash', (t) => {
@@ -270,6 +301,79 @@ test('verifier rejects summary and report numbers changed behind updated hashes'
   assert.throws(() => verifyEvidenceBundle(interpretationDir), /report\.md differs from deterministic rendering/);
 });
 
+test('verifier rejects a rehashed README publication claim', (t) => {
+  const dir = bundle(t);
+  const readmePath = path.join(dir, 'README.md');
+  fs.appendFileSync(readmePath, '\nThis bundle is approved for publication.\n');
+  rewriteManifestHash(dir, 'README.md');
+  assert.throws(() => verifyEvidenceBundle(dir), /README\.md differs from deterministic rendering/);
+});
+
+test('readmeInputs accepts only the closed repository-relative verifier command', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'clone-readme-inputs-'));
+  try {
+    const cases = [
+      { bundlePath: 'docs/not-evidence' },
+      { bundlePath: '/tmp/raw-evidence' },
+      { bundlePath: '../evidence/run' },
+      { bundlePath: 'evidence/run', note: 'publishable' },
+    ];
+    cases.forEach((value, index) => {
+      const outputDir = path.join(parent, `bundle-${index}`);
+      assert.throws(
+        () => writeEvidenceBundle(evidenceInput(outputDir, { manifest: { readmeInputs: value } })),
+        /readmeInputs|verifier command|repository-relative|unexpected or missing fields/,
+      );
+      assert.equal(fs.existsSync(outputDir), false);
+    });
+  } finally {
+    fs.rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test('sample scalar channels reject unsupported enums, unsafe IDs, and sensitive values', () => {
+  const mutations = [
+    { phase: 'raw' },
+    { profile: 'administrator' },
+    { distillationSeedStatus: 'forged' },
+    { distillationSeedMechanism: 'custom_header_authorization' },
+    { acquisitionEvidence: 'RAW' },
+    { sampleId: '../tmp/raw-response' },
+    { caseId: '/private/tmp/case' },
+    { replicateId: 'replicate with spaces' },
+    { failureClass: 'Error: authorization Bearer private' },
+    { providerRequestId: 'x-api-key=private' },
+  ];
+  for (const mutation of mutations) {
+    assert.throws(
+      () => recomputeSummary([normalizedSample(mutation)]),
+      /unsupported|safe identifier|error-class token|sensitive evidence value/,
+    );
+  }
+});
+
+test('manifest and configuration string values reject secret and raw path markers', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'clone-sensitive-values-'));
+  try {
+    const cases = [
+      { model: 'authorization=Bearer private' },
+      { modelProvider: 'x-api-key private' },
+      { model: 'rawResponse=private' },
+      { configuration: { attemptCoverage: 'raw response retained at /tmp/private' } },
+    ];
+    cases.forEach((manifest, index) => {
+      const outputDir = path.join(parent, `bundle-${index}`);
+      assert.throws(
+        () => writeEvidenceBundle(evidenceInput(outputDir, { manifest })),
+        /sensitive evidence value/,
+      );
+      assert.equal(fs.existsSync(outputDir), false);
+    });
+  } finally {
+    fs.rmSync(parent, { recursive: true, force: true });
+  }
+});
+
 test('writer validates all inputs before creating output', () => {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'clone-evidence-no-partial-'));
   const outputDir = path.join(parent, 'bundle');
@@ -281,10 +385,10 @@ test('writer validates all inputs before creating output', () => {
         recordedAtUtc: 'not-a-timestamp',
         evidenceLabel: 'SYNTHETIC',
         command: 'test',
+        readmeInputs: readmeInputs('evidence/invalid-manifest'),
       },
       samples,
       reportInputs: syntheticReportInputs(),
-      reproduction: 'verify absent fixture',
     }), /recordedAtUtc must be an ISO-8601 instant or null/);
     assert.equal(fs.existsSync(outputDir), false);
 
@@ -365,14 +469,14 @@ test('verifier requires exact runtime and file-entry schemas', (t) => {
   const runtimeManifestPath = path.join(runtimeDir, 'manifest.json');
   const runtimeManifest = JSON.parse(fs.readFileSync(runtimeManifestPath, 'utf8'));
   runtimeManifest.runtime.node = null;
-  fs.writeFileSync(runtimeManifestPath, `${JSON.stringify(runtimeManifest, null, 2)}\n`);
+  writeCanonicalJson(runtimeManifestPath, runtimeManifest);
   assert.throws(() => verifyEvidenceBundle(runtimeDir), /manifest\.runtime\.node must be a non-empty string/);
 
   const filesDir = bundle(t);
   const filesManifestPath = path.join(filesDir, 'manifest.json');
   const filesManifest = JSON.parse(fs.readFileSync(filesManifestPath, 'utf8'));
   filesManifest.files['report.md'].contentType = 'text/markdown';
-  fs.writeFileSync(filesManifestPath, `${JSON.stringify(filesManifest, null, 2)}\n`);
+  writeCanonicalJson(filesManifestPath, filesManifest);
   assert.throws(() => verifyEvidenceBundle(filesDir), /manifest\.files\.report\.md has unexpected or missing fields/);
 });
 
@@ -393,7 +497,7 @@ test('verifier rejects a coordinated false publication claim even when report ha
     sha256: createHash('sha256').update(bytes).digest('hex'),
     bytes: bytes.length,
   };
-  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  writeCanonicalJson(manifestPath, manifest);
   assert.throws(() => verifyEvidenceBundle(dir), /publication gate passed evidence label|SYNTHETIC.*publication/i);
 });
 
@@ -465,6 +569,7 @@ test('completed sweep output writes and verifies through the public bundle seam'
     experimentId: 'sweep-bundle-fixture',
     evidenceLabel: 'SYNTHETIC',
     command: 'npm run sweep:mock',
+    readmeInputs: readmeInputs('evidence/sweep-bundle-fixture'),
   });
   assert.equal(written.verified.valid, true);
   assert.equal(written.verified.samples.length, 1);
@@ -488,6 +593,7 @@ test('live bundle authorization recomputes from hash-verified budget and economi
       experimentId: 'live-fixture',
       evidenceLabel: 'SYNTHETIC',
       command: 'synthetic live verifier fixture',
+      readmeInputs: readmeInputs('evidence/live-fixture'),
       liveBudget: {
         snapshotPath: 'fixtures/live-budget-v1.json',
         snapshotSha256: digest(snapshotBytes),
@@ -515,7 +621,6 @@ test('live bundle authorization recomputes from hash-verified budget and economi
       criticalGatePass: true,
     })],
     reportInputs: syntheticReportInputs(),
-    reproduction: 'verify live fixture',
   });
   assert.equal(verifyEvidenceBundle(outputDir).valid, true);
 });

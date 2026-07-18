@@ -235,6 +235,7 @@ test('standalone target execution failure preserves its attempt and final budget
     experimentId: 'failed-target-fixture',
     evidenceLabel: 'SYNTHETIC FAILED TARGET',
     command: 'synthetic failed-target test',
+    readmeInputs: { bundlePath: 'evidence/failed-target-fixture' },
   });
   assert.equal(evidence.verified.valid, true);
   assert.equal(evidence.verified.samples.length, 1);

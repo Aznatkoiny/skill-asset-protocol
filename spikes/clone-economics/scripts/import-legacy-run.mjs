@@ -137,6 +137,7 @@ export function importLegacyRun(argv) {
       modelProvider: 'Anthropic',
       model: source.usage.raw[0]?.model ?? null,
       evidenceLabel: 'HISTORICAL MIXED — INVALID BENCHMARK; acquisition MODELED',
+      readmeInputs: { bundlePath: 'evidence/2026-07-12-n6-invalid' },
       sourceEvidence: {
         kind: 'legacy-report-json',
         sha256: LEGACY_SOURCE_SHA256,
@@ -161,7 +162,6 @@ export function importLegacyRun(argv) {
       suppressionReason: 'INVALID_BENCHMARK_TARGET_FAILED',
       limitations: ['ACQUISITION_MODELED', 'HISTORICAL_ATTEMPTS_INCOMPLETE'],
     },
-    reproduction: 'node scripts/verify-bundle.mjs evidence/2026-07-12-n6-invalid',
   });
   return { output: args.output, samples: samples.length };
 }

@@ -82,7 +82,7 @@ async function main() {
         experimentId,
         evidenceLabel: 'SYNTHETIC',
         command: 'npm run sweep:mock',
-        reproduction: `node scripts/verify-bundle.mjs ${evidenceRelative}`,
+        readmeInputs: { bundlePath: evidenceRelative },
       });
       console.log(`cells complete: ${result.cells.filter((cell) => cell.status === 'complete').length}/${result.cells.length}`);
       console.log(`publishable high-N: ${result.publishableHighN}`);
@@ -143,7 +143,7 @@ async function main() {
       outstandingReservedMicroUsd: live.budgetState.outstandingReservedMicroUsd.toString(),
       lock: live.budgetState.lock,
     },
-    reproduction: `node scripts/verify-bundle.mjs ${evidenceRelative}`,
+    readmeInputs: { bundlePath: evidenceRelative },
   });
   console.log(`live authorization: ${live.authorizationHash}`);
   console.log(`attempted calls: ${live.budgetState.attemptedCalls}`);

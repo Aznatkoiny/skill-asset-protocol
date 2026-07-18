@@ -247,7 +247,7 @@ export async function writeSweepEvidenceBundle({
   model = null,
   liveBudget = null,
   liveEconomics = null,
-  reproduction = null,
+  readmeInputs,
 }) {
   const { verifyEvidenceBundle, writeEvidenceBundle } = await import('./evidence.mjs');
   const samples = normalizeSweepSamples({ experimentId, attempts: result.samples });
@@ -271,6 +271,7 @@ export async function writeSweepEvidenceBundle({
       model,
       evidenceLabel,
       liveBudget,
+      readmeInputs,
       configuration: {
         sweepConfig: config,
         fixtureSet: config.fixtureSet,
@@ -289,7 +290,6 @@ export async function writeSweepEvidenceBundle({
       suppressionReason: result.publishableHighN ? null : verdict,
       limitations,
     },
-    reproduction: reproduction ?? `node scripts/verify-bundle.mjs ${outputDir}`,
   });
   return { manifest, verified: verifyEvidenceBundle(outputDir) };
 }
