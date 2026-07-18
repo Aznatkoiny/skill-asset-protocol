@@ -38,11 +38,12 @@ numeric or coerced atomic amounts, unknown protocol fields, caller-supplied paym
 idempotency headers, ambiguous URL forms, and path-prefix confusion.
 
 The caller's method, body bytes, and headers are captured once before the unpaid
-request and reused for the policy hash, signed recovery, and paid retry; redirects are
-disabled on both requests. Validated policy limits and seller rules are snapshotted at
-construction. The trusted clock rejects backward movement and rechecks age from both
-local receipt and server issue time after challenge parsing and immediately before the
-paid retry.
+request. Method and body bytes bind the policy hash and signed recovery; captured
+headers are reused for the unpaid and paid requests but are not signed or covered by
+the request hash. Redirects are disabled on both requests. Validated policy limits and
+seller rules are snapshotted at construction. The trusted clock rejects backward
+movement and rechecks age from both local receipt and server issue time after challenge
+parsing and immediately before the paid retry.
 
 Budget is synchronously reserved before signing. The exact authorization, signature,
 and encoded `X-PAYMENT` value are stored before the one paid retry begins. A recovery
