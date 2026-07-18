@@ -67,7 +67,7 @@ measurement.
 **6/**
 The historical N=6 run used a modeled $1.50 acquisition cost and measured about
 $0.03 of distillation-provider cost; no acquisition payment settled. Its target
-failed the benchmark, so clone quality, fidelity defense, and break-even are
+failed the benchmark, so clone quality, resistance to output imitation, and break-even are
 unknown. Publication remains blocked pending a valid preregistered N=100 run.
 
 **7/**
@@ -103,7 +103,7 @@ If you author skills, this is about who gets credited and compensated for them.
 ## 2. Clone-attack thread — publication blocked
 
 > **PUBLICATION BLOCKED — INVALID BENCHMARK.** The 2026-07-12 target scored
-> 0.400 and failed its own critical gates, so clone-quality, fidelity-defense, and
+> 0.400 and failed its own critical gates, so clone quality, resistance to output imitation, and
 > break-even conclusions are suppressed. Acquisition was modeled at $1.50; no
 > x402 acquisition payments settled. Unblock only after
 > `spikes/clone-economics` produces a valid N=100 result with committed normalized
@@ -111,7 +111,7 @@ If you author skills, this is about who gets credited and compensated for them.
 
 The historical N=6 run used a modeled $1.50 acquisition cost and measured about
 $0.03 of distillation-provider cost; no acquisition payment settled. Its target
-failed the benchmark, so clone quality, fidelity defense, and break-even are
+failed the benchmark, so clone quality, resistance to output imitation, and break-even are
 unknown. Publication remains blocked pending a valid preregistered N=100 run.
 
 ---
@@ -227,7 +227,7 @@ Good (someone asks whether x402 latency is workable):
 Good (someone claims per-call pricing stops people cloning your agent):
 > The historical N=6 run used a modeled $1.50 acquisition cost and measured about
 > $0.03 of distillation-provider cost; no acquisition payment settled. Its target
-> failed the benchmark, so clone quality, fidelity defense, and break-even are
+> failed the benchmark, so clone quality, resistance to output imitation, and break-even are
 > unknown. Publication remains blocked pending a valid preregistered N=100 run.
 
 Good (Claude Code author asks who owns the skills they write at work):
@@ -311,7 +311,7 @@ https://neverhandedover.com
 **C.**
 The historical N=6 run used a modeled $1.50 acquisition cost and measured about
 $0.03 of distillation-provider cost; no acquisition payment settled. Its target
-failed the benchmark, so clone quality, fidelity defense, and break-even are
+failed the benchmark, so clone quality, resistance to output imitation, and break-even are
 unknown. Publication remains blocked pending a valid preregistered N=100 run.
 
 **D.**

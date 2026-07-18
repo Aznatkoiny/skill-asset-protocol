@@ -52,7 +52,7 @@ Launch day, Tuesday–Thursday ~8:30am ET; pin to profile and leave it pinned th
 ## Post 2 — Clone-economics benchmark: publication blocked
 
 > **PUBLICATION BLOCKED — INVALID BENCHMARK.** The 2026-07-12 target scored
-> 0.400 and failed its own critical gates, so clone-quality, fidelity-defense, and
+> 0.400 and failed its own critical gates, so clone quality, resistance to output imitation, and
 > break-even conclusions are suppressed. Acquisition was modeled at $1.50; no
 > x402 acquisition payments settled. Unblock only after
 > `spikes/clone-economics` produces a valid N=100 result with committed normalized

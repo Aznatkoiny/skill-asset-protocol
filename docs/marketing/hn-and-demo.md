@@ -11,7 +11,7 @@ language anywhere.*
 ## 1. Show HN draft
 
 > **PUBLICATION BLOCKED — INVALID BENCHMARK.** The 2026-07-12 target scored
-> 0.400 and failed its own critical gates, so clone-quality, fidelity-defense, and
+> 0.400 and failed its own critical gates, so clone quality, resistance to output imitation, and
 > break-even conclusions are suppressed. Acquisition was modeled at $1.50; no
 > x402 acquisition payments settled. Unblock only after
 > `spikes/clone-economics` produces a valid N=100 result with committed normalized
@@ -58,7 +58,7 @@ above is satisfied and a human approves revised copy.
 >
 > The historical N=6 run used a modeled $1.50 acquisition cost and measured about
 > $0.03 of distillation-provider cost; no acquisition payment settled. Its target
-> failed the benchmark, so clone quality, fidelity defense, and break-even are
+> failed the benchmark, so clone quality, resistance to output imitation, and break-even are
 > unknown. Publication remains blocked pending a valid preregistered N=100 run.
 >
 > We also documented two live failure modes: 10 calls that settled then 500'd ($0.87 of
@@ -130,7 +130,7 @@ Post these as replies, verbatim or trimmed. Never argue tone; concede fast and l
 
 > The historical N=6 run used a modeled $1.50 acquisition cost and measured about
 > $0.03 of distillation-provider cost; no acquisition payment settled. Its target
-> failed the benchmark, so clone quality, fidelity defense, and break-even are
+> failed the benchmark, so clone quality, resistance to output imitation, and break-even are
 > unknown. Publication remains blocked pending a valid preregistered N=100 run.
 
 **Q5. "Who would actually pay for this?"**
