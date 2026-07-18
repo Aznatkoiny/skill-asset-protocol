@@ -8,6 +8,95 @@ import {
 
 const clone = (value) => structuredClone(value);
 const rounded = (value) => Number(value.toFixed(12));
+const DEFAULT_LIVE_REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_LIVE_RESPONSE_BYTES = 1_048_576;
+
+async function withWallClockDeadline(timeoutMs, operation) {
+  const controller = new AbortController();
+  const timeoutError = new Error('Anthropic request timed out');
+  let timeoutId;
+  const deadline = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      controller.abort(timeoutError);
+      reject(timeoutError);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => operation(controller.signal)),
+      deadline,
+    ]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function cancelReader(reader, reason) {
+  try {
+    const cancellation = reader.cancel(reason);
+    void Promise.resolve(cancellation).catch(() => {});
+  } catch {
+    // The boundary error remains authoritative even if cancellation itself fails.
+  }
+}
+
+async function readBoundedJson(response, { maxBytes, signal }) {
+  let body;
+  try {
+    body = response?.body;
+  } catch {
+    throw new Error('Anthropic response body is unavailable');
+  }
+  if (!body || typeof body.getReader !== 'function') {
+    throw new Error('Anthropic response body is unavailable');
+  }
+  let reader;
+  try {
+    reader = body.getReader();
+  } catch {
+    throw new Error('Anthropic response body is unavailable');
+  }
+  const cancelOnAbort = () => cancelReader(reader, signal.reason);
+  if (signal.aborted) {
+    cancelOnAbort();
+    if (signal.reason instanceof Error) throw signal.reason;
+    throw new Error('Anthropic request timed out');
+  }
+  signal.addEventListener('abort', cancelOnAbort, { once: true });
+  try {
+    const chunks = [];
+    let totalBytes = 0;
+    while (true) {
+      let result;
+      try {
+        result = await reader.read();
+      } catch {
+        if (signal.aborted && signal.reason instanceof Error) throw signal.reason;
+        throw new Error('Anthropic response could not be read');
+      }
+      if (result.done) break;
+      if (!(result.value instanceof Uint8Array)) {
+        const error = new Error('Anthropic response could not be read');
+        cancelReader(reader, error);
+        throw error;
+      }
+      if (result.value.byteLength > maxBytes - totalBytes) {
+        const error = new Error('Anthropic response exceeded byte limit');
+        cancelReader(reader, error);
+        throw error;
+      }
+      chunks.push(result.value);
+      totalBytes += result.value.byteLength;
+    }
+    try {
+      return JSON.parse(Buffer.concat(chunks, totalBytes).toString('utf8'));
+    } catch {
+      throw new Error('Anthropic response was not valid JSON');
+    }
+  } finally {
+    signal.removeEventListener('abort', cancelOnAbort);
+  }
+}
 
 const LIVE_KIND_INSTRUCTIONS = {
   'target-train': 'Apply the supplied target Skill and reference to the supplied request and synthetic repository context. Return only the resulting response.',
@@ -207,6 +296,14 @@ export class LiveAnthropicAdapter {
     });
     this.fetchImpl = config.fetchImpl ?? globalThis.fetch;
     if (typeof this.fetchImpl !== 'function') throw new Error('A fetch implementation is required');
+    this.requestTimeoutMs = config.requestTimeoutMs ?? DEFAULT_LIVE_REQUEST_TIMEOUT_MS;
+    if (!Number.isSafeInteger(this.requestTimeoutMs) || this.requestTimeoutMs <= 0) {
+      throw new Error('requestTimeoutMs must be a positive safe integer');
+    }
+    this.maxResponseBytes = config.maxResponseBytes ?? DEFAULT_LIVE_RESPONSE_BYTES;
+    if (!Number.isSafeInteger(this.maxResponseBytes) || this.maxResponseBytes <= 0) {
+      throw new Error('maxResponseBytes must be a positive safe integer');
+    }
     this.capturedRequests = [];
     this.records = [];
     this.attempts = [];
@@ -232,25 +329,37 @@ export class LiveAnthropicAdapter {
     let capError = null;
     try {
       reservationId = this.budget.reserveNextAttempt({ kind: request.kind, caseId: request.caseId ?? null });
-      const response = await this.fetchImpl('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'anthropic-version': '2023-06-01',
-          'x-api-key': this.apiKey,
+      const { response, json } = await withWallClockDeadline(
+        this.requestTimeoutMs,
+        async (signal) => {
+          let providerResponse;
+          try {
+            providerResponse = await this.fetchImpl('https://api.anthropic.com/v1/messages', {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                'anthropic-version': '2023-06-01',
+                'x-api-key': this.apiKey,
+              },
+              body: JSON.stringify({
+                model: this.model,
+                max_tokens: this.maxTokens,
+                messages: [{ role: 'user', content: prompt }],
+              }),
+              redirect: 'error',
+              signal,
+            });
+          } catch {
+            if (signal.aborted && signal.reason instanceof Error) throw signal.reason;
+            throw new Error('Anthropic request failed');
+          }
+          const providerJson = await readBoundedJson(providerResponse, {
+            maxBytes: this.maxResponseBytes,
+            signal,
+          });
+          return { response: providerResponse, json: providerJson };
         },
-        body: JSON.stringify({
-          model: this.model,
-          max_tokens: this.maxTokens,
-          messages: [{ role: 'user', content: prompt }],
-        }),
-      });
-      let json;
-      try {
-        json = await response.json();
-      } catch (error) {
-        throw new Error(`Anthropic response JSON failed: ${error instanceof Error ? error.message : 'unknown parse failure'}`);
-      }
+      );
       providerRequestId = typeof json.id === 'string' ? json.id : null;
       const inputTokens = json.usage?.input_tokens;
       const outputTokens = json.usage?.output_tokens;

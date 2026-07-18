@@ -23,10 +23,30 @@ const snapshot = (overrides = {}) => ({
 });
 
 function response(json, { ok = true, status = 200 } = {}) {
-  return { ok, status, async json() { return structuredClone(json); } };
+  const bytes = new TextEncoder().encode(JSON.stringify(json));
+  let delivered = false;
+  return {
+    ok,
+    status,
+    headers: { get: () => null },
+    body: {
+      getReader() {
+        return {
+          async read() {
+            if (delivered) return { done: true, value: undefined };
+            delivered = true;
+            return { done: false, value: bytes };
+          },
+          async cancel() {},
+        };
+      },
+    },
+    async json() { throw new Error('unbounded json reader must not be called'); },
+    async text() { throw new Error('unbounded text reader must not be called'); },
+  };
 }
 
-function live({ budget, fetchImpl, contract = snapshot() }) {
+function live({ budget, fetchImpl, contract = snapshot(), runtime = {} }) {
   return new LiveAnthropicAdapter({
     mode: 'live',
     apiKey: 'synthetic-never-sent-to-network',
@@ -34,6 +54,7 @@ function live({ budget, fetchImpl, contract = snapshot() }) {
     budget,
     fetchImpl,
     testOnlyNoNetwork: true,
+    ...runtime,
   });
 }
 
@@ -68,6 +89,166 @@ test('mock seed evidence is synthetic and output callback receives no payload by
     mechanism: 'deterministic_mock_fixture_selection',
   });
   assert.equal(adapter.attempts[0].budgetAttemptId, null);
+});
+
+test('live provider I/O has a hard wall-clock deadline and redirect refusal', async () => {
+  const budget = createAttemptBudget({ capMicroUsd: 200n, worstCaseCallMicroUsd: 100n });
+  let fetchOptions;
+  const adapter = live({
+    budget,
+    runtime: { requestTimeoutMs: 20 },
+    fetchImpl: async (_url, options) => {
+      fetchOptions = options;
+      return new Promise(() => {});
+    },
+  });
+
+  const guard = new Promise((_, reject) => {
+    setTimeout(() => reject(new Error('test guard expired before adapter deadline')), 200);
+  });
+  await assert.rejects(
+    Promise.race([
+      adapter.invoke({ kind: 'target-heldout', caseId: 'deadline', payload: { input: 'small' } }),
+      guard,
+    ]),
+    /Anthropic request timed out/,
+  );
+  assert.equal(fetchOptions.redirect, 'error');
+  assert.ok(fetchOptions.signal instanceof AbortSignal);
+  assert.equal(fetchOptions.signal.aborted, true);
+  assert.deepEqual(budget.state(), {
+    attemptedCalls: 1,
+    knownAccruedMicroUsd: 0n,
+    outstandingReservedMicroUsd: 100n,
+    lock: { kind: 'unknown_cost', attemptId: 'attempt-000001' },
+  });
+});
+
+test('live provider response cancels on the first byte beyond the cap without unbounded readers', async () => {
+  const budget = createAttemptBudget({ capMicroUsd: 200n, worstCaseCallMicroUsd: 100n });
+  let reads = 0;
+  let cancellations = 0;
+  const chunks = [
+    new TextEncoder().encode('12345678'),
+    new TextEncoder().encode('9'),
+    new TextEncoder().encode('never-read'),
+  ];
+  const adapter = live({
+    budget,
+    runtime: { maxResponseBytes: 8 },
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      body: {
+        getReader() {
+          return {
+            async read() {
+              const value = chunks[reads];
+              reads += 1;
+              return value === undefined
+                ? { done: true, value: undefined }
+                : { done: false, value };
+            },
+            async cancel() {
+              cancellations += 1;
+            },
+          };
+        },
+      },
+      async json() {
+        throw new Error('unbounded json reader must not be called');
+      },
+      async text() {
+        throw new Error('unbounded text reader must not be called');
+      },
+    }),
+  });
+
+  await assert.rejects(
+    adapter.invoke({ kind: 'target-heldout', caseId: 'overflow', payload: { input: 'small' } }),
+    /Anthropic response exceeded byte limit/,
+  );
+  assert.equal(reads, 2);
+  assert.equal(cancellations, 1);
+  assert.deepEqual(budget.state(), {
+    attemptedCalls: 1,
+    knownAccruedMicroUsd: 0n,
+    outstandingReservedMicroUsd: 100n,
+    lock: { kind: 'unknown_cost', attemptId: 'attempt-000001' },
+  });
+});
+
+test('live provider transport errors are sanitized without releasing unknown spend', async () => {
+  const budget = createAttemptBudget({ capMicroUsd: 200n, worstCaseCallMicroUsd: 100n });
+  const adapter = live({
+    budget,
+    fetchImpl: async () => {
+      throw new Error('private-provider-detail apiKey=should-never-cross-boundary');
+    },
+  });
+
+  const error = await adapter
+    .invoke({ kind: 'target-heldout', caseId: 'transport-error', payload: { input: 'small' } })
+    .then(
+      () => null,
+      (caught) => caught,
+    );
+  assert.ok(error instanceof Error);
+  assert.match(error.message, /Anthropic request failed/);
+  assert.doesNotMatch(error.message, /private-provider-detail|apiKey|should-never-cross-boundary/);
+  assert.deepEqual(budget.state(), {
+    attemptedCalls: 1,
+    knownAccruedMicroUsd: 0n,
+    outstandingReservedMicroUsd: 100n,
+    lock: { kind: 'unknown_cost', attemptId: 'attempt-000001' },
+  });
+  assert.equal(adapter.attempts[0].providerCostMicroUsd, null);
+});
+
+test('live provider body deadline cancels a stalled stream reader', async () => {
+  const budget = createAttemptBudget({ capMicroUsd: 200n, worstCaseCallMicroUsd: 100n });
+  let fetchSignal;
+  let cancellations = 0;
+  const adapter = live({
+    budget,
+    runtime: { requestTimeoutMs: 20 },
+    fetchImpl: async (_url, options) => {
+      fetchSignal = options.signal;
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        body: {
+          getReader() {
+            return {
+              async read() { return new Promise(() => {}); },
+              async cancel() { cancellations += 1; },
+            };
+          },
+        },
+      };
+    },
+  });
+
+  const guard = new Promise((_, reject) => {
+    setTimeout(() => reject(new Error('test guard expired before body deadline')), 200);
+  });
+  await assert.rejects(
+    Promise.race([
+      adapter.invoke({ kind: 'target-heldout', caseId: 'body-deadline', payload: { input: 'small' } }),
+      guard,
+    ]),
+    /Anthropic request timed out/,
+  );
+  assert.equal(fetchSignal.aborted, true);
+  assert.equal(cancellations, 1);
+  assert.deepEqual(budget.state(), {
+    attemptedCalls: 1,
+    knownAccruedMicroUsd: 0n,
+    outstandingReservedMicroUsd: 100n,
+    lock: { kind: 'unknown_cost', attemptId: 'attempt-000001' },
+  });
 });
 
 test('missing usage retains a reservation, locks unknown_cost, and permits no later fetch', async () => {
