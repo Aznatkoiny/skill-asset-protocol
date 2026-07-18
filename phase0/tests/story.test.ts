@@ -45,6 +45,7 @@ function chain(boundary = sdk()) {
     publicClient: {
       getChainId: async () => 1315,
       getBalance: async () => 1n,
+      getGasPrice: async () => 2n,
     },
   });
 }

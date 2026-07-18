@@ -70,6 +70,7 @@ class FakeChain implements DemoChain {
   writes: string[] = [];
   derivativeInputs: Array<{ parentIpId: string; licenseTermsId: bigint; maxMintingFee: bigint }> = [];
   failOn: "collection" | "root" | "child" | "grandchild" | null = null;
+  gasPrice = 2n;
 
   constructor(
     public chainId: number = AENEID_CHAIN_ID,
@@ -83,6 +84,10 @@ class FakeChain implements DemoChain {
 
   async getBalance() {
     return this.balance;
+  }
+
+  async getGasPrice() {
+    return this.gasPrice;
   }
 
   async createCollection() {

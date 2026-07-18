@@ -38,6 +38,7 @@ export interface DemoMetadataProvider {
 export interface DemoChain {
   getChainId(): Promise<number>;
   getBalance(address: `0x${string}`): Promise<bigint>;
+  getGasPrice(): Promise<bigint>;
   createCollection(input: {
     name: string;
     symbol: string;

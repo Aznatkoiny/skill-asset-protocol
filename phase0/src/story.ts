@@ -21,6 +21,7 @@ export type StorySdkBoundary = {
 export interface StoryPublicClientBoundary {
   getChainId(): Promise<number>;
   getBalance(input: { address: Address }): Promise<bigint>;
+  getGasPrice(): Promise<bigint>;
 }
 
 function required<T>(value: T | undefined, label: string): T {
@@ -50,6 +51,10 @@ export class StoryChain implements DemoChain {
 
   getBalance(address: Address): Promise<bigint> {
     return this.publicClient.getBalance({ address });
+  }
+
+  getGasPrice(): Promise<bigint> {
+    return this.publicClient.getGasPrice();
   }
 
   async createCollection(input: {
