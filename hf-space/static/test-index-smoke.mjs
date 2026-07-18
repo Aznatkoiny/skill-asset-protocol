@@ -23,6 +23,31 @@ const VALID_402 = {
   }],
 };
 
+function parseCsp(document) {
+  const meta = document.querySelector('meta[http-equiv="Content-Security-Policy"]');
+  assert.ok(meta, 'index.html must declare a Content Security Policy');
+  const directives = new Map();
+  for (const clause of meta.getAttribute('content').split(';')) {
+    const tokens = clause.trim().split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) continue;
+    const [name, ...sources] = tokens;
+    assert.equal(directives.has(name), false, `duplicate CSP directive: ${name}`);
+    directives.set(name, sources);
+  }
+  return directives;
+}
+
+function cspAllows(policy, directive, rawUrl, documentOrigin) {
+  const sources = policy.get(directive) ?? policy.get('default-src') ?? [];
+  if (sources.includes("'none'")) return false;
+  const url = new URL(rawUrl, documentOrigin);
+  return sources.some((source) => {
+    if (source === "'self'") return url.origin === documentOrigin;
+    if (/^https:\/\//.test(source)) return url.origin === new URL(source).origin;
+    return false;
+  });
+}
+
 function response(value, status = 200) {
   const bytes = Buffer.isBuffer(value) ? value : Buffer.from(JSON.stringify(value));
   return {
@@ -42,9 +67,33 @@ async function waitForClick(button) {
   assert.equal(button.disabled, false);
 }
 
+test('static CSP permits only same-origin fixtures and the fixed live endpoint', async () => {
+  const html = await readFile(new URL('index.html', STATIC_ROOT), 'utf8');
+  const { document } = parseHTML(html);
+  const policy = parseCsp(document);
+  const documentOrigin = 'https://skill-asset-protocol.example';
+
+  assert.deepEqual(policy.get('default-src'), ["'none'"]);
+  assert.deepEqual(policy.get('script-src'), ["'self'"]);
+  assert.deepEqual(policy.get('font-src'), ["'none'"]);
+  assert.deepEqual(policy.get('connect-src'), ["'self'", 'https://neverhandedover.com']);
+
+  assert.equal(cspAllows(policy, 'script-src', './demo-logic.mjs', documentOrigin), true);
+  assert.equal(cspAllows(policy, 'script-src', 'https://attacker.example/code.js', documentOrigin), false);
+  assert.equal(cspAllows(policy, 'font-src', './font.woff2', documentOrigin), false);
+  assert.equal(cspAllows(policy, 'font-src', 'https://fonts.example/font.woff2', documentOrigin), false);
+  for (const url of LOCAL_URLS) {
+    assert.equal(cspAllows(policy, 'connect-src', url, documentOrigin), true, url);
+  }
+  assert.equal(cspAllows(policy, 'connect-src', LIVE_ENDPOINT, documentOrigin), true);
+  assert.equal(cspAllows(policy, 'connect-src', 'https://attacker.example/api', documentOrigin), false);
+});
+
 test('actual HTML auto-mounts once and distinguishes valid 402 from JSON 200/500', async (t) => {
   const html = await readFile(new URL('index.html', STATIC_ROOT), 'utf8');
   const { window, document } = parseHTML(html);
+  const policy = parseCsp(document);
+  const documentOrigin = 'https://skill-asset-protocol.example';
   Object.defineProperty(document, 'readyState', { value: 'complete', configurable: true });
   const scripts = [...document.querySelectorAll('script[type="module"]')];
   assert.equal(scripts.length, 1);
@@ -59,6 +108,11 @@ test('actual HTML auto-mounts once and distinguishes valid 402 from JSON 200/500
   let liveStatus = 402;
   const seen = [];
   const fetchStub = async (url) => {
+    assert.equal(
+      cspAllows(policy, 'connect-src', url, documentOrigin),
+      true,
+      `CSP blocked production fetch: ${url}`,
+    );
     seen.push(url);
     if (local.has(url)) return response(local.get(url));
     if (url === LIVE_ENDPOINT) {

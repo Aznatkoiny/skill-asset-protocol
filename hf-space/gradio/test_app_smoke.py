@@ -81,6 +81,35 @@ class AppSmokeTests(unittest.TestCase):
         self.assertEqual(result["source"], "live_request_failed_no_cache")
         self.assertNotIn("offline", json_safe(result))
 
+    def test_actual_wired_handler_returns_non_live_for_five_thousand_digit_amount(self):
+        invalid = {
+            **VALID_402,
+            "accepts": [{**VALID_402["accepts"][0], "maxAmountRequired": "9" * 5_000}],
+        }
+        with patch.object(httpx, "post", return_value=FakeResponse(402, invalid)):
+            result = self.app.check_live_402()
+        self.assertEqual(
+            result,
+            {
+                "live": False,
+                "status": 402,
+                "offer": None,
+                "error": "live endpoint did not return a valid 402 offer",
+                "source": "live_http_response",
+            },
+        )
+
+    def test_actual_wired_handler_contains_validation_exceptions(self):
+        with patch.object(httpx, "post", return_value=FakeResponse(402, VALID_402)), patch.object(
+            self.app,
+            "validate_live_402",
+            side_effect=ValueError("invalid response boundary"),
+        ):
+            result = self.app.check_live_402()
+        self.assertFalse(result["live"])
+        self.assertEqual(result["source"], "live_request_failed_no_cache")
+        self.assertNotIn("invalid response boundary", json_safe(result))
+
 
 def json_safe(value):
     return str(value).lower()

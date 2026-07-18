@@ -28,6 +28,7 @@ def check_live_402():
             follow_redirects=False,
         )
         body = response.json()
+        result = validate_live_402(response.status_code, body)
     except (httpx.HTTPError, ValueError, TypeError):
         return {
             "live": False,
@@ -36,7 +37,6 @@ def check_live_402():
             "error": "live endpoint request failed; no cached response is represented as live",
             "source": "live_request_failed_no_cache",
         }
-    result = validate_live_402(response.status_code, body)
     return {**result, "source": "live_http_response"}
 
 

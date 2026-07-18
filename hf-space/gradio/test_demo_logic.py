@@ -35,6 +35,12 @@ VALID_402 = {
 }
 
 
+def offer_with_amount(amount):
+    body = json.loads(json.dumps(VALID_402))
+    body["accepts"][0]["maxAmountRequired"] = amount
+    return body
+
+
 class Live402ValidationTests(unittest.TestCase):
     def test_accepts_only_the_fixed_valid_402_offer(self):
         result = validate_live_402(402, VALID_402)
@@ -66,6 +72,23 @@ class Live402ValidationTests(unittest.TestCase):
                 result = validate_live_402(status, body)
                 self.assertFalse(result["live"])
                 self.assertIn("valid 402", result["error"])
+
+    def test_rejects_five_thousand_digit_amount_without_raising(self):
+        result = validate_live_402(402, offer_with_amount("9" * 5_000))
+        self.assertEqual(
+            result,
+            {
+                "live": False,
+                "status": 402,
+                "offer": None,
+                "error": "live endpoint did not return a valid 402 offer",
+            },
+        )
+
+    def test_enforces_uint256_atomic_amount_boundary(self):
+        maximum = str((1 << 256) - 1)
+        self.assertTrue(validate_live_402(402, offer_with_amount(maximum))["live"])
+        self.assertFalse(validate_live_402(402, offer_with_amount(str(1 << 256)))["live"])
 
 
 class FixtureTests(unittest.TestCase):

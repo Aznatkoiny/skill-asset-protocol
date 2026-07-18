@@ -12,7 +12,8 @@ DATA_DIRECTORY = Path(__file__).resolve().parent / "data"
 LIVE_ENDPOINT = "https://neverhandedover.com/api/invoke/optimizing-claude-code-prompts"
 EXPECTED_PAY_TO = "0x25005dfac23d4bc45c801eaeb6c8b5a2bab0f189"
 EXPECTED_ASSET = "0x036cbd53842c5426634e7929541ec2318f3dcf7e"
-_ATOMIC_PATTERN = re.compile(r"^(0|[1-9][0-9]*)$")
+_ATOMIC_PATTERN = re.compile(r"^(0|[1-9][0-9]{0,77})$")
+_MAX_ATOMIC_AMOUNT = (1 << 256) - 1
 _ADDRESS_PATTERN = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _SHA_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _FIXTURE_NAMES = {"evidence.json", "public-demo-allocation.json"}
@@ -128,6 +129,13 @@ def _invalid_402(status: Any) -> dict[str, Any]:
     }
 
 
+def _bounded_atomic(value: Any) -> int | None:
+    if not isinstance(value, str) or not _ATOMIC_PATTERN.fullmatch(value):
+        return None
+    parsed = int(value)
+    return parsed if parsed <= _MAX_ATOMIC_AMOUNT else None
+
+
 def validate_live_402(status: Any, body: Any) -> dict[str, Any]:
     """Return a bounded view only when the fixed endpoint returns a valid x402 v1 offer."""
     if status != 402 or isinstance(status, bool) or not isinstance(body, dict):
@@ -139,14 +147,14 @@ def validate_live_402(status: Any, body: Any) -> dict[str, Any]:
     if not isinstance(offer, dict):
         return _invalid_402(status)
     amount = offer.get("maxAmountRequired")
+    amount_atomic = _bounded_atomic(amount)
     pay_to = offer.get("payTo")
     asset = offer.get("asset")
     if (
         offer.get("scheme") != "exact"
         or offer.get("network") != "base-sepolia"
-        or not isinstance(amount, str)
-        or not _ATOMIC_PATTERN.fullmatch(amount)
-        or int(amount) <= 0
+        or amount_atomic is None
+        or amount_atomic <= 0
         or offer.get("resource") != LIVE_ENDPOINT
         or not isinstance(pay_to, str)
         or not _ADDRESS_PATTERN.fullmatch(pay_to)
@@ -182,9 +190,10 @@ def scenario_by_id(fixture: dict[str, Any], scenario_id: str | None = None) -> d
 
 
 def _parse_atomic(value: Any, label: str) -> int:
-    if not isinstance(value, str) or not _ATOMIC_PATTERN.fullmatch(value):
+    parsed = _bounded_atomic(value)
+    if parsed is None:
         raise ValueError(f"invalid atomic amount: {label}")
-    return int(value)
+    return parsed
 
 
 def render_allocation(fixture: dict[str, Any], scenario_id: str | None = None) -> dict[str, Any]:
