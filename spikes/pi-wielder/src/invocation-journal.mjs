@@ -8,6 +8,7 @@ const TERMINAL_EXECUTION = new Set(['succeeded', 'failed', 'cancelled']);
 const CHECKOUT_ROOT = fs.realpathSync(fileURLToPath(new URL('../../../', import.meta.url)));
 const LEASE_ID = /^[0-9a-f]{32}$/;
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
+const NOFOLLOW = fs.constants.O_NOFOLLOW ?? 0;
 
 function canonicalize(value) {
   if (Array.isArray(value)) return value.map(canonicalize);
@@ -28,6 +29,7 @@ function requireText(value, label) {
 }
 
 function requireAtomicString(value, label) {
+  if (typeof value !== 'string') throw new Error(`${label} must be a string`);
   const text = requireText(value, label);
   if (!/^(0|[1-9]\d*)$/.test(text)) {
     throw new Error(`${label} must be a canonical non-negative atomic string`);
@@ -92,7 +94,7 @@ function writeAll(descriptor, bytes) {
 }
 
 function readPrivateFile(filePath, label) {
-  const descriptor = fs.openSync(filePath, 'r');
+  const descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | NOFOLLOW);
   try {
     const stat = fs.fstatSync(descriptor);
     if (!stat.isFile() || (stat.mode & 0o777) !== 0o600) {
@@ -194,23 +196,25 @@ function acquireLease(lockPath, hooks = {}, timeoutMs = 5_000) {
   while (true) {
     let descriptor = null;
     try {
-      descriptor = fs.openSync(lockPath, 'wx', 0o600);
+      descriptor = fs.openSync(
+        lockPath,
+        fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | NOFOLLOW,
+        0o600,
+      );
       writeAll(descriptor, Buffer.from(bytes));
       fs.fsyncSync(descriptor);
       fs.closeSync(descriptor);
       fsyncDirectory(path.dirname(lockPath));
+      hooks.afterLeaseCreated?.(lockPath, owner);
       return { owner, bytes };
     } catch (error) {
       if (descriptor != null) {
         try { fs.closeSync(descriptor); } catch { /* already closed */ }
       }
       if (error.code !== 'EEXIST') {
-        if (fs.existsSync(lockPath)) {
-          try {
-            const current = readLeaseOwner(lockPath);
-            if (current.owner.leaseId === owner.leaseId) fs.unlinkSync(lockPath);
-          } catch { /* fail closed around unrelated owner */ }
-        }
+        // Never read-then-unlink here: the pathname may already belong to a
+        // replacement owner. A partially acquired lease remains fail-closed
+        // and can be removed only through exact-ID stale recovery.
         throw error;
       }
       const existing = readLeaseOwner(lockPath);
@@ -276,7 +280,11 @@ export function loadOrCreateReceiptSigner(keyPath) {
       const pair = crypto.generateKeyPairSync('ed25519');
       privateKey = pair.privateKey;
       const temporary = `${canonicalKeyPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
-      const descriptor = fs.openSync(temporary, 'wx', 0o600);
+      const descriptor = fs.openSync(
+        temporary,
+        fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | NOFOLLOW,
+        0o600,
+      );
       try {
         writeAll(descriptor, Buffer.from(privateKey.export({ type: 'pkcs8', format: 'pem' })));
         fs.fsyncSync(descriptor);
@@ -729,10 +737,21 @@ export function createInvocationJournal({
         eventHash,
         eventSignature: receiptSigner.signHash(eventHash),
       };
+      // Validation must happen before the first durable byte. Replay must
+      // never encounter an event that this process already knew was invalid.
+      validateEventForApply(event);
       if (journalPath) {
         const existed = fs.existsSync(journalPath);
-        const descriptor = fs.openSync(journalPath, 'a', 0o600);
+        const descriptor = fs.openSync(
+          journalPath,
+          fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | NOFOLLOW,
+          0o600,
+        );
         try {
+          const stat = fs.fstatSync(descriptor);
+          if (!stat.isFile() || (stat.mode & 0o777) !== 0o600) {
+            throw new Error('persistent journal must remain a regular file with mode exactly 0600');
+          }
           writeAll(descriptor, Buffer.from(`${JSON.stringify(event)}\n`));
           fs.fsyncSync(descriptor);
         } finally {

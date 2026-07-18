@@ -121,6 +121,17 @@ test('exact retries are no-ops and conflicting idempotency reuse fails closed', 
   assert.equal(journal.events.length, 1);
 });
 
+test('atomic journal fields reject numeric coercion before state changes', () => {
+  const journal = fixture();
+  journal.requestInvocation(declaration);
+  assert.throws(() => journal.offerExternalPayment(declaration.idempotencyKey, {
+    ...quote,
+    amountAtomic: 250000,
+  }), /must be a string/);
+  assert.equal(journal.events.length, 1);
+  assert.equal(journal.getByIdempotencyKey(declaration.idempotencyKey).quote, null);
+});
+
 test('a settled execution failure keeps its transaction, full-gross hold, and HTTP status', () => {
   const journal = fixture();
   settle(journal);
@@ -211,6 +222,26 @@ test('JSONL replay reconstructs a terminal record and refuses rewritten signed h
   lines[0] = JSON.stringify(event);
   fs.writeFileSync(filePath, `${lines.join('\n')}\n`, { mode: 0o600 });
   assert.throws(() => createInvocationJournal({ filePath, signingKeyPath }), /event signature mismatch/);
+});
+
+test('a rejected transition is validated before append and leaves durable bytes replayable', () => {
+  const { filePath, signingKeyPath } = temporaryAuthority('collar-prevalidate-');
+  const journal = createInvocationJournal({ filePath, signingKeyPath });
+  settle(journal);
+  const claim = journal.startExecution(declaration.idempotencyKey);
+  const before = fs.readFileSync(filePath);
+  assert.throws(() => journal.finishExecution(declaration.idempotencyKey, {
+    executionAttemptId: claim.record.execution.executionAttemptId,
+    outcome: 'failed',
+    failureClass: 'FAULT',
+    message: 'invalid status must not append',
+    outcomeHash: null,
+    httpStatus: 99,
+    accounting: pendingFailureAccounting(),
+  }), /HTTP status/);
+  assert.deepEqual(fs.readFileSync(filePath), before);
+  const reopened = createInvocationJournal({ filePath, signingKeyPath });
+  assert.equal(reopened.getByIdempotencyKey(declaration.idempotencyKey).execution.state, 'executing');
 });
 
 test('persistent authority rejects checkout, symlink, relative, non-file, and broad-permission paths', () => {
@@ -468,4 +499,31 @@ test('normal lease release never unlinks a replacement owner and uses private lo
   assert.deepEqual(JSON.parse(fs.readFileSync(`${filePath}.lock`, 'utf8')), replacementOwner);
   assert.equal(fs.readdirSync(directory).filter((name) => name.endsWith('.claim')).length, 0);
   assert.equal(journal.lockPath, `${filePath}.lock`);
+});
+
+test('lease-acquisition failure never read-then-unlinks a replacement owner', () => {
+  const { filePath, signingKeyPath } = temporaryAuthority('collar-lock-acquire-');
+  let armed = false;
+  const replacementOwner = {
+    leaseId: 'cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd',
+    hostname: os.hostname(),
+    pid: process.pid,
+    startedAtUtc: '2026-07-17T12:00:05.000Z',
+  };
+  const journal = createInvocationJournal({
+    filePath,
+    signingKeyPath,
+    lockTestHooks: {
+      afterLeaseCreated(lockPath) {
+        if (!armed) return;
+        const replacementPath = `${lockPath}.replacement`;
+        fs.writeFileSync(replacementPath, `${JSON.stringify(replacementOwner)}\n`, { flag: 'wx', mode: 0o600 });
+        fs.renameSync(replacementPath, lockPath);
+        throw new Error('injected post-create failure');
+      },
+    },
+  });
+  armed = true;
+  assert.throws(() => journal.requestInvocation(declaration), /injected post-create failure/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(`${filePath}.lock`, 'utf8')), replacementOwner);
 });
