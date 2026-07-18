@@ -38,9 +38,18 @@ facts, not proof that the wallet authored the artifacts.
 
 ## Offline attestation sidecar
 
-Registration remains immutable. Optional evidence is recorded in the local,
-ignored `attestations.jsonl` append-only sidecar and rendered at one of three
-levels:
+Registration remains immutable. The repository tracks an exact zero-byte
+`attestations.jsonl` seed; optional evidence appended at runtime forms its
+append-only sidecar and is rendered at one of three levels. Lock, claim, and
+temporary derivative files remain ignored and machine-local:
+
+A fresh Git checkout normally materializes the tracked zero-byte seed at mode
+`0644`. Only for this exact default path, the CLI opens the seed without
+following symlinks, verifies that it is an owner-matched regular file with
+exactly zero bytes and no group/world write or execute permission, and changes
+that same descriptor to mode `0600` before use. A nonempty permissive log,
+wrong owner, symlink, path replacement, or arbitrary custom store path fails
+closed instead of being changed automatically.
 
 1. `wallet_asserted`: a wallet registered these bytes and declared this
    ancestry;

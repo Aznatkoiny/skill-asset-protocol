@@ -191,6 +191,9 @@ export async function createAttestationRuntime(input: AttestationRuntimeInput = 
       organizationSigners: organizations,
       adminSigners: admins,
       repositoryContextLoader: repositoryContext,
+      trackedEmptySeedPath: selectedPaths.attestations === DEFAULT_PATHS.attestations
+        ? DEFAULT_PATHS.attestations
+        : undefined,
       now,
     }),
   };

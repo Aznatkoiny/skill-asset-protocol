@@ -315,6 +315,93 @@ test("event log rejects symlinks and non-owner-only modes", async (t) => {
   await assert.rejects(f.store.load(), /mode 0600/);
 });
 
+test("an explicitly selected tracked zero-byte seed is hardened before use", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "phase0-attestation-tracked-seed-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = resolve(directory, "attestations.jsonl");
+  await writeFile(path, "", { mode: 0o644 });
+  await chmod(path, 0o644);
+
+  const store = new FileAttestationStore(path, {
+    baseSubjects: [],
+    trackedEmptySeedPath: path,
+  });
+
+  assert.deepEqual(await store.load(), []);
+  assert.equal((await stat(path)).mode & 0o777, 0o600);
+});
+
+test("tracked-seed hardening rejects path mismatch and unsafe seed states", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "phase0-attestation-unsafe-seed-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = resolve(directory, "attestations.jsonl");
+
+  assert.throws(() => new FileAttestationStore(path, {
+    baseSubjects: [],
+    trackedEmptySeedPath: resolve(directory, "another.jsonl"),
+  }), /tracked empty seed path must exactly match/i);
+
+  await writeFile(path, "not empty\n", { mode: 0o644 });
+  await chmod(path, 0o644);
+  const nonempty = new FileAttestationStore(path, { baseSubjects: [], trackedEmptySeedPath: path });
+  await assert.rejects(nonempty.load(), /nonempty permissive attestation log/i);
+  assert.equal(await readFile(path, "utf8"), "not empty\n");
+  assert.equal((await stat(path)).mode & 0o777, 0o644);
+
+  await writeFile(path, "", { mode: 0o666 });
+  await chmod(path, 0o666);
+  const writable = new FileAttestationStore(path, { baseSubjects: [], trackedEmptySeedPath: path });
+  await assert.rejects(writable.load(), /group- or world-writable|mode 0600/i);
+  assert.equal((await stat(path)).mode & 0o777, 0o666);
+
+  await rm(path);
+  const victim = resolve(directory, "victim.jsonl");
+  await writeFile(victim, "", { mode: 0o644 });
+  await symlink(victim, path);
+  const symlinked = new FileAttestationStore(path, { baseSubjects: [], trackedEmptySeedPath: path });
+  await assert.rejects(symlinked.load(), /must not be a symlink|non-symlink/i);
+  assert.equal((await stat(victim)).mode & 0o777, 0o644);
+});
+
+test("tracked-seed hardening detects replacement of the descriptor-bound inode", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "phase0-attestation-replaced-seed-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = resolve(directory, "attestations.jsonl");
+  await writeFile(path, "", { mode: 0o644 });
+  await chmod(path, 0o644);
+  const store = new FileAttestationStore(path, {
+    baseSubjects: [],
+    trackedEmptySeedPath: path,
+    hooks: {
+      afterTrackedSeedHarden: async () => {
+        await rename(path, `${path}.original`);
+        await writeFile(path, "", { mode: 0o600 });
+      },
+    },
+  });
+
+  await assert.rejects(store.load(), /attestation log changed during tracked-seed hardening/i);
+});
+
+test("tracked-seed hardening fails closed if the selected path disappears", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "phase0-attestation-removed-seed-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = resolve(directory, "attestations.jsonl");
+  await writeFile(path, "", { mode: 0o644 });
+  await chmod(path, 0o644);
+  const store = new FileAttestationStore(path, {
+    baseSubjects: [],
+    trackedEmptySeedPath: path,
+    hooks: {
+      afterTrackedSeedHarden: async () => {
+        await rename(path, `${path}.removed`);
+      },
+    },
+  });
+
+  await assert.rejects(store.load(), /attestation log changed during tracked-seed hardening/i);
+});
+
 test("post-append replay compares every byte and event, not only length and last ID", async (t) => {
   let appendSyncs = 0;
   let replacementBytes = "";

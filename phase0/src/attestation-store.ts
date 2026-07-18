@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { constants } from "node:fs";
-import { link, mkdir, open, rename, stat, unlink, type FileHandle } from "node:fs/promises";
+import { constants, type Stats } from "node:fs";
+import { link, lstat, mkdir, open, rename, unlink, type FileHandle } from "node:fs/promises";
 import { dirname } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
@@ -27,12 +27,14 @@ export interface AttestationStoreOptions {
   forgeSigners?: Readonly<Record<string, string>>;
   git?: GitReader;
   repositoryContextLoader?: () => Promise<AttestationRepositoryContext>;
+  trackedEmptySeedPath?: string;
   now?: () => Date;
   hooks?: {
     afterLockCreated?(): void | Promise<void>;
     beforeAppendWrite?(): void | Promise<void>;
     afterAppendSync?(): void | Promise<void>;
     afterLockClaim?(claimPath: string): void | Promise<void>;
+    afterTrackedSeedHarden?(): void | Promise<void>;
   };
 }
 
@@ -49,6 +51,14 @@ export interface WriteAllHandle {
 }
 
 const LOCK_TOKEN = /^[0-9a-f]{32}$/;
+
+function currentUid(): number {
+  const uid = process.getuid?.();
+  if (!Number.isSafeInteger(uid) || (uid as number) < 0) {
+    throw new Error("attestation log requires an operating-system owner identity");
+  }
+  return uid as number;
+}
 
 export async function writeAll(handle: WriteAllHandle, bytes: Uint8Array): Promise<void> {
   let offset = 0;
@@ -122,6 +132,9 @@ export class FileAttestationStore {
   constructor(path: string, options: AttestationStoreOptions) {
     if (!path.startsWith("/")) throw new Error("attestation store path must be absolute");
     if (!Array.isArray(options.baseSubjects)) throw new Error("attestation store requires verifier-provided base subjects");
+    if (options.trackedEmptySeedPath !== undefined && options.trackedEmptySeedPath !== path) {
+      throw new Error("tracked empty seed path must exactly match the attestation store path");
+    }
     this.path = path;
     this.lockPath = `${path}.lock`;
     this.options = {
@@ -161,8 +174,12 @@ export class FileAttestationStore {
           0o600,
         );
         const metadata = await handle.stat();
-        if (!metadata.isFile() || (metadata.mode & 0o777) !== 0o600) {
+        if (!metadata.isFile() || metadata.uid !== currentUid() || (metadata.mode & 0o777) !== 0o600) {
           throw new Error("attestation log must be a non-symlink regular file with mode 0600");
+        }
+        if (snapshot.device !== null
+            && (metadata.dev !== snapshot.device || metadata.ino !== snapshot.inode)) {
+          throw new Error("attestation log changed between validation and append");
         }
         const boundBytes = await handle.readFile("utf8");
         if (boundBytes !== snapshot.bytes) throw new Error("attestation log changed between validation and append");
@@ -229,34 +246,87 @@ export class FileAttestationStore {
     return (await this.readLogSnapshot()).events;
   }
 
-  private async readLogSnapshot(): Promise<{ events: AttestationEvent[]; bytes: string }> {
+  private async hardenTrackedEmptySeed(handle: FileHandle, metadata: Stats): Promise<Stats> {
+    const mode = metadata.mode & 0o777;
+    if (metadata.uid !== currentUid()) throw new Error("attestation log must be owned by the current user");
+    if (mode === 0o600) return metadata;
+    if (this.options.trackedEmptySeedPath !== this.path) {
+      throw new Error("attestation log must be a non-symlink regular file with mode 0600");
+    }
+    if (metadata.size !== 0) {
+      throw new Error("refusing to harden a nonempty permissive attestation log");
+    }
+    const ownerReadWriteOnly = (mode & 0o700) === 0o600;
+    const noGroupOrWorldMutation = (mode & 0o033) === 0;
+    if (!ownerReadWriteOnly || !noGroupOrWorldMutation) {
+      throw new Error("tracked empty attestation seed must not be group- or world-writable or executable");
+    }
+
+    await handle.chmod(0o600);
+    await handle.sync();
+    await this.options.hooks?.afterTrackedSeedHarden?.();
+    const hardened = await handle.stat();
+    let pathMetadata: Stats;
+    try {
+      pathMetadata = await lstat(this.path);
+    } catch (error) {
+      throw new Error("attestation log changed during tracked-seed hardening", { cause: error });
+    }
+    if (!hardened.isFile()
+        || hardened.uid !== currentUid()
+        || hardened.size !== 0
+        || (hardened.mode & 0o777) !== 0o600
+        || pathMetadata.isSymbolicLink()
+        || !pathMetadata.isFile()
+        || pathMetadata.dev !== hardened.dev
+        || pathMetadata.ino !== hardened.ino) {
+      throw new Error("attestation log changed during tracked-seed hardening");
+    }
+    return hardened;
+  }
+
+  private async readLogSnapshot(): Promise<{
+    events: AttestationEvent[];
+    bytes: string;
+    device: number | null;
+    inode: number | null;
+  }> {
     let bytes: string;
-    try { bytes = await open(this.path, constants.O_RDONLY | constants.O_NOFOLLOW).then(async (handle) => {
-      try {
-        const metadata = await handle.stat();
-        if (!metadata.isFile() || (metadata.mode & 0o777) !== 0o600) {
-          throw new Error("attestation log must be a non-symlink regular file with mode 0600");
-        }
-        return await handle.readFile("utf8");
-      } finally { await handle.close(); }
-    }); } catch (error) {
+    let device: number | null = null;
+    let inode: number | null = null;
+    let handle: FileHandle;
+    try {
+      handle = await open(this.path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         await this.validateEvents([]);
-        return { events: [], bytes: "" };
+        return { events: [], bytes: "", device: null, inode: null };
       }
       if ((error as NodeJS.ErrnoException).code === "ELOOP") throw new Error("attestation log must not be a symlink", { cause: error });
       throw error;
     }
+    try {
+      let metadata = await handle.stat();
+      if (!metadata.isFile()) {
+        throw new Error("attestation log must be a non-symlink regular file with mode 0600");
+      }
+      metadata = await this.hardenTrackedEmptySeed(handle, metadata);
+      device = metadata.dev;
+      inode = metadata.ino;
+      bytes = await handle.readFile("utf8");
+    } finally {
+      await handle.close();
+    }
     if (bytes === "") {
       await this.validateEvents([]);
-      return { events: [], bytes };
+      return { events: [], bytes, device, inode };
     }
     if (!bytes.endsWith("\n")) throw new Error("attestation log has a malformed trailing fragment");
     const lines = bytes.slice(0, -1).split("\n");
     if (lines.some((line) => line.length === 0)) throw new Error("attestation log contains an empty or malformed line");
     const events = lines.map(parseJsonLine);
     await this.validateEvents(events);
-    return { events, bytes };
+    return { events, bytes, device, inode };
   }
 
   private async withLock<T>(operation: () => Promise<T>): Promise<T> {
