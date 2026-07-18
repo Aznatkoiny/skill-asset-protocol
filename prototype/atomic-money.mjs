@@ -352,6 +352,7 @@ export function allocateInternalGross({
   protocolFeeAtomic,
   refundReserveAtomic,
   recipientId,
+  employerId,
 }) {
   const gross = assertAtomic(grossAtomic, 'grossAtomic');
   const executionCost = assertAtomic(executionCostAtomic, 'executionCostAtomic');
@@ -363,6 +364,12 @@ export function allocateInternalGross({
   );
   const recipient = String(recipientId ?? '');
   if (!recipient) fail('RECIPIENT_REQUIRED', 'recipientId must be non-empty');
+  if (employerId != null && recipient === String(employerId)) {
+    fail(
+      'EMPLOYER_AWARD_RECIPIENT',
+      'employer cannot receive an employee Invocation award',
+    );
+  }
   const debitAccountId = 'employer:invocation-gross';
   return {
     grossAtomic: gross,
@@ -383,4 +390,66 @@ export function allocateInternalGross({
       ),
     ],
   };
+}
+
+export function allocateInternalFailureGross({ executionCostAtomic }) {
+  const executionCost = assertAtomic(executionCostAtomic, 'executionCostAtomic');
+  const debitAccountId = 'employer:invocation-gross';
+  return {
+    grossAtomic: executionCost,
+    executionCostAtomic: executionCost,
+    journalEntries: [
+      journalEntry('execution-cogs', debitAccountId, 'provider:execution', executionCost),
+    ],
+  };
+}
+
+function sameInternalJournalEntry(actual, expected) {
+  if (!actual || typeof actual !== 'object' || Array.isArray(actual)) return false;
+  const keys = Object.keys(actual).sort();
+  const expectedKeys = ['amountAtomic', 'category', 'creditAccountId', 'debitAccountId'];
+  if (keys.length !== expectedKeys.length
+      || keys.some((key, index) => key !== expectedKeys[index])) return false;
+  return actual.category === expected.category
+    && actual.debitAccountId === expected.debitAccountId
+    && actual.creditAccountId === expected.creditAccountId
+    && actual.amountAtomic === expected.amountAtomic;
+}
+
+export function validateInternalJournalEntries(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    fail('INTERNAL_JOURNAL_INPUT', 'internal journal validation input must be an object');
+  }
+  let expected;
+  if (input.kind === 'succeeded') {
+    expected = allocateInternalGross({
+      grossAtomic: input.grossAtomic,
+      executionCostAtomic: input.executionCostAtomic,
+      protocolFeeAtomic: input.protocolFeeAtomic,
+      refundReserveAtomic: input.refundReserveAtomic,
+      recipientId: input.recipientId,
+      employerId: input.employerId,
+    });
+  } else if (input.kind === 'failed_after_start') {
+    const allocation = allocateInternalFailureGross({
+      executionCostAtomic: input.executionCostAtomic,
+    });
+    if (assertAtomic(input.grossAtomic, 'grossAtomic') !== allocation.grossAtomic) {
+      fail('INTERNAL_JOURNAL_GROSS', 'known failure gross must equal exact execution COGS');
+    }
+    expected = allocation;
+  } else {
+    fail('INTERNAL_JOURNAL_KIND', 'unsupported internal journal validation kind');
+  }
+  if (!Array.isArray(input.journalEntries)
+      || input.journalEntries.length !== expected.journalEntries.length
+      || input.journalEntries.some((entry, index) => (
+        !sameInternalJournalEntry(entry, expected.journalEntries[index])
+      ))) {
+    fail(
+      'INTERNAL_JOURNAL_MISMATCH',
+      'internal journal entries do not match shared kernel allocation',
+    );
+  }
+  return input.journalEntries;
 }

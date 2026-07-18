@@ -8,12 +8,14 @@ import {
   allocateByBps,
   allocateByWeights,
   allocateExternalGross,
+  allocateInternalFailureGross,
   allocateInternalGross,
   allocateRoyaltyGraph,
   assertAtomic,
   floorBps,
   formatUsdc,
   parseUsdc,
+  validateInternalJournalEntries,
 } from '../atomic-money.mjs';
 
 test('parseUsdc converts exact display values to six-decimal atomic units', () => {
@@ -388,6 +390,43 @@ test('allocateInternalGross leaves one exact employee Invocation award', () => {
       creditAccountId: 'employee:employee-1', amountAtomic: 140_000n,
     },
   ]);
+});
+
+test('shared kernel emits the only known-failure internal COGS journal row', () => {
+  const result = allocateInternalFailureGross({ executionCostAtomic: 700_000n });
+  assert.deepEqual(result, {
+    grossAtomic: 700_000n,
+    executionCostAtomic: 700_000n,
+    journalEntries: [{
+      category: 'execution-cogs',
+      debitAccountId: 'employer:invocation-gross',
+      creditAccountId: 'provider:execution',
+      amountAtomic: 700_000n,
+    }],
+  });
+  assert.deepEqual(validateInternalJournalEntries({
+    kind: 'failed_after_start',
+    grossAtomic: 700_000n,
+    executionCostAtomic: 700_000n,
+    journalEntries: result.journalEntries,
+  }), result.journalEntries);
+  assert.throws(() => validateInternalJournalEntries({
+    kind: 'failed_after_start',
+    grossAtomic: 700_000n,
+    executionCostAtomic: 700_000n,
+    journalEntries: [{ ...result.journalEntries[0], creditAccountId: 'employee:attacker' }],
+  }), /internal journal entries do not match shared kernel allocation/);
+});
+
+test('internal kernel rejects an employer as the employee award recipient', () => {
+  assert.throws(() => allocateInternalGross({
+    grossAtomic: 10n,
+    executionCostAtomic: 0n,
+    protocolFeeAtomic: 0n,
+    refundReserveAtomic: 0n,
+    recipientId: 'megacorp',
+    employerId: 'megacorp',
+  }), /employer cannot receive an employee Invocation award/);
 });
 
 test('gross partitions reject insufficient, negative, and non-bigint monetary inputs', () => {
