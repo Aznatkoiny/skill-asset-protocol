@@ -112,6 +112,10 @@ test('policy validation is effective-dated, exact, recursively frozen, and denom
     }, NOW),
     /unsupported award rule.*awardRateBps must equal 10000/,
   );
+  assert.throws(
+    () => validatePolicy({ ...ACTIVE_POLICY, paymentSchedule: 'weekly' }, NOW),
+    /paymentSchedule must equal monthly_in_arrears/,
+  );
   assert.throws(() => validatePolicy({ ...ACTIVE_POLICY, surprise: true }, NOW), /unknown key surprise/);
   assert.equal(validatePolicy({ ...ACTIVE_POLICY, currency: 'EUR', atomicScale: 2 }, NOW).currency, 'EUR');
 });
@@ -234,6 +238,36 @@ test('signed budget authorization is immutable and separate from mutable counter
     }),
     /signature/,
   );
+});
+
+test('finance verification accepts canonical Ed25519 public SPKI only', () => {
+  const rsa = generateKeyPairSync('rsa', { modulusLength: 512 });
+  const rsaBudget = signBudget(UNSIGNED_BUDGET_AUTHORIZATION, rsa.privateKey);
+  assert.throws(() => createBudget(rsaBudget, {
+    trustedFinanceSigners: {
+      'megacorp-finance': rsa.publicKey.export({ type: 'spki', format: 'pem' }),
+    },
+    policy: ACTIVE_POLICY,
+    now: NOW,
+  }), /Ed25519/);
+
+  const ed25519 = financeFixture();
+  assert.throws(() => createBudget(ed25519.signedBudget, {
+    trustedFinanceSigners: {
+      'megacorp-finance': ed25519.privateKey.export({ type: 'pkcs8', format: 'pem' }),
+    },
+    policy: ACTIVE_POLICY,
+    now: NOW,
+  }), /public SPKI PEM/);
+
+  const publicWithAppendedPrivate = `${ed25519.publicKey.export({
+    type: 'spki', format: 'pem',
+  })}${ed25519.privateKey.export({ type: 'pkcs8', format: 'pem' })}`;
+  assert.throws(() => createBudget(ed25519.signedBudget, {
+    trustedFinanceSigners: { 'megacorp-finance': publicWithAppendedPrivate },
+    policy: ACTIVE_POLICY,
+    now: NOW,
+  }), /canonical public SPKI PEM/);
 });
 
 test('budget authorization validates its own effective window and policy signer allow-list', () => {

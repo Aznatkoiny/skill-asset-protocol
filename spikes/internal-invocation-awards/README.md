@@ -72,6 +72,12 @@ trusted initiating principal equals its `creatorId`; the shared agent Wielder is
 treated as the human principal. Its manager approval is a separate signed object,
 never a quote field.
 
+Version 1 accepts only `paymentSchedule: monthly_in_arrears`. A current-period award
+remains earned and non-payable for that period. A payable advance must reference the
+same authenticated receipt through a later statement's historical-receipt set and
+prior signed statement chain; a current-period receipt cannot be advanced or paid
+early.
+
 The engine is provisioned with an immutable `(skillId, skillVersionHash)` registration
 map that binds the canonical Creator and employer. Missing, expired, revoked,
 wrong-Creator, or wrong-employer registrations fail before reservation and are
@@ -141,6 +147,17 @@ material. Receipt canonical bytes bind the Invocation, reservation, Skill regist
 initiating-principal attestation, Skill hash, canonical policy hash, outcome, atomic
 totals, kernel journal entries, and absence of an external settlement.
 
+Every verifier accepts only a canonical Ed25519 SPKI public key. RSA, private-key PEM,
+noncanonical PEM, and a public PEM with appended material fail closed; only canonical
+public PEM is retained in engine state. Engine provisioning signs a random,
+domain-separated challenge and verifies it with the configured receipt public key
+before any Invocation can start. Each receipt is still independently verified, its
+caller-supplied hash is recomputed over the exact strict signed-receipt schema, and
+hash reuse is rejected across receipt IDs. If a correctly provisioned signer later
+fails or misbehaves after the executor starts, the terminal transaction commits no
+award or receipt and leaves the Invocation in `executing` for operator reconciliation;
+the executor is not run again automatically.
+
 Employer and employee verify the same signed receipt bytes. They also verify a
 separate whole-statement signature that binds:
 
@@ -157,7 +174,7 @@ separate whole-statement signature that binds:
 
 An earned-but-unpaid award is not yet payable. It affects
 `earnedAwardTotalAtomic`, but does not enter `closingPayableAtomic` until a separately
-authenticated payable-advance record is present. A reversal declares whether it
+authenticated later-period payable-advance record is present. A reversal declares whether it
 changes only earned accounting or an already-advanced payable balance. Payments
 cannot exceed the authenticated payable balance. Advance, reversal, and payment
 timestamps must fall within the signed statement period. A later statement may cite

@@ -208,9 +208,9 @@ function fixture({
     clock: () => clock.now,
     receiptSigner: {
       signerId: 'megacorp-receipts',
-      sign: receiptSign ?? ((bytes) => (
-        cryptoSign(null, bytes, receipt.privateKey).toString('base64')
-      )),
+      sign: receiptSign
+        ? (bytes) => receiptSign(bytes, receipt.privateKey)
+        : (bytes) => cryptoSign(null, bytes, receipt.privateKey).toString('base64'),
     },
   };
   const state = createEngineState(configuration);
@@ -292,6 +292,18 @@ test('credential signatures bind principal, policy, Skill registration inputs, n
   assert.throws(
     () => signCredential({ ...payload, nonce: `0x${nonce('credential')}` }, privateKey),
     /lowercase 64-character hex/,
+  );
+
+  const rsa = generateKeyPairSync('rsa', { modulusLength: 512 });
+  const rsaSigned = signCredential(payload, rsa.privateKey);
+  assert.throws(() => verifyCredential(rsaSigned, rsa.publicKey, NOW), /Ed25519/);
+  assert.throws(
+    () => verifyCredential(
+      signed,
+      privateKey.export({ type: 'pkcs8', format: 'pem' }),
+      NOW,
+    ),
+    /public SPKI PEM/,
   );
 });
 
@@ -547,7 +559,14 @@ test('receipt sequence is independent per employer, Creator, currency, and scale
 });
 
 test('signing failure commits neither terminal state nor receipt and does not re-execute', async () => {
-  const fx = fixture({ receiptSign: () => { throw new Error('HSM unavailable'); } });
+  let signerCalls = 0;
+  const fx = fixture({
+    receiptSign: (bytes, privateKey) => {
+      signerCalls += 1;
+      if (signerCalls > 1) throw new Error('HSM unavailable');
+      return cryptoSign(null, bytes, privateKey).toString('base64');
+    },
+  });
   const q = makeQuote(fx.activePolicy, 'sign-failure');
   const authorized = await authorize(fx, q);
   const credential = signCredential(authorized.credentialPayload, fx.authorizer.privateKey);
@@ -563,6 +582,7 @@ test('signing failure commits neither terminal state nor receipt and does not re
   }), /HSM unavailable/);
   const snapshot = fx.store.snapshot();
   assert.equal(calls, 1);
+  assert.equal(signerCalls, 2);
   assert.equal(snapshot.invocations[q.invocationId].state, 'executing');
   assert.equal(Object.keys(snapshot.receipts).length, 0);
   assert.equal(Object.keys(snapshot.awards).length, 0);
@@ -708,4 +728,38 @@ test('engine configuration requires exact immutable trust roots and keeps capabi
     ...fx.configuration,
     receiptSigners: { ...fx.configuration.receiptSigners, attacker: publicPem(fx.receipt) },
   }), /unexpected receipt signer attacker/);
+});
+
+test('engine provisioning rejects non-Ed25519, private PEM, and mismatched receipt capabilities', () => {
+  const fx = fixture();
+  const rsa = generateKeyPairSync('rsa', { modulusLength: 512 });
+  const rsaPem = publicPem(rsa);
+  for (const [field, signerId] of [
+    ['financeSigners', 'megacorp-finance'],
+    ['managerSigners', 'manager-alex'],
+    ['credentialAuthorizers', 'megacorp-collar-authorizer'],
+    ['identitySigners', 'megacorp-identity'],
+    ['receiptSigners', 'megacorp-receipts'],
+  ]) {
+    assert.throws(() => createEngineState({
+      ...fx.configuration,
+      [field]: { [signerId]: rsaPem },
+    }), /Ed25519/);
+  }
+
+  const privatePem = fx.finance.privateKey.export({ type: 'pkcs8', format: 'pem' });
+  assert.throws(() => createEngineState({
+    ...fx.configuration,
+    financeSigners: { 'megacorp-finance': privatePem },
+  }), /public SPKI PEM/);
+  assert.equal(JSON.stringify(fx.store.snapshot()).includes('PRIVATE KEY'), false);
+
+  const attacker = generateKeyPairSync('ed25519');
+  assert.throws(() => createEngineState({
+    ...fx.configuration,
+    receiptSigner: {
+      signerId: 'megacorp-receipts',
+      sign: (bytes) => cryptoSign(null, bytes, attacker.privateKey).toString('base64'),
+    },
+  }), /receipt signer provisioning challenge failed/);
 });

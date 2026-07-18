@@ -208,6 +208,23 @@ function signedSuccessInPeriod(signers, sequence, suffix, period, occurredAt) {
   }), signers.receipt.privateKey);
 }
 
+function signedJulyStatement(signers, receipts, suffix) {
+  return signStatement(buildStatement({
+    statementId: `statement-july-${suffix}`,
+    employerId: 'megacorp',
+    creatorId: 'sam',
+    period: '2026-07',
+    currency: 'USD',
+    atomicScale: 6,
+    openingPayableAtomic: '0',
+    receipts,
+    payableAdvances: [],
+    reversals: [],
+    payments: [],
+    statementSignerId: 'collar-statement-key-2026-07',
+  }), signers.statement.privateKey);
+}
+
 function expectedMerkleRoot(receipts) {
   const digest = (bytes) => createHash('sha256').update(bytes).digest();
   if (receipts.length === 0) {
@@ -358,37 +375,100 @@ test('payable advances, reversal semantics, and payments determine payable closi
   const signers = signerFixture();
   const receipt = signedSuccess(signers);
   const hash = receiptHash(receipt);
+  const prior = signedJulyStatement(signers, [receipt], 'payable-events');
+  const eventAt = '2026-08-17T00:01:00.000Z';
   const unsigned = buildStatement({
     statementId: 'statement-with-payable-events',
-    employerId: 'megacorp', creatorId: 'sam', period: '2026-07',
-    currency: 'USD', atomicScale: 6, openingPayableAtomic: '0', receipts: [receipt],
+    employerId: 'megacorp', creatorId: 'sam', period: '2026-08',
+    currency: 'USD', atomicScale: 6, openingPayableAtomic: prior.closingPayableAtomic,
+    receipts: [], historicalReceipts: [receipt], priorStatement: prior,
     payableAdvances: [{
-      advanceId: 'advance-001', receiptHash: hash, amountAtomic: '1000000', advancedAt: NOW,
+      advanceId: 'advance-001', receiptHash: hash, amountAtomic: '1000000', advancedAt: eventAt,
     }],
     reversals: [
-      { reversalId: 'reversal-earned', receiptHash: hash, amountAtomic: '200000', balanceEffect: 'earned_only', reason: 'quality_adjustment', occurredAt: NOW },
-      { reversalId: 'reversal-payable', receiptHash: hash, amountAtomic: '100000', balanceEffect: 'payable', reason: 'duplicate_advance', occurredAt: NOW },
+      { reversalId: 'reversal-earned', receiptHash: hash, amountAtomic: '200000', balanceEffect: 'earned_only', reason: 'quality_adjustment', occurredAt: eventAt },
+      { reversalId: 'reversal-payable', receiptHash: hash, amountAtomic: '100000', balanceEffect: 'payable', reason: 'duplicate_advance', occurredAt: eventAt },
     ],
-    payments: [{ paymentId: 'payment-001', amountAtomic: '250000', paidAt: NOW, railReference: 'simulated-payroll-ref' }],
+    payments: [{ paymentId: 'payment-001', amountAtomic: '250000', paidAt: eventAt, railReference: 'simulated-payroll-ref' }],
     statementSignerId: 'collar-statement-key-2026-07',
   });
-  assert.equal(unsigned.earnedAwardTotalAtomic, '2000000');
+  assert.equal(unsigned.earnedAwardTotalAtomic, '0');
+  assert.equal(unsigned.awardActivity[0].earnedAtomic, '2000000');
   assert.equal(unsigned.reversalTotalAtomic, '300000');
   assert.equal(unsigned.payableReversalTotalAtomic, '100000');
   assert.equal(unsigned.paymentTotalAtomic, '250000');
   assert.equal(unsigned.closingPayableAtomic, '650000');
   const signed = signStatement(unsigned, signers.statement.privateKey);
   assert.doesNotThrow(() => verifyStatement(signed, {
-    signedReceipts: [receipt],
+    signedReceipts: [],
+    historicalSignedReceipts: [receipt],
+    priorStatements: [{ signedStatement: prior, signedReceipts: [receipt] }],
     trustedReceiptSigners: signers.receiptTrust,
     trustedStatementSigners: signers.statementTrust,
   }));
   assert.throws(() => buildStatement({
-    statementId: 'over-reversed', employerId: 'megacorp', creatorId: 'sam', period: '2026-07',
-    currency: 'USD', atomicScale: 6, openingPayableAtomic: '0', receipts: [receipt],
+    statementId: 'over-reversed', employerId: 'megacorp', creatorId: 'sam', period: '2026-08',
+    currency: 'USD', atomicScale: 6, openingPayableAtomic: prior.closingPayableAtomic,
+    receipts: [], historicalReceipts: [receipt], priorStatement: prior,
     payableAdvances: [], payments: [], statementSignerId: 'collar-statement-key-2026-07',
-    reversals: [{ reversalId: 'r', receiptHash: hash, amountAtomic: '1', balanceEffect: 'payable', reason: 'bad', occurredAt: NOW }],
+    reversals: [{ reversalId: 'r', receiptHash: hash, amountAtomic: '1', balanceEffect: 'payable', reason: 'bad', occurredAt: eventAt }],
   }), /payable reversal exceeds advanced amount/);
+});
+
+test('monthly-in-arrears rejects advancing or paying a current-period award', () => {
+  const signers = signerFixture();
+  const receipt = signedSuccess(signers);
+  const hash = receiptHash(receipt);
+  assert.throws(() => buildStatement({
+    statementId: 'same-period-advance', employerId: 'megacorp', creatorId: 'sam',
+    period: '2026-07', currency: 'USD', atomicScale: 6, openingPayableAtomic: '0',
+    receipts: [receipt], historicalReceipts: [], priorStatement: null,
+    payableAdvances: [{
+      advanceId: 'advance-same-period', receiptHash: hash, amountAtomic: '1',
+      advancedAt: NOW,
+    }],
+    reversals: [],
+    payments: [{
+      paymentId: 'payment-same-period', amountAtomic: '1', paidAt: NOW,
+      railReference: 'same-period-payment',
+    }],
+    statementSignerId: 'collar-statement-key-2026-07',
+  }), /payable advance must reference an authenticated historical receipt/);
+});
+
+test('receipt and statement verification reject RSA-512 and private-key trust material', () => {
+  const signers = signerFixture();
+  const rsa = generateKeyPairSync('rsa', { modulusLength: 512 });
+  const unsignedReceipt = buildInvocationReceipt({
+    ...successRecords(), employerId: 'megacorp', receiptSignerId: 'rsa-receipt',
+  });
+  const rsaReceipt = signReceipt(unsignedReceipt, rsa.privateKey);
+  assert.throws(() => verifyReceipt(rsaReceipt, {
+    trustedReceiptSigners: {
+      'rsa-receipt': rsa.publicKey.export({ type: 'spki', format: 'pem' }),
+    },
+  }), /Ed25519/);
+
+  const receipt = signedSuccess(signers);
+  const unsignedStatement = buildStatement({
+    statementId: 'rsa-statement', employerId: 'megacorp', creatorId: 'sam',
+    period: '2026-07', currency: 'USD', atomicScale: 6, openingPayableAtomic: '0',
+    receipts: [receipt], payableAdvances: [], reversals: [], payments: [],
+    statementSignerId: 'rsa-statement-signer',
+  });
+  const rsaStatement = signStatement(unsignedStatement, rsa.privateKey);
+  assert.throws(() => verifyStatement(rsaStatement, {
+    signedReceipts: [receipt],
+    trustedReceiptSigners: signers.receiptTrust,
+    trustedStatementSigners: {
+      'rsa-statement-signer': rsa.publicKey.export({ type: 'spki', format: 'pem' }),
+    },
+  }), /Ed25519/);
+
+  const privatePem = signers.receipt.privateKey.export({ type: 'pkcs8', format: 'pem' });
+  assert.throws(() => verifyReceipt(receipt, {
+    trustedReceiptSigners: { 'collar-receipt-key-2026-07': privatePem },
+  }), /public SPKI PEM/);
 });
 
 test('August can authenticate a July award without recounting July economics', () => {
@@ -623,17 +703,22 @@ test('whole-statement and receipt trust roots reject tampering and attacker resi
   const receipt2 = signedSuccess(signers, 2, '002');
   const receipt3 = signedSuccess(signers, 3, '003');
   const hash = receiptHash(receipt);
+  const prior = signedJulyStatement(signers, [receipt, receipt2, receipt3], 'trust');
+  const eventAt = '2026-08-17T00:01:00.000Z';
   const unsigned = buildStatement({
-    statementId: 'statement-trust', employerId: 'megacorp', creatorId: 'sam', period: '2026-07',
-    currency: 'USD', atomicScale: 6, openingPayableAtomic: '0', receipts: [receipt, receipt2, receipt3],
-    payableAdvances: [{ advanceId: 'advance-001', receiptHash: hash, amountAtomic: '1000000', advancedAt: NOW }],
-    reversals: [{ reversalId: 'reversal-001', receiptHash: hash, amountAtomic: '100000', balanceEffect: 'payable', reason: 'duplicate_advance', occurredAt: NOW }],
-    payments: [{ paymentId: 'payment-001', amountAtomic: '250000', paidAt: NOW, railReference: 'simulated-payroll-ref' }],
+    statementId: 'statement-trust', employerId: 'megacorp', creatorId: 'sam', period: '2026-08',
+    currency: 'USD', atomicScale: 6, openingPayableAtomic: prior.closingPayableAtomic,
+    receipts: [], historicalReceipts: [receipt], priorStatement: prior,
+    payableAdvances: [{ advanceId: 'advance-001', receiptHash: hash, amountAtomic: '1000000', advancedAt: eventAt }],
+    reversals: [{ reversalId: 'reversal-001', receiptHash: hash, amountAtomic: '100000', balanceEffect: 'payable', reason: 'duplicate_advance', occurredAt: eventAt }],
+    payments: [{ paymentId: 'payment-001', amountAtomic: '250000', paidAt: eventAt, railReference: 'simulated-payroll-ref' }],
     statementSignerId: 'collar-statement-key-2026-07',
   });
   const signed = signStatement(unsigned, signers.statement.privateKey);
   const options = {
-    signedReceipts: [receipt, receipt2, receipt3], trustedReceiptSigners: signers.receiptTrust,
+    signedReceipts: [], historicalSignedReceipts: [receipt],
+    priorStatements: [{ signedStatement: prior, signedReceipts: [receipt, receipt2, receipt3] }],
+    trustedReceiptSigners: signers.receiptTrust,
     trustedStatementSigners: signers.statementTrust,
   };
   const replacePayment = (changes) => ({ payments: [{ ...signed.payments[0], ...changes }] });
@@ -643,10 +728,12 @@ test('whole-statement and receipt trust roots reject tampering and attacker resi
     ['statementId', { statementId: 'changed' }],
     ['employerId', { employerId: 'other-employer' }],
     ['creatorId', { creatorId: 'other-creator' }],
-    ['period', { period: '2026-08' }],
+    ['period', { period: '2026-09' }],
     ['currency', { currency: 'EUR' }],
     ['atomicScale', { atomicScale: 2 }],
     ['openingPayableAtomic', { openingPayableAtomic: '1' }],
+    ['priorStatementHash', { priorStatementHash: `sha256:${'0'.repeat(64)}` }],
+    ['historicalReceiptHashes', { historicalReceiptHashes: [] }],
     ['firstReceiptSequence', { firstReceiptSequence: 2 }],
     ['lastReceiptSequence', { lastReceiptSequence: 2 }],
     ['lastRecognizedReceiptSequence', { lastRecognizedReceiptSequence: 2 }],
@@ -665,16 +752,16 @@ test('whole-statement and receipt trust roots reject tampering and attacker resi
     ['advanceId', replaceAdvance({ advanceId: 'advance-002' })],
     ['advance receiptHash', replaceAdvance({ receiptHash: `sha256:${'0'.repeat(64)}` })],
     ['advance amountAtomic', replaceAdvance({ amountAtomic: '999999' })],
-    ['advance advancedAt', replaceAdvance({ advancedAt: '2026-07-17T00:02:00.000Z' })],
+    ['advance advancedAt', replaceAdvance({ advancedAt: '2026-08-17T00:02:00.000Z' })],
     ['reversalId', replaceReversal({ reversalId: 'reversal-002' })],
     ['reversal receiptHash', replaceReversal({ receiptHash: `sha256:${'0'.repeat(64)}` })],
     ['reversal amountAtomic', replaceReversal({ amountAtomic: '99999' })],
     ['reversal balanceEffect', replaceReversal({ balanceEffect: 'earned_only' })],
     ['reversal reason', replaceReversal({ reason: 'other_reason' })],
-    ['reversal occurredAt', replaceReversal({ occurredAt: '2026-07-17T00:02:00.000Z' })],
+    ['reversal occurredAt', replaceReversal({ occurredAt: '2026-08-17T00:02:00.000Z' })],
     ['paymentId', replacePayment({ paymentId: 'payment-002' })],
     ['payment amountAtomic', replacePayment({ amountAtomic: '249999' })],
-    ['payment paidAt', replacePayment({ paidAt: '2026-07-17T00:02:00.000Z' })],
+    ['payment paidAt', replacePayment({ paidAt: '2026-08-17T00:02:00.000Z' })],
     ['payment railReference', replacePayment({ railReference: 'other-reference' })],
   ];
   for (const [label, mutation] of mutations) {
@@ -694,23 +781,26 @@ test('sortable statement event IDs are normalized ASCII and code-unit determinis
   const signers = signerFixture();
   const receipt = signedSuccess(signers);
   const hash = receiptHash(receipt);
+  const prior = signedJulyStatement(signers, [receipt], 'id-order');
+  const eventAt = '2026-08-17T00:01:00.000Z';
   const base = {
-    statementId: 'statement-id-order', employerId: 'megacorp', creatorId: 'sam', period: '2026-07',
-    currency: 'USD', atomicScale: 6, openingPayableAtomic: '0', receipts: [receipt],
+    statementId: 'statement-id-order', employerId: 'megacorp', creatorId: 'sam', period: '2026-08',
+    currency: 'USD', atomicScale: 6, openingPayableAtomic: prior.closingPayableAtomic,
+    receipts: [], historicalReceipts: [receipt], priorStatement: prior,
     reversals: [], payments: [], statementSignerId: 'collar-statement-key-2026-07',
   };
   const statement = buildStatement({
     ...base,
     payableAdvances: [
-      { advanceId: 'b', receiptHash: hash, amountAtomic: '1', advancedAt: NOW },
-      { advanceId: 'A', receiptHash: hash, amountAtomic: '1', advancedAt: NOW },
-      { advanceId: 'a', receiptHash: hash, amountAtomic: '1', advancedAt: NOW },
+      { advanceId: 'b', receiptHash: hash, amountAtomic: '1', advancedAt: eventAt },
+      { advanceId: 'A', receiptHash: hash, amountAtomic: '1', advancedAt: eventAt },
+      { advanceId: 'a', receiptHash: hash, amountAtomic: '1', advancedAt: eventAt },
     ],
   });
   assert.deepEqual(statement.payableAdvances.map((row) => row.advanceId), ['A', 'a', 'b']);
   assert.throws(() => buildStatement({
     ...base,
-    payableAdvances: [{ advanceId: 'é', receiptHash: hash, amountAtomic: '1', advancedAt: NOW }],
+    payableAdvances: [{ advanceId: 'é', receiptHash: hash, amountAtomic: '1', advancedAt: eventAt }],
   }), /normalized ASCII identifier/);
 });
 

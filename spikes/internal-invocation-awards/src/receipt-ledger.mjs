@@ -1,19 +1,14 @@
-import { cloneFrozen, deepFreeze } from './schema.mjs';
+import {
+  cloneFrozen,
+  deepFreeze,
+  receiptSequenceScope,
+} from './schema.mjs';
+import { receiptHash } from './statements.mjs';
+
+export { receiptSequenceScope } from './schema.mjs';
 
 function requireString(value, label) {
   if (typeof value !== 'string' || value.length === 0) throw new Error(`${label} must be non-empty`);
-}
-
-export function receiptSequenceScope({ employerId, creatorId, currency, atomicScale }) {
-  for (const [value, label] of [
-    [employerId, 'receipt employerId'],
-    [creatorId, 'receipt creatorId'],
-    [currency, 'receipt currency'],
-  ]) requireString(value, label);
-  if (!Number.isSafeInteger(atomicScale) || atomicScale < 0 || atomicScale > 18) {
-    throw new Error('receipt atomicScale must be an integer from 0 through 18');
-  }
-  return JSON.stringify([employerId, creatorId, currency, atomicScale]);
 }
 
 export function createReceiptLedgerState() {
@@ -45,10 +40,12 @@ export function appendSignedReceipt(state, { signedReceipt, hash }) {
   if (typeof hash !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(hash)) {
     throw new Error('receipt hash must be a lowercase SHA-256 hash');
   }
+  const computedHash = receiptHash(signedReceipt);
+  if (hash !== computedHash) throw new Error('supplied receipt hash does not match signed receipt');
   if (Object.hasOwn(state.receipts, signedReceipt.receiptId)) {
     throw new Error('receipt ID already committed');
   }
-  if (Object.hasOwn(state.receiptHashes, hash)) {
+  if (Object.values(state.receiptHashes).includes(hash)) {
     throw new Error('receipt hash already committed');
   }
   const indexKey = JSON.stringify([signedReceipt.receiptSequenceScope, signedReceipt.sequence]);

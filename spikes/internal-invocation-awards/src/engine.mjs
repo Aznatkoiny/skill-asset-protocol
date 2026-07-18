@@ -1,4 +1,4 @@
-import { createPublicKey } from 'node:crypto';
+import { randomBytes, verify as cryptoVerify } from 'node:crypto';
 
 import {
   createBudget,
@@ -41,6 +41,7 @@ import {
   signReceiptWithCapability,
   verifyReceipt,
 } from './statements.mjs';
+import { normalizeEd25519PublicKey } from './public-keys.mjs';
 
 const TRUSTED_ENGINE_STATES = new WeakSet();
 const ENGINE_CAPABILITIES = new WeakMap();
@@ -77,20 +78,37 @@ function requirePlainMap(value, label) {
 function validateTrustMap(mapInput, allowedIds, label) {
   const map = requirePlainMap(mapInput, label);
   const allowed = new Set(allowedIds);
+  const normalized = {};
+  for (const [id, key] of Object.entries(map)) {
+    if (!allowed.has(id)) throw new Error(`unexpected ${label.slice(0, -1)} ${id}`);
+    normalized[id] = normalizeEd25519PublicKey(key, `${label.slice(0, -1)} ${id}`);
+  }
   for (const id of allowed) {
-    if (typeof map[id] !== 'string' || map[id].length === 0) {
+    if (!Object.hasOwn(normalized, id)) {
       throw new Error(`missing trusted ${label.slice(0, -1)} ${id}`);
     }
   }
-  for (const [id, key] of Object.entries(map)) {
-    if (!allowed.has(id)) throw new Error(`unexpected ${label.slice(0, -1)} ${id}`);
-    try {
-      createPublicKey(key);
-    } catch {
-      throw new Error(`invalid public key for ${label.slice(0, -1)} ${id}`);
+  return cloneFrozen(normalized);
+}
+
+function verifyReceiptSignerProvisioning(capability, trustedPublicKey) {
+  const challenge = Buffer.concat([
+    Buffer.from('internal-invocation-awards:receipt-signer-provisioning:v1\0'),
+    randomBytes(32),
+  ]);
+  try {
+    const signatureValue = capability.sign(Uint8Array.from(challenge));
+    if (typeof signatureValue !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(signatureValue)) {
+      throw new Error('invalid signature');
     }
+    const signature = Buffer.from(signatureValue, 'base64');
+    if (signature.length !== 64 || signature.toString('base64') !== signatureValue
+        || !cryptoVerify(null, challenge, trustedPublicKey, signature)) {
+      throw new Error('invalid signature');
+    }
+  } catch {
+    throw new Error('receipt signer provisioning challenge failed');
   }
-  return cloneFrozen(map);
 }
 
 function provisionCapabilities(input) {
@@ -429,6 +447,10 @@ export function createEngineState(input) {
     policy,
     now,
   });
+  verifyReceiptSignerProvisioning(
+    capabilities.receiptSigner,
+    receiptSigners[capabilities.receiptSigner.signerId],
+  );
   const receiptLedger = createReceiptLedgerState();
   return markTrusted({
     revision: 0,

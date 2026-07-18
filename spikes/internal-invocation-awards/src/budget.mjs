@@ -16,6 +16,7 @@ import {
   validatePolicy,
   validateQuote,
 } from './schema.mjs';
+import { normalizeEd25519PublicKey } from './public-keys.mjs';
 
 const BUDGET_AUTHORIZATION_KEYS = [
   'schemaVersion', 'budgetId', 'policyId', 'policyVersion', 'policyHash',
@@ -91,20 +92,23 @@ export function signBudget(unsignedBudget, privateKey) {
 }
 
 function validateTrustedSignerMap(value) {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)
+      || Object.getPrototypeOf(value) !== Object.prototype) {
     throw new Error('trustedFinanceSigners must be an object');
   }
+  const normalized = {};
   for (const [signerId, key] of Object.entries(value)) {
     requireNonEmpty(signerId, 'finance signer ID');
-    requireNonEmpty(key, `trusted key for ${signerId}`);
+    normalized[signerId] = normalizeEd25519PublicKey(key, `trusted finance signer ${signerId}`);
   }
+  return cloneFrozen(normalized);
 }
 
 export function createBudget(signedBudget, { trustedFinanceSigners, policy: policyInput, now }) {
   requireExactKeys(signedBudget, SIGNED_BUDGET_AUTHORIZATION_KEYS, 'signed budget authorization');
   const unsigned = validateUnsignedAuthorization(ordered(signedBudget, BUDGET_AUTHORIZATION_KEYS));
   const policy = validatePolicy(policyInput, now);
-  validateTrustedSignerMap(trustedFinanceSigners);
+  const normalizedFinanceSigners = validateTrustedSignerMap(trustedFinanceSigners);
   if (unsigned.policyId !== policy.policyId || unsigned.policyVersion !== policy.version) {
     throw new Error('budget authorization policy binding does not match effective policy');
   }
@@ -117,7 +121,7 @@ export function createBudget(signedBudget, { trustedFinanceSigners, policy: poli
   if (!policy.permittedFinanceSignerIds.includes(unsigned.signerId)) {
     throw new Error('finance signer is not permitted by policy');
   }
-  const trustedKey = trustedFinanceSigners[unsigned.signerId];
+  const trustedKey = normalizedFinanceSigners[unsigned.signerId];
   if (typeof trustedKey !== 'string' || trustedKey.length === 0) {
     throw new Error('trusted finance signer is not provisioned');
   }

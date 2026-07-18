@@ -5,16 +5,17 @@ import {
 } from 'node:crypto';
 
 import { validateInternalJournalEntries } from '../../../prototype/atomic-money.mjs';
-import { receiptSequenceScope } from './receipt-ledger.mjs';
 
 import {
   cloneFrozen,
   deepFreeze,
   fromAtomic,
   parseUtc,
+  receiptSequenceScope,
   requireExactKeys,
   toAtomic,
 } from './schema.mjs';
+import { normalizeEd25519PublicKey } from './public-keys.mjs';
 
 const JOURNAL_ENTRY_KEYS = [
   'category', 'debitAccountId', 'creditAccountId', 'amountAtomic',
@@ -96,7 +97,7 @@ function trustedKey(map, keyId, label) {
   if (typeof key !== 'string' || key.length === 0) {
     throw new Error(`${label} key ID ${keyId} is not trusted`);
   }
-  return key;
+  return normalizeEd25519PublicKey(key, `${label} ${keyId}`);
 }
 
 function sha256(bytes) {
@@ -670,8 +671,8 @@ export function buildStatement({
   }
   for (const advance of advances) {
     const award = awardsByHash.get(advance.receiptHash);
-    if (!award || (!hashes.includes(advance.receiptHash) && !historicalSet.has(advance.receiptHash))) {
-      throw new Error('payable advance references an unauthenticated current or historical receipt');
+    if (!award || !historicalSet.has(advance.receiptHash)) {
+      throw new Error('payable advance must reference an authenticated historical receipt');
     }
     award.advance += toAtomic(advance.amountAtomic);
     if (award.advance > award.amount) throw new Error('payable advance exceeds earned award');

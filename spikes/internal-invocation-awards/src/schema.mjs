@@ -84,6 +84,18 @@ export function sumAtomic(values) {
   return values.reduce((sum, value) => sum + toAtomic(value), 0n);
 }
 
+export function receiptSequenceScope({ employerId, creatorId, currency, atomicScale }) {
+  for (const [value, label] of [
+    [employerId, 'receipt employerId'],
+    [creatorId, 'receipt creatorId'],
+    [currency, 'receipt currency'],
+  ]) requireString(value, label);
+  if (!Number.isSafeInteger(atomicScale) || atomicScale < 0 || atomicScale > 18) {
+    throw new Error('receipt atomicScale must be an integer from 0 through 18');
+  }
+  return JSON.stringify([employerId, creatorId, currency, atomicScale]);
+}
+
 function codeUnitSort(values) {
   return [...values].sort((left, right) => {
     if (left < right) return -1;
@@ -232,7 +244,9 @@ export function validatePolicy(input, now) {
   if (!['none', 'future_policy_controlled'].includes(input.vestingRule)) {
     throw new Error('unsupported vestingRule');
   }
-  requireString(input.paymentSchedule, 'paymentSchedule');
+  if (input.paymentSchedule !== 'monthly_in_arrears') {
+    throw new Error('paymentSchedule must equal monthly_in_arrears');
+  }
   requireString(input.terminationTreatment, 'terminationTreatment');
   requireString(input.paymentRail, 'paymentRail');
   return cloneFrozen(input);
