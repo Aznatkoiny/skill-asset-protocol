@@ -77,11 +77,18 @@ async function prepareReconciledRetry({ executeSkill, lifecycleFaults = {} }) {
   return { collar, idempotencyKey, retry };
 }
 
-async function invokeSettledFailure({ executeRefund = null } = {}) {
+async function invokeSettledFailure({
+  executeRefund = null,
+  resolveRefund = null,
+  lifecycleFaults = {},
+  executeSkill = async () => { throw new Error('refund-target provider fault'); },
+} = {}) {
   const collar = createCollar({
     facilitatorTransport: mockTransport(),
-    executeSkill: async () => { throw new Error('refund-target provider fault'); },
+    executeSkill,
     executeRefund,
+    resolveRefund,
+    lifecycleFaults,
   });
   const result = await payingFetch(throwawayAccount(), invokeUrl, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: requestBody,
@@ -134,6 +141,7 @@ test('live settlement refuses ephemeral authority and accepts only paired persis
     signingKeyFile: path.join(directory, 'receipt-key.pem'),
     resolveSettlement: async () => ({ settled: false }),
     executeRefund: async () => ({ refunded: false }),
+    resolveRefund: async () => ({ refunded: false }),
   });
   assert.equal(collar.journal.isPersistent, true);
 });
@@ -399,65 +407,31 @@ test('refund endpoint ignores client proof and fails closed without a trusted ex
 });
 
 test('trusted refund requires exact journal-bound proof and issues one signed revision', async () => {
-  let executorResult = null;
   const calls = [];
+  let expected;
   const { collar, result, body } = await invokeSettledFailure({
     executeRefund: async (request) => {
       calls.push(structuredClone(request));
-      return executorResult;
+      return {
+        refunded: true,
+        settlementReference: request.settlementReference,
+        originalTxHash: request.originalTxHash,
+        payer: request.payer,
+        amountAtomic: request.amountAtomic,
+        refundReference: 'trusted-refund-0001',
+      };
     },
   });
   const original = structuredClone(body.receipt);
   const payment = original.receipt.payment;
   const endpoint = `http://collar.test/refund/by-settlement/${result.settlementReference}`;
-  const stateBefore = () => collar.journal.getBySettlementReference(result.settlementReference);
-  const eventCount = collar.journal.events.length;
-
-  const mismatches = [
-    null,
-    {
-      refunded: true,
-      settlementReference: `0x${'f'.repeat(64)}`,
-      originalTxHash: payment.txHash,
-      payer: payment.payer,
-      amountAtomic: '250000',
-      refundReference: 'refund-wrong-reference',
-    },
-    {
-      refunded: true,
-      settlementReference: payment.settlementReference,
-      originalTxHash: payment.txHash,
-      payer: `0x${'a'.repeat(40)}`,
-      amountAtomic: '250000',
-      refundReference: 'refund-wrong-payer',
-    },
-    {
-      refunded: true,
-      settlementReference: payment.settlementReference,
-      originalTxHash: payment.txHash,
-      payer: payment.payer,
-      amountAtomic: '249999',
-      refundReference: 'refund-partial',
-    },
-    {
-      refunded: true,
-      settlementReference: payment.settlementReference,
-      originalTxHash: `0x${'e'.repeat(64)}`,
-      payer: payment.payer,
-      amountAtomic: '250000',
-      refundReference: 'refund-wrong-original-tx',
-    },
-  ];
-  for (const mismatch of mismatches) {
-    executorResult = mismatch;
-    const rejected = await collar.app.request(endpoint, { method: 'POST' });
-    assert.equal(rejected.status, 502);
-    assert.equal(collar.journal.events.length, eventCount);
-    assert.equal(stateBefore().payment.state, 'settled');
-    assert.deepEqual(stateBefore().receipt, original);
-  }
-
-  assert.deepEqual(calls[0], {
+  const refunded = await collar.app.request(endpoint, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ refundReference: 'client-must-not-win' }),
+  });
+  assert.equal(refunded.status, 200);
+  expected = {
     invocationId: original.receipt.invocationId,
     settlementReference: payment.settlementReference,
     originalTxHash: payment.txHash,
@@ -466,21 +440,12 @@ test('trusted refund requires exact journal-bound proof and issues one signed re
     network: original.receipt.quote.network,
     asset: original.receipt.quote.asset,
     payTo: original.receipt.quote.payTo,
-  });
-  executorResult = {
-    refunded: true,
-    settlementReference: payment.settlementReference,
-    originalTxHash: payment.txHash,
-    payer: payment.payer,
-    amountAtomic: '250000',
-    refundReference: 'trusted-refund-0001',
   };
-  const refunded = await collar.app.request(endpoint, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ refundReference: 'client-must-not-win' }),
+  assert.match(calls[0].refundAttemptId, /^refund-attempt:/);
+  assert.deepEqual({ ...calls[0], refundAttemptId: undefined }, {
+    ...expected,
+    refundAttemptId: undefined,
   });
-  assert.equal(refunded.status, 200);
   const revised = (await refunded.json()).receipt;
   assert.equal(verifySignedReceipt(revised, trustFor(collar)), true);
   assert.equal(revised.receipt.revision, 2);
@@ -509,4 +474,220 @@ test('trusted refund requires exact journal-bound proof and issues one signed re
   assert.equal(replay.status, 200);
   assert.deepEqual((await replay.json()).receipt, revised);
   assert.equal(calls.length, callCount);
+});
+
+test('crash after refund provider return stays unresolved until a trusted resolver advances it', async () => {
+  let executorCalls = 0;
+  let resolverResult = null;
+  const { collar, result, body } = await invokeSettledFailure({
+    executeRefund: async (request) => {
+      executorCalls += 1;
+      return {
+        refunded: true,
+        settlementReference: request.settlementReference,
+        originalTxHash: request.originalTxHash,
+        payer: request.payer,
+        amountAtomic: request.amountAtomic,
+        refundReference: 'response-lost-after-provider-return',
+      };
+    },
+    resolveRefund: async () => resolverResult,
+    lifecycleFaults: {
+      afterRefundExecutorReturned: async () => { throw new Error('crash after refund return'); },
+    },
+  });
+  const payment = body.receipt.receipt.payment;
+  const refundUrl = `http://collar.test/refund/by-settlement/${result.settlementReference}`;
+  const reconcileUrl = `http://collar.test/reconcile/refund/by-settlement/${result.settlementReference}`;
+  const first = await collar.app.request(refundUrl, { method: 'POST' });
+  assert.equal(first.status, 503);
+  assert.doesNotMatch(JSON.stringify(await first.json()), /null|undefined/i);
+  assert.equal(executorCalls, 1);
+  assert.equal((await collar.app.request(refundUrl, { method: 'POST' })).status, 503);
+  assert.equal(executorCalls, 1);
+  const unresolved = collar.journal.getBySettlementReference(result.settlementReference);
+  assert.equal(unresolved.payment.refundExecution.state, 'unresolved');
+  assert.deepEqual(unresolved.receipt, body.receipt);
+  assert.equal(verifySignedReceipt(unresolved.receipt, trustFor(collar)), true);
+
+  const mismatches = [
+    null,
+    {
+      refunded: true,
+      settlementReference: `0x${'f'.repeat(64)}`,
+      originalTxHash: payment.txHash,
+      payer: payment.payer,
+      amountAtomic: '250000',
+      refundReference: 'wrong-reference',
+    },
+    {
+      refunded: true,
+      settlementReference: payment.settlementReference,
+      originalTxHash: payment.txHash,
+      payer: `0x${'a'.repeat(40)}`,
+      amountAtomic: '250000',
+      refundReference: 'wrong-payer',
+    },
+    {
+      refunded: true,
+      settlementReference: payment.settlementReference,
+      originalTxHash: payment.txHash,
+      payer: payment.payer,
+      amountAtomic: '249999',
+      refundReference: 'partial-refund',
+    },
+  ];
+  const eventCount = collar.journal.events.length;
+  for (const mismatch of mismatches) {
+    resolverResult = mismatch;
+    const response = await collar.app.request(reconcileUrl, { method: 'POST' });
+    assert.equal(response.status, mismatch ? 502 : 202);
+    assert.equal(collar.journal.events.length, eventCount);
+    assert.equal(
+      collar.journal.getBySettlementReference(result.settlementReference).payment.state,
+      'settled',
+    );
+  }
+  resolverResult = {
+    refunded: true,
+    settlementReference: payment.settlementReference,
+    originalTxHash: payment.txHash,
+    payer: payment.payer,
+    amountAtomic: '250000',
+    refundReference: 'reconciled-refund',
+  };
+  const reconciled = await collar.app.request(reconcileUrl, { method: 'POST' });
+  assert.equal(reconciled.status, 200);
+  const revised = (await reconciled.json()).receipt;
+  assert.equal(revised.receipt.payment.state, 'refunded');
+  assert.equal(revised.receipt.payment.refundReference, 'reconciled-refund');
+  assert.equal(verifySignedReceipt(revised, trustFor(collar)), true);
+});
+
+test('overlapping refund requests durably claim one external execution', async () => {
+  let calls = 0;
+  let announceStarted;
+  let release;
+  const started = new Promise((resolve) => { announceStarted = resolve; });
+  const gate = new Promise((resolve) => { release = resolve; });
+  const { collar, result } = await invokeSettledFailure({
+    executeRefund: async (request) => {
+      calls += 1;
+      announceStarted();
+      await gate;
+      return {
+        refunded: true,
+        settlementReference: request.settlementReference,
+        originalTxHash: request.originalTxHash,
+        payer: request.payer,
+        amountAtomic: request.amountAtomic,
+        refundReference: 'one-refund',
+      };
+    },
+  });
+  const endpoint = `http://collar.test/refund/by-settlement/${result.settlementReference}`;
+  const winner = collar.app.request(endpoint, { method: 'POST' });
+  await started;
+  const overlap = await collar.app.request(endpoint, { method: 'POST' });
+  assert.equal(overlap.status, 503);
+  assert.equal(calls, 1);
+  release();
+  const completed = await winner;
+  assert.equal(completed.status, 200);
+  const receipt = (await completed.json()).receipt;
+  const replay = await collar.app.request(endpoint, { method: 'POST' });
+  assert.equal(replay.status, 200);
+  assert.deepEqual((await replay.json()).receipt, receipt);
+  assert.equal(calls, 1);
+  assert.equal(collar.journal.events.filter((event) => event.type === 'refund.started').length, 1);
+});
+
+test('refund crash boundary stays unresolved and provider secrets never reach clients', async () => {
+  const secret = 'sk-refund-super-secret';
+  let calls = 0;
+  const { collar, result } = await invokeSettledFailure({
+    executeRefund: async () => {
+      calls += 1;
+      throw new Error(secret);
+    },
+  });
+  const endpoint = `http://collar.test/refund/by-settlement/${result.settlementReference}`;
+  const response = await collar.app.request(endpoint, { method: 'POST' });
+  assert.equal(response.status, 503);
+  const text = await response.text();
+  assert.doesNotMatch(text, new RegExp(secret));
+  assert.equal(calls, 1);
+  assert.equal((await collar.app.request(endpoint, { method: 'POST' })).status, 503);
+  assert.equal(calls, 1);
+  assert.equal(
+    collar.journal.getBySettlementReference(result.settlementReference).payment.refundExecution.state,
+    'unresolved',
+  );
+});
+
+test('Skill provider and settlement resolver secrets are replaced with stable public errors', async () => {
+  const providerSecret = 'sk-provider-secret-response-body';
+  const failed = await invokeSettledFailure({
+    executeSkill: async () => { throw new Error(providerSecret); },
+  });
+  const failureText = JSON.stringify(failed.body);
+  assert.doesNotMatch(failureText, new RegExp(providerSecret));
+  assert.equal(failed.body.error, 'Skill execution failed after settlement');
+  assert.equal(failed.body.receipt.receipt.execution.message, 'Skill execution failed after settlement');
+
+  const resolverSecret = 'resolver-secret-token';
+  const facilitator = createMockFacilitator();
+  const transport = createMockFacilitatorTransport(async (url, init) => {
+    const response = await facilitator.request(url, init);
+    if (new URL(url).pathname === '/settle') throw new Error('lost response');
+    return response;
+  });
+  const collar = createCollar({
+    facilitatorTransport: transport,
+    resolveSettlement: async () => { throw new Error(resolverSecret); },
+    executeSkill: async () => ({ output: 'must not run' }),
+  });
+  const first = await payingFetch(throwawayAccount(), invokeUrl, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: requestBody,
+  }, {
+    idempotencyKey: 'idem-secret-resolver',
+    fetchImpl: (url, init) => collar.app.request(url, init),
+  });
+  const resolution = await collar.app.request(
+    `http://collar.test/reconcile/by-settlement/${first.settlementReference}`,
+    { method: 'POST' },
+  );
+  assert.equal(resolution.status, 502);
+  assert.doesNotMatch(await resolution.text(), new RegExp(resolverSecret));
+});
+
+test('Anthropic error response bodies are never copied into the failed receipt', async () => {
+  const responseSecret = 'sk-ant-secret-inside-upstream-body';
+  const previousFetch = globalThis.fetch;
+  const previousKey = process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_API_KEY = 'test-only-key';
+  globalThis.fetch = async (url) => {
+    assert.equal(url, 'https://api.anthropic.com/v1/messages');
+    return new Response(JSON.stringify({ error: responseSecret }), {
+      status: 500,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  try {
+    const collar = createCollar({ facilitatorTransport: mockTransport(), mockLlm: false });
+    const result = await payingFetch(throwawayAccount(), invokeUrl, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: requestBody,
+    }, {
+      idempotencyKey: 'idem-anthropic-secret-body',
+      fetchImpl: (url, init) => collar.app.request(url, init),
+    });
+    assert.equal(result.res.status, 500);
+    const text = await result.res.text();
+    assert.doesNotMatch(text, new RegExp(responseSecret));
+    assert.match(text, /Skill execution failed after settlement/);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = previousKey;
+  }
 });

@@ -231,7 +231,7 @@ test('terminal replay requires settled or refunded payment with a transaction an
     const body = await result.res.json();
     if (expectedStatus === 500) {
       assert.equal(body.replayed, true);
-      assert.equal(body.error, 'provider failed');
+      assert.equal(body.error, 'terminal execution failed');
       assert.equal(result.txHash, decision.txHash);
     }
   }

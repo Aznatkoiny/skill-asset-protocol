@@ -324,7 +324,11 @@ const EVENT_DATA_KEYS = Object.freeze({
   'payment.settled': ['settlementReference', 'txHash', 'payer'],
   'payment.unresolved': ['reason'],
   'payment.rejected': ['reason'],
-  'payment.refunded': ['reason', 'refundReference', 'refundAmountAtomic', 'reversalEntries'],
+  'refund.started': ['refundAttemptId'],
+  'refund.unresolved': ['refundAttemptId', 'reason'],
+  'payment.refunded': [
+    'refundAttemptId', 'reason', 'refundReference', 'refundAmountAtomic', 'reversalEntries',
+  ],
   'execution.started': ['executionAttemptId'],
   'execution.finished': ['executionAttemptId', 'outcome', 'outcomeHash', 'failureClass', 'message', 'httpStatus', 'accounting'],
   'receipt.issued': ['bundle'],
@@ -362,6 +366,11 @@ function deriveFullGrossRefundReversal(record) {
 }
 
 function receiptPayload(record) {
+  // Refund execution leases are internal control-plane state. Omitting them
+  // keeps the signed receipt schema stable while payment.refunded carries the
+  // externally meaningful confirmation and exact reversal accounting.
+  const payment = copy(record.payment);
+  delete payment.refundExecution;
   return {
     schemaVersion: 1,
     revision: record.receiptHistory.length + 1,
@@ -370,15 +379,15 @@ function receiptPayload(record) {
     invocationId: record.invocationId,
     idempotencyKey: record.idempotencyKey,
     mode: record.mode,
-    skill: record.skill,
+    skill: copy(record.skill),
     requestHash: record.requestHash,
     creatorId: record.creatorId,
     wielderId: record.wielderId,
     beneficiaryId: record.beneficiaryId,
-    quote: record.quote,
-    payment: record.payment,
-    execution: record.execution,
-    accounting: record.accounting,
+    quote: copy(record.quote),
+    payment,
+    execution: copy(record.execution),
+    accounting: copy(record.accounting),
     createdAt: record.createdAt,
     completedAt: record.updatedAt,
   };
@@ -519,8 +528,24 @@ export function createInvocationJournal({
           throw new Error('payment.rejected has invalid predecessor');
         }
         break;
+      case 'refund.started':
+        if (!record || record.payment.refundExecution !== null) {
+          throw new Error('refund.started requires an unclaimed refund');
+        }
+        deriveFullGrossRefundReversal(record);
+        requireText(event.data.refundAttemptId, 'refundAttemptId');
+        break;
+      case 'refund.unresolved':
+        if (!record || record.payment.refundExecution?.state !== 'executing'
+            || record.payment.refundExecution.refundAttemptId !== event.data.refundAttemptId) {
+          throw new Error('refund.unresolved requires the claimed refund attempt');
+        }
+        requireText(event.data.reason, 'reason');
+        break;
       case 'payment.refunded':
-        if (!record || event.data.refundAmountAtomic !== record.quote.amountAtomic
+        if (!record || !['executing', 'unresolved'].includes(record.payment.refundExecution?.state)
+            || event.data.refundAttemptId !== record.payment.refundExecution.refundAttemptId
+            || event.data.refundAmountAtomic !== record.quote.amountAtomic
             || !same(event.data.reversalEntries, deriveFullGrossRefundReversal(record))) {
           throw new Error('refund must exactly reverse the full settled gross hold');
         }
@@ -578,6 +603,7 @@ export function createInvocationJournal({
           payment: {
             state: null, settlementReference: null, txHash: null, payer: null, reason: null,
             refundReference: null, refundAmountAtomic: null, refundAccounting: null,
+            refundExecution: null,
           },
           execution: {
             state: 'requested', executionAttemptId: null, outcomeHash: null,
@@ -621,6 +647,20 @@ export function createInvocationJournal({
         record.execution.state = 'cancelled';
         record.execution.httpStatus = 402;
         break;
+      case 'refund.started':
+        record.payment.refundExecution = {
+          state: 'executing',
+          refundAttemptId: event.data.refundAttemptId,
+          reason: null,
+        };
+        break;
+      case 'refund.unresolved':
+        record.payment.refundExecution = {
+          state: 'unresolved',
+          refundAttemptId: event.data.refundAttemptId,
+          reason: event.data.reason,
+        };
+        break;
       case 'payment.refunded':
         record.payment.state = 'refunded';
         record.payment.reason = event.data.reason;
@@ -629,6 +669,11 @@ export function createInvocationJournal({
         record.payment.refundAccounting = {
           priorAllocationState: 'pending_cogs_reconciliation',
           reversalEntries: event.data.reversalEntries,
+        };
+        record.payment.refundExecution = {
+          state: 'confirmed',
+          refundAttemptId: event.data.refundAttemptId,
+          reason: null,
         };
         record.receipt = null;
         break;
@@ -918,6 +963,7 @@ export function createInvocationJournal({
     refreshFromAuthority();
     const record = requireRecord(records, key);
     const refund = {
+      refundAttemptId: requireText(input.refundAttemptId, 'refundAttemptId'),
       reason: requireText(input.reason, 'reason'),
       refundReference: requireText(input.refundReference, 'refundReference'),
       refundAmountAtomic: requireAtomicString(input.refundAmountAtomic, 'refundAmountAtomic'),
@@ -925,19 +971,88 @@ export function createInvocationJournal({
     if (record.payment.state === 'refunded') {
       if (record.payment.reason !== refund.reason
           || record.payment.refundReference !== refund.refundReference
-          || record.payment.refundAmountAtomic !== refund.refundAmountAtomic) {
+          || record.payment.refundAmountAtomic !== refund.refundAmountAtomic
+          || record.payment.refundExecution?.refundAttemptId !== refund.refundAttemptId) {
         throw new Error('Invocation already binds a different refund');
       }
       return copy(record);
     }
+    if (!['executing', 'unresolved'].includes(record.payment.refundExecution?.state)
+        || record.payment.refundExecution.refundAttemptId !== refund.refundAttemptId) {
+      throw new Error('refund attempt does not match the durable execution claim');
+    }
     if (refund.refundAmountAtomic !== record.quote.amountAtomic) {
       throw new Error('refund must return the full settled gross');
     }
-    append('payment.refunded', key, {
-      ...refund,
-      reversalEntries: deriveFullGrossRefundReversal(record),
-    });
-    return copy(records.get(key));
+    try {
+      append('payment.refunded', key, {
+        ...refund,
+        reversalEntries: deriveFullGrossRefundReversal(record),
+      });
+      return copy(records.get(key));
+    } catch (error) {
+      if (error.code !== 'JOURNAL_CONFLICT') throw error;
+      const winner = requireRecord(records, key);
+      if (winner.payment.state !== 'refunded'
+          || winner.payment.reason !== refund.reason
+          || winner.payment.refundReference !== refund.refundReference
+          || winner.payment.refundAmountAtomic !== refund.refundAmountAtomic
+          || winner.payment.refundExecution?.refundAttemptId !== refund.refundAttemptId) {
+        throw error;
+      }
+      return copy(winner);
+    }
+  }
+
+  function startRefund(key, { refundAttemptId = null } = {}) {
+    refreshFromAuthority();
+    const record = requireRecord(records, key);
+    if (record.payment.state === 'refunded' || record.payment.refundExecution) {
+      return { started: false, record: copy(record) };
+    }
+    deriveFullGrossRefundReversal(record);
+    const attempt = refundAttemptId ?? `refund-attempt:${crypto.createHash('sha256')
+      .update(`${record.invocationId}\n${record.payment.txHash}\n${record.quote.amountAtomic}`)
+      .digest('hex')}`;
+    try {
+      append('refund.started', key, { refundAttemptId: requireText(attempt, 'refundAttemptId') });
+      return { started: true, record: copy(records.get(key)) };
+    } catch (error) {
+      if (error.code !== 'JOURNAL_CONFLICT') throw error;
+      const winner = requireRecord(records, key);
+      if (!winner.payment.refundExecution && winner.payment.state !== 'refunded') throw error;
+      return { started: false, record: copy(winner) };
+    }
+  }
+
+  function markRefundUnresolved(key, input) {
+    refreshFromAuthority();
+    const record = requireRecord(records, key);
+    const refundAttemptId = requireText(input.refundAttemptId, 'refundAttemptId');
+    const reason = requireText(input.reason, 'reason');
+    if (record.payment.refundExecution?.state === 'unresolved') {
+      if (record.payment.refundExecution.refundAttemptId !== refundAttemptId
+          || record.payment.refundExecution.reason !== reason) {
+        throw new Error('Invocation already binds a different unresolved refund outcome');
+      }
+      return copy(record);
+    }
+    if (record.payment.refundExecution?.state !== 'executing'
+        || record.payment.refundExecution.refundAttemptId !== refundAttemptId) {
+      throw new Error('unresolved refund does not match the durable execution claim');
+    }
+    try {
+      append('refund.unresolved', key, { refundAttemptId, reason });
+      return copy(records.get(key));
+    } catch (error) {
+      if (error.code !== 'JOURNAL_CONFLICT') throw error;
+      const winner = requireRecord(records, key);
+      if (winner.payment.state === 'refunded') return copy(winner);
+      if (winner.payment.refundExecution?.state === 'unresolved'
+          && winner.payment.refundExecution.refundAttemptId === refundAttemptId
+          && winner.payment.refundExecution.reason === reason) return copy(winner);
+      throw error;
+    }
   }
 
   function startExecution(key, { executionAttemptId = null } = {}) {
@@ -994,8 +1109,15 @@ export function createInvocationJournal({
       algorithm: receiptSigner.algorithm,
       keyId: receiptSigner.keyId,
     };
-    append('receipt.issued', key, { bundle });
-    return copy(bundle);
+    try {
+      append('receipt.issued', key, { bundle });
+      return copy(bundle);
+    } catch (error) {
+      if (error.code !== 'JOURNAL_CONFLICT') throw error;
+      const winner = requireRecord(records, key);
+      if (winner.receipt && same(winner.receipt, bundle)) return copy(winner.receipt);
+      throw error;
+    }
   }
 
   function recoverStaleLock({ expectedLeaseId }) {
@@ -1031,6 +1153,8 @@ export function createInvocationJournal({
     markExternalPaymentUnresolved,
     reconcileExternalSettlement,
     rejectExternalPayment,
+    startRefund,
+    markRefundUnresolved,
     refundExternalPayment,
     startExecution,
     finishExecution,

@@ -186,8 +186,8 @@ export function x402Paywall({
           requirements: structuredClone(requirements),
           expiresAt: requirements.extra.expiresAt,
         });
-      } catch (error) {
-        return c.json({ error: error.message }, error.code === 'JOURNAL_CONFLICT' ? 409 : 409);
+      } catch {
+        return c.json({ error: 'Invocation offer conflicts with authoritative state' }, 409);
       }
       return c.json({
         x402Version: X402_VERSION,
@@ -228,8 +228,8 @@ export function x402Paywall({
         payer,
         requirements: structuredClone(requirements),
       });
-    } catch (error) {
-      return c.json({ error: error.message }, 409);
+    } catch {
+      return c.json({ error: 'paid retry conflicts with authoritative Invocation state' }, 409);
     }
 
     if (locallyUnresolvedSettlements.has(idempotencyKey)
@@ -248,7 +248,7 @@ export function x402Paywall({
         replayed: true,
         receipt: priorDecision.receipt,
         ...(priorDecision.httpStatus >= 400
-          ? { error: priorDecision.receipt?.receipt?.execution?.message ?? 'terminal execution failed' }
+          ? { error: 'terminal execution failed' }
           : {}),
       };
       const replay = c.json(body, priorDecision.httpStatus);
@@ -306,13 +306,13 @@ export function x402Paywall({
           }, 402);
         }
         settle = await postJson(transport, 'settle', facilitatorBody);
-      } catch (error) {
+      } catch {
         locallyUnresolvedSettlements.add(idempotencyKey);
         await notifyUnresolved({
           idempotencyKey,
           settlementReference,
           payer,
-          reason: `facilitator response unresolved: ${error.message}`,
+          reason: 'facilitator response unresolved',
         });
         return c.json({ error: 'payment settlement unresolved', settlementReference }, 503);
       }
@@ -329,7 +329,7 @@ export function x402Paywall({
         });
         return c.json({ error: 'payment settlement unresolved', settlementReference }, 503);
       }
-      const reason = `payment settlement failed: ${settle?.errorReason ?? 'unknown'}`;
+      const reason = 'payment settlement failed';
       await lifecycle.onRejected?.({ idempotencyKey, reason, settlementReference, payer });
       return c.json({
         x402Version: X402_VERSION,
@@ -364,13 +364,13 @@ export function x402Paywall({
           amountAtomic: requirements.maxAmountRequired,
           requirements: structuredClone(requirements),
         });
-      } catch (error) {
+      } catch {
         locallyUnresolvedSettlements.add(idempotencyKey);
         await notifyUnresolved({
           idempotencyKey,
           settlementReference,
           payer,
-          reason: `settlement confirmed but journal persistence unresolved: ${error.message}`,
+          reason: 'settlement confirmed but journal persistence unresolved',
         });
         return c.json({
           error: 'payment settlement unresolved: authoritative persistence requires reconciliation',

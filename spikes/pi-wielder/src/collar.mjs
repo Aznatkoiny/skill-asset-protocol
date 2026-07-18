@@ -124,6 +124,7 @@ export function createCollar({
   lifecycleFaults = {},
   resolveSettlement = null,
   executeRefund = null,
+  resolveRefund = null,
 } = {}) {
   if (journal && (journalFile || signingKeyFile || receiptSigner)) {
     throw new Error('injected journal cannot be combined with journal/key paths or signer');
@@ -140,9 +141,11 @@ export function createCollar({
     if (!journal.isPersistent) throw new Error('live settlement requires a persistent journal and signing key');
     if (typeof resolveSettlement !== 'function') throw new Error('live settlement requires a trusted settlement resolver');
     if (typeof executeRefund !== 'function') throw new Error('live settlement requires a trusted refund executor');
+    if (typeof resolveRefund !== 'function') throw new Error('live settlement requires a trusted refund resolver');
   }
   const settlementResolver = resolveSettlement ?? (async () => ({ settled: false }));
   const refundExecutor = executeRefund ?? null;
+  const refundResolver = resolveRefund ?? null;
   const skillContent = fs.readFileSync(SKILL_PATH, 'utf8');
   const skillVersionHash = hash(skillContent);
   const priceAtomic = usdcToAtomic(priceUsdc);
@@ -260,8 +263,8 @@ export function createCollar({
 
   app.get('/receipts/by-settlement/:reference', (c) => {
     let record;
-    try { record = journal.getBySettlementReference(c.req.param('reference')); } catch (error) {
-      return c.json({ error: error.message }, 400);
+    try { record = journal.getBySettlementReference(c.req.param('reference')); } catch {
+      return c.json({ error: 'invalid settlement reference' }, 400);
     }
     if (!record) return c.json({ error: 'unknown settlement reference' }, 404);
     if (!record.receipt) {
@@ -277,8 +280,8 @@ export function createCollar({
   app.post('/reconcile/by-settlement/:reference', async (c) => {
     const settlementReference = c.req.param('reference').toLowerCase();
     let record;
-    try { record = journal.getBySettlementReference(settlementReference); } catch (error) {
-      return c.json({ error: error.message }, 400);
+    try { record = journal.getBySettlementReference(settlementReference); } catch {
+      return c.json({ error: 'invalid settlement reference' }, 400);
     }
     if (!record) return c.json({ error: 'unknown settlement reference' }, 404);
     if (['settled', 'refunded'].includes(record.payment.state)) {
@@ -297,8 +300,8 @@ export function createCollar({
         asset: record.quote.asset,
         payTo: record.quote.payTo,
       });
-    } catch (error) {
-      return c.json({ error: `trusted settlement resolver failed: ${error.message}` }, 502);
+    } catch {
+      return c.json({ error: 'trusted settlement resolution failed' }, 502);
     }
     if (!resolution?.settled) {
       return c.json({ paymentState: 'unresolved', settlementReference }, 202);
@@ -318,11 +321,51 @@ export function createCollar({
     return c.json({ paymentState: reconciled.payment.state, txHash: reconciled.payment.txHash });
   });
 
+  const refundRequestFor = (record) => ({
+    invocationId: record.invocationId,
+    settlementReference: record.payment.settlementReference,
+    originalTxHash: record.payment.txHash,
+    payer: record.payment.payer,
+    amountAtomic: record.quote.amountAtomic,
+    network: record.quote.network,
+    asset: record.quote.asset,
+    payTo: record.quote.payTo,
+    refundAttemptId: record.payment.refundExecution.refundAttemptId,
+  });
+
+  const refundEvidenceMatches = (resolution, request) => resolution?.refunded === true
+    && String(resolution.settlementReference ?? '').toLowerCase() === request.settlementReference
+    && String(resolution.originalTxHash ?? '').toLowerCase() === request.originalTxHash
+    && sameAddress(resolution.payer, request.payer)
+    && typeof resolution.amountAtomic === 'string'
+    && resolution.amountAtomic === request.amountAtomic
+    && typeof resolution.refundReference === 'string'
+    && Boolean(resolution.refundReference.trim());
+
+  const markRefundOutcomeUnresolved = (record) => {
+    if (record.payment.state === 'refunded'
+        || record.payment.refundExecution?.state === 'unresolved') return;
+    journal.markRefundUnresolved(record.idempotencyKey, {
+      refundAttemptId: record.payment.refundExecution.refundAttemptId,
+      reason: 'trusted refund outcome unresolved',
+    });
+  };
+
+  const finalizeRefund = (record, resolution) => {
+    journal.refundExternalPayment(record.idempotencyKey, {
+      refundAttemptId: record.payment.refundExecution.refundAttemptId,
+      reason: 'trusted full-gross refund confirmed',
+      refundReference: resolution.refundReference,
+      refundAmountAtomic: resolution.amountAtomic,
+    });
+    return journal.issueReceipt(record.idempotencyKey);
+  };
+
   app.post('/refund/by-settlement/:reference', async (c) => {
     const settlementReference = c.req.param('reference').toLowerCase();
     let record;
-    try { record = journal.getBySettlementReference(settlementReference); } catch (error) {
-      return c.json({ error: error.message }, 400);
+    try { record = journal.getBySettlementReference(settlementReference); } catch {
+      return c.json({ error: 'invalid settlement reference' }, 400);
     }
     if (!record) return c.json({ error: 'unknown settlement reference' }, 404);
     if (record.payment.state === 'refunded') {
@@ -334,37 +377,64 @@ export function createCollar({
       return c.json({ error: 'refund requires a settled failed full-gross reconciliation hold' }, 409);
     }
     if (!refundExecutor) return c.json({ error: 'trusted refund executor is not configured' }, 501);
+    const claim = journal.startRefund(record.idempotencyKey);
+    if (!claim.started) {
+      return c.json({
+        error: 'refund outcome unresolved; trusted reconciliation is required',
+        refundAttemptId: claim.record.payment.refundExecution?.refundAttemptId ?? null,
+      }, 503);
+    }
+    record = claim.record;
+    const request = refundRequestFor(record);
     let resolution;
     try {
-      resolution = await refundExecutor({
-        invocationId: record.invocationId,
-        settlementReference,
-        originalTxHash: record.payment.txHash,
-        payer: record.payment.payer,
-        amountAtomic: record.quote.amountAtomic,
-        network: record.quote.network,
-        asset: record.quote.asset,
-        payTo: record.quote.payTo,
+      resolution = await refundExecutor(request);
+      await lifecycleFaults.afterRefundExecutorReturned?.({
+        idempotencyKey: record.idempotencyKey,
+        refundAttemptId: request.refundAttemptId,
       });
-    } catch (error) {
-      return c.json({ error: `trusted refund executor failed: ${error.message}` }, 502);
+    } catch {
+      markRefundOutcomeUnresolved(record);
+      return c.json({ error: 'refund outcome unresolved; trusted reconciliation is required' }, 503);
     }
-    if (resolution?.refunded !== true
-        || String(resolution.settlementReference ?? '').toLowerCase() !== settlementReference
-        || String(resolution.originalTxHash ?? '').toLowerCase() !== record.payment.txHash
-        || !sameAddress(resolution.payer, record.payment.payer)
-        || typeof resolution.amountAtomic !== 'string'
-        || resolution.amountAtomic !== record.quote.amountAtomic
-        || typeof resolution.refundReference !== 'string'
-        || !resolution.refundReference.trim()) {
-      return c.json({ error: 'trusted refund executor returned a mismatched proof' }, 502);
+    if (!refundEvidenceMatches(resolution, request)) {
+      markRefundOutcomeUnresolved(record);
+      return c.json({ error: 'refund outcome unresolved; trusted reconciliation is required' }, 503);
     }
-    journal.refundExternalPayment(record.idempotencyKey, {
-      reason: 'trusted full-gross refund confirmed',
-      refundReference: resolution.refundReference,
-      refundAmountAtomic: resolution.amountAtomic,
-    });
-    return c.json({ receipt: journal.issueReceipt(record.idempotencyKey) });
+    return c.json({ receipt: finalizeRefund(record, resolution) });
+  });
+
+  app.post('/reconcile/refund/by-settlement/:reference', async (c) => {
+    const settlementReference = c.req.param('reference').toLowerCase();
+    let record;
+    try { record = journal.getBySettlementReference(settlementReference); } catch {
+      return c.json({ error: 'invalid settlement reference' }, 400);
+    }
+    if (!record) return c.json({ error: 'unknown settlement reference' }, 404);
+    if (record.payment.state === 'refunded') {
+      return c.json({ receipt: record.receipt ?? journal.issueReceipt(record.idempotencyKey) });
+    }
+    if (!['executing', 'unresolved'].includes(record.payment.refundExecution?.state)) {
+      return c.json({ error: 'refund has no durable execution claim to reconcile' }, 409);
+    }
+    if (!refundResolver) return c.json({ error: 'trusted refund resolver is not configured' }, 501);
+    const request = refundRequestFor(record);
+    let resolution;
+    try {
+      resolution = await refundResolver(request);
+    } catch {
+      markRefundOutcomeUnresolved(record);
+      return c.json({ error: 'trusted refund resolution failed' }, 502);
+    }
+    if (!resolution?.refunded) {
+      markRefundOutcomeUnresolved(record);
+      return c.json({ refundState: 'unresolved', refundAttemptId: request.refundAttemptId }, 202);
+    }
+    if (!refundEvidenceMatches(resolution, request)) {
+      markRefundOutcomeUnresolved(record);
+      return c.json({ error: 'trusted refund resolver returned mismatched evidence' }, 502);
+    }
+    return c.json({ receipt: finalizeRefund(record, resolution) });
   });
 
   app.post(
@@ -418,7 +488,7 @@ export function createCollar({
           executionAttemptId,
         });
       } catch (error) {
-        return finishFailure('UPSTREAM_500', error.message, 500);
+        return finishFailure('UPSTREAM_500', 'Skill execution failed after settlement', 500);
       }
       if (!execution || typeof execution.output !== 'string') {
         return finishFailure('INVALID_EXECUTOR_RESULT', 'executor must return { output: string }', 500);
@@ -479,7 +549,7 @@ async function runSkillViaAnthropic(skillContent, input) {
       messages: [{ role: 'user', content: String(input) }],
     }),
   });
-  if (!response.ok) throw new Error(`Anthropic API ${response.status}: ${await response.text()}`);
+  if (!response.ok) throw new Error(`Anthropic API returned HTTP ${response.status}`);
   const data = await response.json();
   return data.content?.map((block) => block.text ?? '').join('') ?? '';
 }

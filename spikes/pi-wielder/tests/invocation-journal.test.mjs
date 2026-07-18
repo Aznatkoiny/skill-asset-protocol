@@ -310,10 +310,16 @@ test('refund reverses only a terminal failed full-gross hold and issues a signed
   });
   const original = journal.issueReceipt(declaration.idempotencyKey);
   const request = {
+    refundAttemptId: 'refund-attempt-0001',
     reason: 'settled execution failure',
     refundReference: `refund:${'5'.repeat(64)}`,
     refundAmountAtomic: '250000',
   };
+  const firstClaim = journal.startRefund(declaration.idempotencyKey, {
+    refundAttemptId: request.refundAttemptId,
+  });
+  assert.equal(firstClaim.started, true);
+  assert.equal(journal.startRefund(declaration.idempotencyKey).started, false);
   assert.throws(() => journal.refundExternalPayment(declaration.idempotencyKey, { ...request, refundAmountAtomic: '249999' }), /full settled gross/);
   journal.refundExternalPayment(declaration.idempotencyKey, request);
   const revised = journal.issueReceipt(declaration.idempotencyKey);
@@ -324,6 +330,74 @@ test('refund reverses only a terminal failed full-gross hold and issues a signed
   assert.equal(revised.receipt.payment.refundAccounting.reversalEntries.length, 2);
   assert.equal(verifySignedReceipt(original, trustFor(journal)), true);
   assert.equal(verifySignedReceipt(revised, trustFor(journal)), true);
+});
+
+test('refund execution is durably claimed once and ambiguous outcomes remain unresolved', () => {
+  const journal = fixture();
+  settle(journal);
+  const execution = journal.startExecution(declaration.idempotencyKey);
+  journal.finishExecution(declaration.idempotencyKey, {
+    executionAttemptId: execution.record.execution.executionAttemptId,
+    outcome: 'failed', failureClass: 'COGS_UNKNOWN', message: 'safe failure', outcomeHash: null,
+    httpStatus: 500, accounting: pendingFailureAccounting(),
+  });
+  journal.issueReceipt(declaration.idempotencyKey);
+
+  const claim = journal.startRefund(declaration.idempotencyKey, {
+    refundAttemptId: 'refund-attempt-crash',
+  });
+  assert.equal(claim.started, true);
+  assert.equal(journal.startRefund(declaration.idempotencyKey).started, false);
+  journal.markRefundUnresolved(declaration.idempotencyKey, {
+    refundAttemptId: 'refund-attempt-crash',
+    reason: 'trusted refund outcome unresolved',
+  });
+  assert.equal(journal.startRefund(declaration.idempotencyKey).started, false);
+  const unresolved = journal.getByIdempotencyKey(declaration.idempotencyKey);
+  assert.deepEqual(unresolved.payment.refundExecution, {
+    state: 'unresolved',
+    refundAttemptId: 'refund-attempt-crash',
+    reason: 'trusted refund outcome unresolved',
+  });
+  assert.equal(journal.events.filter((event) => event.type === 'refund.started').length, 1);
+  assert.equal(journal.events.filter((event) => event.type === 'refund.unresolved').length, 1);
+
+  assert.throws(() => journal.refundExternalPayment(declaration.idempotencyKey, {
+    refundAttemptId: 'another-attempt',
+    reason: 'trusted full-gross refund confirmed',
+    refundReference: 'trusted-refund',
+    refundAmountAtomic: '250000',
+  }), /refund attempt/);
+  journal.refundExternalPayment(declaration.idempotencyKey, {
+    refundAttemptId: 'refund-attempt-crash',
+    reason: 'trusted full-gross refund confirmed',
+    refundReference: 'trusted-refund',
+    refundAmountAtomic: '250000',
+  });
+  const terminal = journal.getByIdempotencyKey(declaration.idempotencyKey);
+  assert.equal(terminal.payment.refundExecution.state, 'confirmed');
+  assert.equal(journal.startRefund(declaration.idempotencyKey).started, false);
+});
+
+test('separate journal instances observe one durable refund claim', () => {
+  const { filePath, signingKeyPath } = temporaryAuthority('collar-refund-claim-');
+  const first = createInvocationJournal({ filePath, signingKeyPath });
+  settle(first);
+  const execution = first.startExecution(declaration.idempotencyKey);
+  first.finishExecution(declaration.idempotencyKey, {
+    executionAttemptId: execution.record.execution.executionAttemptId,
+    outcome: 'failed', failureClass: 'COGS_UNKNOWN', message: 'safe failure', outcomeHash: null,
+    httpStatus: 500, accounting: pendingFailureAccounting(),
+  });
+  first.issueReceipt(declaration.idempotencyKey);
+  const second = createInvocationJournal({ filePath, signingKeyPath });
+  assert.equal(first.startRefund(declaration.idempotencyKey).started, true);
+  assert.equal(second.startRefund(declaration.idempotencyKey).started, false);
+  assert.equal(second.events.filter((event) => event.type === 'refund.started').length, 1);
+  assert.equal(
+    first.getByIdempotencyKey(declaration.idempotencyKey).payment.refundExecution.refundAttemptId,
+    second.getByIdempotencyKey(declaration.idempotencyKey).payment.refundExecution.refundAttemptId,
+  );
 });
 
 const waitForExit = (child) => new Promise((resolve, reject) => {
