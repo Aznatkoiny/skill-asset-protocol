@@ -19,7 +19,14 @@ export const APPROVED_LIVE_FACILITATOR_BASE = 'https://x402.org/facilitator';
 export const usdcToAtomic = (display) => parseUsdc(display).toString();
 export const atomicToUsdc = (atomic) => formatUsdc(BigInt(atomic));
 
-const b64ToJson = (value) => JSON.parse(Buffer.from(value, 'base64').toString('utf8'));
+const b64ToJson = (value) => {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) {
+    throw new Error('payment header is not canonical base64');
+  }
+  const bytes = Buffer.from(value, 'base64');
+  if (bytes.toString('base64') !== value) throw new Error('payment header is not canonical base64');
+  return JSON.parse(bytes.toString('utf8'));
+};
 const jsonToB64 = (value) => Buffer.from(JSON.stringify(value)).toString('base64');
 const authorizedTransports = new WeakSet();
 
@@ -72,6 +79,15 @@ function validTxHash(value) {
   return /^0x[0-9a-fA-F]{64}$/.test(String(value ?? ''));
 }
 
+function exactPlainObject(value, keys) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || Object.getPrototypeOf(value) !== Object.prototype) return false;
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length
+    && actual.every((key, index) => key === expected[index]);
+}
+
 function terminalReplayIsTrusted(decision, payer) {
   return decision?.kind === 'terminal'
     && ['settled', 'refunded'].includes(decision.paymentState)
@@ -83,22 +99,59 @@ function terminalReplayIsTrusted(decision, payer) {
     && decision.httpStatus <= 599;
 }
 
+function paymentResponseEvidence({
+  idempotencyKey,
+  requirements,
+  payer,
+  settlementReference,
+  transaction,
+}) {
+  return {
+    success: true,
+    authorizationId: idempotencyKey,
+    idempotencyKey,
+    network: NETWORK,
+    chainId: CHAIN_ID,
+    asset: requirements.asset,
+    payTo: requirements.payTo,
+    payer: String(payer).toLowerCase(),
+    value: requirements.maxAmountRequired,
+    nonce: settlementReference,
+    settlementReference,
+    requestHash: requirements.extra.requestHash,
+    quoteId: requirements.extra.quoteId,
+    transaction: String(transaction).toLowerCase(),
+  };
+}
+
 function validateAuthorizationEnvelope(paymentPayload, requirements) {
-  if (paymentPayload?.x402Version !== X402_VERSION
+  if (!exactPlainObject(paymentPayload, ['x402Version', 'scheme', 'network', 'payload'])
+      || !exactPlainObject(paymentPayload.payload, ['signature', 'authorization'])
+      || paymentPayload?.x402Version !== X402_VERSION
       || paymentPayload?.scheme !== requirements.scheme
       || paymentPayload?.network !== requirements.network) {
     throw new Error('payment envelope does not exactly match the frozen x402 offer');
   }
   const authorization = paymentPayload?.payload?.authorization;
-  if (!authorization || !paymentPayload?.payload?.signature) {
+  const signature = paymentPayload?.payload?.signature;
+  if (!exactPlainObject(authorization, [
+    'from', 'to', 'value', 'validAfter', 'validBefore', 'nonce',
+  ]) || typeof signature !== 'string' || !/^0x[0-9a-f]{130}$/.test(signature)) {
     throw new Error('payment authorization lacks authorization or signature');
   }
-  if (String(authorization.to ?? '').toLowerCase() !== requirements.payTo.toLowerCase()
-      || String(authorization.value ?? '') !== requirements.maxAmountRequired) {
+  if (!/^0x[0-9a-f]{40}$/.test(authorization.from)
+      || !/^0x[0-9a-f]{40}$/.test(authorization.to)
+      || typeof authorization.value !== 'string'
+      || !/^(0|[1-9]\d*)$/.test(authorization.value)
+      || typeof authorization.validAfter !== 'string'
+      || !/^(0|[1-9]\d*)$/.test(authorization.validAfter)
+      || typeof authorization.validBefore !== 'string'
+      || !/^(0|[1-9]\d*)$/.test(authorization.validBefore)
+      || authorization.to !== requirements.payTo
+      || authorization.value !== requirements.maxAmountRequired) {
     throw new Error('payment authorization must exactly match payee and quoted amount');
   }
-  if (!/^0x[0-9a-fA-F]{64}$/.test(String(authorization.nonce ?? ''))
-      || !/^0x[0-9a-fA-F]{40}$/.test(String(authorization.from ?? ''))) {
+  if (!/^0x[0-9a-f]{64}$/.test(authorization.nonce)) {
     throw new Error('payment authorization lacks a valid nonce or payer');
   }
   return authorization;
@@ -252,13 +305,13 @@ export function x402Paywall({
           : {}),
       };
       const replay = c.json(body, priorDecision.httpStatus);
-      replay.headers.set('X-PAYMENT-RESPONSE', jsonToB64({
-        success: true,
+      replay.headers.set('X-PAYMENT-RESPONSE', jsonToB64(paymentResponseEvidence({
+        idempotencyKey,
+        requirements,
         transaction: priorDecision.txHash,
-        network: NETWORK,
         payer: priorDecision.payer,
         settlementReference,
-      }));
+      })));
       return replay;
     }
     if (priorDecision?.kind === 'payment_unresolved') {
@@ -388,13 +441,13 @@ export function x402Paywall({
       requirements,
     });
     await next();
-    c.res.headers.set('X-PAYMENT-RESPONSE', jsonToB64({
-      success: true,
+    c.res.headers.set('X-PAYMENT-RESPONSE', jsonToB64(paymentResponseEvidence({
+      idempotencyKey,
+      requirements,
       transaction: settledTxHash,
-      network: NETWORK,
       payer: settledPayer,
       settlementReference,
-    }));
+    })));
     c.res.headers.set('X-402-FACILITATOR-MS', facilitatorMs.toFixed(1));
   };
 }

@@ -3,9 +3,15 @@ import test from 'node:test';
 
 import { createMockFacilitator } from '../src/facilitator-mock.mjs';
 import { createGateway, MODEL_PRICES_USDC, startGateway } from '../src/gateway.mjs';
-import { payingFetch } from '../src/proxy.mjs';
+import { payingFetch as policyPayingFetch } from '../src/proxy.mjs';
 import { throwawayAccount } from '../src/wallet.mjs';
 import { createMockFacilitatorTransport } from '../src/x402-seller.mjs';
+import { paymentPolicyFor } from './payment-policy-fixture.mjs';
+
+const payingFetch = (account, url, init, options = {}) => policyPayingFetch(account, url, init, {
+  paymentPolicy: paymentPolicyFor(url),
+  ...options,
+});
 
 test('gateway prices are decimal strings and the injected transport stays in process', async () => {
   assert.ok(Object.values(MODEL_PRICES_USDC).every((price) => typeof price === 'string'));

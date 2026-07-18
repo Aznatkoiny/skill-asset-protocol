@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import test from 'node:test';
 
 import { Hono } from 'hono';
 import { createMockFacilitator } from '../src/facilitator-mock.mjs';
-import { payingFetch } from '../src/proxy.mjs';
+import { payingFetch as policyPayingFetch } from '../src/proxy.mjs';
 import { throwawayAccount } from '../src/wallet.mjs';
+import { paymentPolicyFor } from './payment-policy-fixture.mjs';
 import {
   APPROVED_LIVE_FACILITATOR_BASE,
   createLiveFacilitatorTransport,
@@ -13,6 +15,31 @@ import {
 } from '../src/x402-seller.mjs';
 
 const payTo = `0x${'d'.repeat(40)}`;
+
+const payingFetch = (account, url, init, options = {}) => policyPayingFetch(account, url, init, {
+  paymentPolicy: paymentPolicyFor(url, payTo),
+  ...options,
+});
+
+async function withheldAttempt(account, url, init, options = {}) {
+  const paymentPolicy = paymentPolicyFor(url, payTo);
+  await assert.rejects(() => policyPayingFetch(account, url, init, {
+    ...options,
+    paymentPolicy,
+  }), (error) => error.code === 'SETTLEMENT_EVIDENCE');
+  const persisted = paymentPolicy.recoverSignedAuthorization({
+    authorizationId: options.idempotencyKey,
+    requestUrl: url,
+    method: init.method ?? 'GET',
+    bodyBytes: init.body ?? null,
+  });
+  return {
+    ...persisted,
+    idempotencyKey: persisted.authorizationId,
+    settlementReference: persisted.authorization.nonce,
+    paymentPolicy,
+  };
+}
 
 function resourceApp({ facilitatorTransport, lifecycle = {}, price = '0.25', handler } = {}) {
   const app = new Hono();
@@ -97,7 +124,7 @@ test('restart rejects different request bytes under the frozen idempotency key b
     },
   });
   let fetchCount = 0;
-  const first = await payingFetch(throwawayAccount(), 'http://seller.test/resource', {
+  const first = await withheldAttempt(throwawayAccount(), 'http://seller.test/resource', {
     method: 'POST', body: '{"input":"original bytes"}',
   }, {
     idempotencyKey: 'idem-restart-conflict',
@@ -110,7 +137,7 @@ test('restart rejects different request bytes under the frozen idempotency key b
       });
     },
   });
-  assert.equal(first.res.status, 503);
+  assert.equal(first.state, 'unresolved');
   const afterRestart = resourceApp({
     facilitatorTransport: transport,
     lifecycle: {
@@ -157,7 +184,7 @@ test('authorization amount must equal the frozen quote exactly before facilitato
   });
   const app = resourceApp({ facilitatorTransport: transport });
   let requestCount = 0;
-  const result = await payingFetch(throwawayAccount(), 'http://seller.test/resource', {
+  await assert.rejects(() => payingFetch(throwawayAccount(), 'http://seller.test/resource', {
     method: 'POST', body: '{}',
   }, {
     idempotencyKey: 'idem-overpay',
@@ -173,10 +200,46 @@ test('authorization amount must equal the frozen quote exactly before facilitato
       }
       return app.request(url, init);
     },
-  });
-  assert.equal(result.res.status, 402);
-  assert.match((await result.res.json()).error, /exactly match/);
+  }), (error) => error.code === 'SECOND_PAYMENT_REQUIRED');
   assert.equal(facilitatorCalls, 0);
+});
+
+test('seller rejects numeric and unknown authorization fields before facilitator submission', async () => {
+  for (const mutate of [
+    (authorization) => { authorization.value = 250000; },
+    (authorization) => { authorization.injected = true; },
+  ]) {
+    let facilitatorCalls = 0;
+    const facilitator = createMockFacilitator();
+    const app = resourceApp({
+      facilitatorTransport: createMockFacilitatorTransport(async (url, init) => {
+        facilitatorCalls += 1;
+        return facilitator.request(url, init);
+      }),
+    });
+    let requestCount = 0;
+    await assert.rejects(() => payingFetch(throwawayAccount(), 'http://seller.test/resource', {
+      method: 'POST', body: '{}',
+    }, {
+      idempotencyKey: `idem-strict-auth-${crypto.randomUUID()}`,
+      fetchImpl: (url, init) => {
+        requestCount += 1;
+        if (requestCount === 2) {
+          const payment = JSON.parse(Buffer.from(init.headers['X-PAYMENT'], 'base64').toString('utf8'));
+          mutate(payment.payload.authorization);
+          return app.request(url, {
+            ...init,
+            headers: {
+              ...init.headers,
+              'X-PAYMENT': Buffer.from(JSON.stringify(payment)).toString('base64'),
+            },
+          });
+        }
+        return app.request(url, init);
+      },
+    }), (error) => error.code === 'SECOND_PAYMENT_REQUIRED');
+    assert.equal(facilitatorCalls, 0);
+  }
 });
 
 test('unresolved payment retries return 503 without re-verification or settlement', async () => {
@@ -191,14 +254,13 @@ test('unresolved payment retries return 503 without re-verification or settlemen
       async onSigned() { return { kind: 'payment_unresolved', settlementReference: `0x${'1'.repeat(64)}` }; },
     },
   });
-  const result = await payingFetch(throwawayAccount(), 'http://seller.test/resource', {
+  const result = await withheldAttempt(throwawayAccount(), 'http://seller.test/resource', {
     method: 'POST', body: '{}',
   }, {
     idempotencyKey: 'idem-unresolved',
     fetchImpl: (url, init) => app.request(url, init),
   });
-  assert.equal(result.res.status, 503);
-  assert.match((await result.res.json()).error, /settlement unresolved/);
+  assert.equal(result.state, 'unresolved');
   assert.equal(facilitatorCalls, 0);
 });
 
@@ -221,15 +283,23 @@ test('terminal replay requires settled or refunded payment with a transaction an
       facilitatorTransport: transport,
       lifecycle: { async onSigned() { return decision; } },
     });
-    const result = await payingFetch(account, 'http://seller.test/resource', {
-      method: 'POST', body: '{}',
-    }, {
-      idempotencyKey: `idem-terminal-${expectedStatus}`,
-      fetchImpl: (url, init) => app.request(url, init),
-    });
-    assert.equal(result.res.status, expectedStatus);
-    const body = await result.res.json();
-    if (expectedStatus === 500) {
+    if (expectedStatus === 503) {
+      const withheld = await withheldAttempt(account, 'http://seller.test/resource', {
+        method: 'POST', body: '{}',
+      }, {
+        idempotencyKey: `idem-terminal-${expectedStatus}`,
+        fetchImpl: (url, init) => app.request(url, init),
+      });
+      assert.equal(withheld.state, 'unresolved');
+    } else {
+      const result = await payingFetch(account, 'http://seller.test/resource', {
+        method: 'POST', body: '{}',
+      }, {
+        idempotencyKey: `idem-terminal-${expectedStatus}`,
+        fetchImpl: (url, init) => app.request(url, init),
+      });
+      assert.equal(result.res.status, expectedStatus);
+      const body = await result.res.json();
       assert.equal(body.replayed, true);
       assert.equal(body.error, 'terminal execution failed');
       assert.equal(result.txHash, decision.txHash);
@@ -273,13 +343,13 @@ test('verify and settle disable redirects and never follow a signed authorizatio
       });
     });
     const app = resourceApp({ facilitatorTransport: transport });
-    const result = await payingFetch(throwawayAccount(), 'http://seller.test/resource', {
+    const result = await withheldAttempt(throwawayAccount(), 'http://seller.test/resource', {
       method: 'POST', body: '{}',
     }, {
       fetchImpl: (url, init) => app.request(url, init),
       idempotencyKey: `idem-redirect-${redirectOperation}`,
     });
-    assert.equal(result.res.status, 503);
+    assert.equal(result.state, 'unresolved');
     assert.equal(destinations.at(-1)[0], `http://facilitator.invalid/${redirectOperation}`);
     assert.ok(destinations.every(([, redirect]) => redirect === 'error'));
     assert.ok(destinations.every(([url]) => !url.startsWith('https://evil.test')));
@@ -307,13 +377,13 @@ test('post-settle journal failure becomes durable unresolved and exact retry nev
     },
     handler: (c) => { executions += 1; return c.json({ ok: true }); },
   });
-  const first = await payingFetch(throwawayAccount(), 'http://seller.test/resource', {
+  const first = await withheldAttempt(throwawayAccount(), 'http://seller.test/resource', {
     method: 'POST', body: '{}',
   }, {
     idempotencyKey: 'idem-post-settle-gap',
     fetchImpl: (url, init) => app.request(url, init),
   });
-  assert.equal(first.res.status, 503);
+  assert.equal(first.state, 'unresolved');
   assert.equal(unresolved, true);
   const retry = await app.request('http://seller.test/resource', {
     method: 'POST',
@@ -348,18 +418,19 @@ test('malformed facilitator success evidence is unresolved and never authorizes 
     lifecycle: { async onUnresolved() { unresolvedCalls += 1; } },
     handler: (c) => { executions += 1; return c.json({ ok: true }); },
   });
-  const result = await payingFetch(throwawayAccount(), 'http://seller.test/resource', {
+  const result = await withheldAttempt(throwawayAccount(), 'http://seller.test/resource', {
     method: 'POST', body: '{}',
   }, {
     idempotencyKey: 'idem-malformed-settlement',
     fetchImpl: (url, init) => app.request(url, init),
   });
-  assert.equal(result.res.status, 503);
+  assert.equal(result.state, 'unresolved');
   assert.equal(unresolvedCalls, 1);
   assert.equal(executions, 0);
 });
 
 test('missing or malformed settle result is ambiguous unresolved, while explicit failure is rejected', async () => {
+  let caseIndex = 0;
   for (const [settleBody, expectedStatus] of [[{}, 503], [{ success: 'false' }, 503], [{ success: false, errorReason: 'declined' }, 402]]) {
     let unresolvedCalls = 0;
     let rejectedCalls = 0;
@@ -377,13 +448,23 @@ test('missing or malformed settle result is ambiguous unresolved, while explicit
         async onRejected() { rejectedCalls += 1; },
       },
     });
-    const result = await payingFetch(throwawayAccount(), 'http://seller.test/resource', {
-      method: 'POST', body: '{}',
-    }, {
-      idempotencyKey: `idem-settle-shape-${expectedStatus}-${JSON.stringify(settleBody)}`,
-      fetchImpl: (url, init) => app.request(url, init),
-    });
-    assert.equal(result.res.status, expectedStatus);
+    const idempotencyKey = `idem-settle-shape-${expectedStatus}-${caseIndex++}`;
+    if (expectedStatus === 503) {
+      const result = await withheldAttempt(throwawayAccount(), 'http://seller.test/resource', {
+        method: 'POST', body: '{}',
+      }, {
+        idempotencyKey,
+        fetchImpl: (url, init) => app.request(url, init),
+      });
+      assert.equal(result.state, 'unresolved');
+    } else {
+      await assert.rejects(() => payingFetch(throwawayAccount(), 'http://seller.test/resource', {
+        method: 'POST', body: '{}',
+      }, {
+        idempotencyKey,
+        fetchImpl: (url, init) => app.request(url, init),
+      }), (error) => error.code === 'SECOND_PAYMENT_REQUIRED');
+    }
     assert.equal(unresolvedCalls, expectedStatus === 503 ? 1 : 0);
     assert.equal(rejectedCalls, expectedStatus === 402 ? 1 : 0);
   }
@@ -414,13 +495,13 @@ test('onUnresolved may observe an already-settled append without turning the res
     },
     handler: (c) => { executions += 1; return c.json({ ok: true }); },
   });
-  const first = await payingFetch(throwawayAccount(), 'http://seller.test/resource', {
+  const first = await withheldAttempt(throwawayAccount(), 'http://seller.test/resource', {
     method: 'POST', body: '{}',
   }, {
     idempotencyKey: 'idem-settled-append-then-error',
     fetchImpl: (url, init) => app.request(url, init),
   });
-  assert.equal(first.res.status, 503);
+  assert.equal(first.state, 'unresolved');
   const retry = await app.request('http://seller.test/resource', {
     method: 'POST',
     headers: { 'Idempotency-Key': first.idempotencyKey, 'X-PAYMENT': first.xPayment },

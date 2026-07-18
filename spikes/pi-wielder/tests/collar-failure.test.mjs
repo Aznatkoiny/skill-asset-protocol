@@ -8,16 +8,41 @@ import test from 'node:test';
 import { chooseFacilitator, createCollar, SKILL_ID } from '../src/collar.mjs';
 import { createMockFacilitator } from '../src/facilitator-mock.mjs';
 import { verifySignedReceipt } from '../src/invocation-journal.mjs';
-import { payingFetch } from '../src/proxy.mjs';
+import { payingFetch as policyPayingFetch } from '../src/proxy.mjs';
 import { throwawayAccount } from '../src/wallet.mjs';
 import {
   APPROVED_LIVE_FACILITATOR_BASE,
   createLiveFacilitatorTransport,
   createMockFacilitatorTransport,
 } from '../src/x402-seller.mjs';
+import { paymentPolicyFor } from './payment-policy-fixture.mjs';
 
 const invokeUrl = `http://collar.test/invoke/${SKILL_ID}`;
 const requestBody = JSON.stringify({ input: 'same bytes' });
+const payingFetch = (account, url, init, options = {}) => policyPayingFetch(account, url, init, {
+  paymentPolicy: paymentPolicyFor(url),
+  ...options,
+});
+
+async function withheldPayingFetch(account, url, init, options = {}) {
+  const paymentPolicy = paymentPolicyFor(url);
+  await assert.rejects(() => policyPayingFetch(account, url, init, {
+    ...options,
+    paymentPolicy,
+  }), (error) => error.code === 'SETTLEMENT_EVIDENCE');
+  const persisted = paymentPolicy.recoverSignedAuthorization({
+    authorizationId: options.idempotencyKey,
+    requestUrl: url,
+    method: init.method ?? 'GET',
+    bodyBytes: init.body ?? null,
+  });
+  return {
+    ...persisted,
+    idempotencyKey: persisted.authorizationId,
+    settlementReference: persisted.authorization.nonce,
+    paymentPolicy,
+  };
+}
 
 function mockTransport(fetchImpl = null) {
   const facilitator = createMockFacilitator();
@@ -53,13 +78,13 @@ async function prepareReconciledRetry({ executeSkill, lifecycleFaults = {} }) {
     }),
   });
   const idempotencyKey = `idem-crash-${crypto.randomUUID()}`;
-  const first = await payingFetch(throwawayAccount(), invokeUrl, {
+  const first = await withheldPayingFetch(throwawayAccount(), invokeUrl, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: requestBody,
   }, {
     idempotencyKey,
     fetchImpl: (url, init) => collar.app.request(url, init),
   });
-  assert.equal(first.res.status, 503);
+  assert.equal(first.state, 'unresolved');
   const reconcile = await collar.app.request(
     `http://collar.test/reconcile/by-settlement/${first.settlementReference}`,
     { method: 'POST' },
@@ -233,13 +258,13 @@ test('response-loss reconciliation advances once and exact retry never duplicate
     executeSkill: async ({ input }) => { executions += 1; return { output: `executed ${input}` }; },
   });
   const idempotencyKey = 'idem-response-loss';
-  const first = await payingFetch(throwawayAccount(), invokeUrl, {
+  const first = await withheldPayingFetch(throwawayAccount(), invokeUrl, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: requestBody,
   }, {
     idempotencyKey,
     fetchImpl: (url, init) => collar.app.request(url, init),
   });
-  assert.equal(first.res.status, 503);
+  assert.equal(first.state, 'unresolved');
   assert.equal(collar.journal.getBySettlementReference(first.settlementReference).payment.state, 'unresolved');
 
   const retryRequest = (body = requestBody) => collar.app.request(invokeUrl, {
@@ -287,13 +312,13 @@ test('settlement success followed by journal fault is persisted unresolved befor
     },
     executeSkill: async () => { throw new Error('must not execute'); },
   });
-  const first = await payingFetch(throwawayAccount(), invokeUrl, {
+  const first = await withheldPayingFetch(throwawayAccount(), invokeUrl, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: requestBody,
   }, {
     idempotencyKey: 'idem-post-settle-collar',
     fetchImpl: (url, init) => collar.app.request(url, init),
   });
-  assert.equal(first.res.status, 503);
+  assert.equal(first.state, 'unresolved');
   assert.equal(collar.journal.getBySettlementReference(first.settlementReference).payment.state, 'unresolved');
   const retry = await collar.app.request(invokeUrl, {
     method: 'POST',
@@ -692,7 +717,7 @@ test('Skill provider and settlement resolver secrets are replaced with stable pu
     resolveSettlement: async () => { throw new Error(resolverSecret); },
     executeSkill: async () => ({ output: 'must not run' }),
   });
-  const first = await payingFetch(throwawayAccount(), invokeUrl, {
+  const first = await withheldPayingFetch(throwawayAccount(), invokeUrl, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: requestBody,
   }, {
     idempotencyKey: 'idem-secret-resolver',
@@ -731,16 +756,13 @@ test('facilitator verification detail is absent from the response and durable jo
       return { output: 'must not run' };
     },
   });
-  const result = await payingFetch(throwawayAccount(), invokeUrl, {
+  await assert.rejects(() => payingFetch(throwawayAccount(), invokeUrl, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: requestBody,
   }, {
     idempotencyKey: 'idem-verifier-secret',
     fetchImpl: (url, init) => collar.app.request(url, init),
-  });
-  assert.equal(result.res.status, 402);
-  const responseText = await result.res.text();
-  assert.doesNotMatch(responseText, new RegExp(secret));
-  assert.equal(JSON.parse(responseText).error, 'payment verification failed');
+  }), (error) => error.code === 'SECOND_PAYMENT_REQUIRED'
+    && !error.message.includes(secret));
   const record = collar.journal.getByIdempotencyKey('idem-verifier-secret');
   assert.equal(record.payment.state, 'rejected');
   assert.equal(record.payment.reason, 'payment verification failed');

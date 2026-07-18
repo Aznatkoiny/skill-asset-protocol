@@ -113,7 +113,7 @@ export async function chooseFacilitator({
 
 export function createCollar({
   facilitatorTransport,
-  payTo = process.env.PAY_TO_ADDRESS || `0x${'d'.repeat(40)}`,
+  payTo = process.env.PAY_TO_ADDRESS || '0x000000000000000000000000000000000000dead',
   priceUsdc = process.env.SKILL_PRICE_USDC || DEFAULT_PRICE_USDC,
   mockLlm = process.env.MOCK_LLM === '1',
   journal = null,
