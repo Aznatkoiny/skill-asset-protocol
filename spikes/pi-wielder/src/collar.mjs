@@ -161,6 +161,9 @@ export function createCollar({
   if (!Number.isSafeInteger(providerTimeoutMs) || providerTimeoutMs <= 0) {
     throw new TypeError('providerTimeoutMs must be a positive safe integer');
   }
+  if (providerTimeoutMs > DEFAULT_PROVIDER_TIMEOUT_MS) {
+    throw new TypeError(`providerTimeoutMs cannot exceed ${DEFAULT_PROVIDER_TIMEOUT_MS}`);
+  }
   if (journal && (journalFile || signingKeyFile || receiptSigner)) {
     throw new Error('injected journal cannot be combined with journal/key paths or signer');
   }
@@ -283,8 +286,9 @@ export function createCollar({
     });
   };
 
-  const lifecycle = {
-    async onOffered({ idempotencyKey, requirements, expiresAt, executionQuote }) {
+  const persistVerifiedOffer = ({ idempotencyKey, requirements, executionQuote }) => {
+    const existing = journal.getByIdempotencyKey(idempotencyKey);
+    if (!existing) {
       journal.requestInvocation({
         idempotencyKey,
         mode: 'external',
@@ -294,6 +298,8 @@ export function createCollar({
         creatorId: 'creator',
         beneficiaryId: null,
       });
+    }
+    if (!journal.getByIdempotencyKey(idempotencyKey)?.quote) {
       journal.offerExternalPayment(idempotencyKey, {
         quoteId: requirements.extra.quoteId,
         amountAtomic: requirements.maxAmountRequired,
@@ -304,11 +310,17 @@ export function createCollar({
         resource: requirements.resource,
         requestHash: requirements.extra.requestHash,
         requirementsHash: hash(canonicalJson(requirements)),
-        expiresAt,
+        expiresAt: requirements.extra.expiresAt,
         requirements,
         executionQuote,
       });
-    },
+    }
+  };
+
+  const lifecycle = {
+    // Unpaid challenges are bounded, expiring process-local state in the
+    // paywall. Authority begins only after facilitator verification succeeds.
+    async onOffered() {},
 
     async loadFrozenOffer({ idempotencyKey, paymentHeaderPresent = false }) {
       const record = journal.getByIdempotencyKey(idempotencyKey);
@@ -317,17 +329,22 @@ export function createCollar({
       if (record.schemaVersion === 1 && !paymentHeaderPresent) {
         throw new Error('legacy v1 frozen offers cannot authorize a new payment');
       }
+      const verifiedPaymentHash = journal.getVerifiedPaymentHash(idempotencyKey);
       return {
         requirements: persistedQuote.requirements,
         executionQuote: persistedQuote.executionQuote ?? null,
+        verificationRequired: verifiedPaymentHash === null,
+        verifiedPaymentHash,
       };
     },
 
     async onSigned({
       idempotencyKey, settlementReference, payer, requirements, executionQuote,
+      verifiedPaymentHash,
     }) {
+      persistVerifiedOffer({ idempotencyKey, requirements, executionQuote });
       const existing = journal.getByIdempotencyKey(idempotencyKey);
-      if (!existing?.quote) throw new Error('paid retry has no prior quoted Invocation');
+      if (!existing?.quote) throw new Error('verified paid retry could not persist its frozen offer');
       if (existing.quote.requirementsHash !== hash(canonicalJson(requirements))
           || existing.quote.requestHash !== requirements.extra.requestHash) {
         throw new Error('paid retry does not match the frozen x402 requirements');
@@ -335,6 +352,13 @@ export function createCollar({
       if (existing.schemaVersion === 2
           && canonicalJson(existing.quote.executionQuote) !== canonicalJson(executionQuote)) {
         throw new Error('paid retry does not match the frozen execution quote');
+      }
+      const recordedPaymentHash = journal.getVerifiedPaymentHash(idempotencyKey);
+      if (recordedPaymentHash !== null && recordedPaymentHash !== verifiedPaymentHash) {
+        throw new Error('paid retry does not match the facilitator-verified payment authorization');
+      }
+      if (recordedPaymentHash === null && existing.payment.state === 'offered') {
+        journal.recordExternalPaymentVerification(idempotencyKey, { verifiedPaymentHash });
       }
       if (existing.payment.settlementReference !== null
           && (existing.payment.settlementReference !== settlementReference
@@ -408,7 +432,7 @@ export function createCollar({
           payer: record.payment.payer,
         };
       }
-      return null;
+      return { kind: 'signed' };
     },
 
     async onSettled({
@@ -891,8 +915,16 @@ export function createAnthropicExecutor({
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
     throw new TypeError('Anthropic timeoutMs must be a positive safe integer');
   }
+  if (timeoutMs > DEFAULT_PROVIDER_TIMEOUT_MS) {
+    throw new TypeError(`Anthropic timeoutMs cannot exceed ${DEFAULT_PROVIDER_TIMEOUT_MS}`);
+  }
   if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes <= 0) {
     throw new TypeError('Anthropic maxResponseBytes must be a positive safe integer');
+  }
+  if (maxResponseBytes > DEFAULT_PROVIDER_RESPONSE_BYTES) {
+    throw new TypeError(
+      `Anthropic maxResponseBytes cannot exceed ${DEFAULT_PROVIDER_RESPONSE_BYTES}`,
+    );
   }
   return async ({
     skillContent,
@@ -947,19 +979,22 @@ export function createAnthropicExecutor({
         if (!response?.ok) {
           throw new RuntimeBoundaryError('UPSTREAM_PROVIDER_ERROR', 'provider request failed');
         }
-        if (response?.body !== undefined && response?.headers?.get) {
-          return readJsonBody(response, {
-            maxBytes: maxResponseBytes,
-            tooLargeCode: 'UPSTREAM_PROVIDER_RESPONSE_TOO_LARGE',
-            tooLargeMessage: 'provider response exceeds the JSON byte limit',
-            readErrorCode: 'UPSTREAM_PROVIDER_RESPONSE_READ_FAILED',
-            readErrorMessage: 'provider response could not be read',
-            jsonErrorCode: 'UPSTREAM_PROVIDER_RESPONSE_JSON',
-            jsonErrorMessage: 'provider response was not JSON',
-            signal: composedSignal,
-          });
+        if (!(response instanceof Response)) {
+          throw new RuntimeBoundaryError(
+            'UPSTREAM_PROVIDER_RESPONSE_SHAPE',
+            'provider response must expose a bounded byte stream',
+          );
         }
-        return response.json();
+        return readJsonBody(response, {
+          maxBytes: maxResponseBytes,
+          tooLargeCode: 'UPSTREAM_PROVIDER_RESPONSE_TOO_LARGE',
+          tooLargeMessage: 'provider response exceeds the JSON byte limit',
+          readErrorCode: 'UPSTREAM_PROVIDER_RESPONSE_READ_FAILED',
+          readErrorMessage: 'provider response could not be read',
+          jsonErrorCode: 'UPSTREAM_PROVIDER_RESPONSE_JSON',
+          jsonErrorMessage: 'provider response was not JSON',
+          signal: composedSignal,
+        });
       });
     } catch (error) {
       if (error instanceof RuntimeBoundaryError) {

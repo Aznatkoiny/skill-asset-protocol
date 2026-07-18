@@ -155,6 +155,163 @@ test('standalone selection defaults to injected offline mock and live mode is ex
   assert.equal(live.transport.mode, 'live');
 });
 
+test('unpaid and unverified offers never grow authority while a verified retry persists once', async () => {
+  const facilitator = createMockFacilitator();
+  let verifyCalls = 0;
+  let settleCalls = 0;
+  let executions = 0;
+  const collar = createCollar({
+    facilitatorTransport: createMockFacilitatorTransport(async (url, init) => {
+      const operation = new URL(url).pathname;
+      if (operation === '/verify') verifyCalls += 1;
+      if (operation === '/settle') settleCalls += 1;
+      return facilitator.request(url, init);
+    }),
+    executeSkill: async () => {
+      executions += 1;
+      return { output: 'verified output', usage: KNOWN_USAGE };
+    },
+  });
+  const idempotencyKey = 'idem-unpaid-authority-boundary';
+  let sellerRequests = 0;
+  const signed = await withheldPayingFetch(throwawayAccount(), invokeUrl, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: requestBody,
+  }, {
+    idempotencyKey,
+    fetchImpl: async (url, init) => {
+      sellerRequests += 1;
+      if (sellerRequests === 1) {
+        const response = await collar.app.request(url, init);
+        assert.equal(response.status, 402);
+        assert.deepEqual(collar.journal.events, []);
+        return response;
+      }
+      return new Response(JSON.stringify({ error: 'withheld paid retry' }), {
+        status: 503, headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+
+  const invalid = JSON.parse(Buffer.from(signed.xPayment, 'base64').toString('utf8'));
+  const forgedPayer = throwawayAccount().address.toLowerCase();
+  assert.notEqual(forgedPayer, invalid.payload.authorization.from);
+  invalid.payload.authorization.from = forgedPayer;
+  const invalidResponse = await collar.app.request(invokeUrl, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'Idempotency-Key': idempotencyKey,
+      'X-PAYMENT': Buffer.from(JSON.stringify(invalid)).toString('base64'),
+    },
+    body: requestBody,
+  });
+  assert.equal(invalidResponse.status, 402);
+  assert.deepEqual(collar.journal.events, []);
+  assert.equal(verifyCalls, 1);
+  assert.equal(settleCalls, 0);
+  assert.equal(executions, 0);
+
+  const verifiedResponse = await collar.app.request(invokeUrl, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'Idempotency-Key': idempotencyKey,
+      'X-PAYMENT': signed.xPayment,
+    },
+    body: requestBody,
+  });
+  assert.equal(verifiedResponse.status, 200);
+  assert.deepEqual(collar.journal.events.slice(0, 4).map((event) => event.type), [
+    'invocation.requested',
+    'payment.offered',
+    'payment.authorization_verified',
+    'payment.signed',
+  ]);
+  assert.equal(verifyCalls, 2);
+  assert.equal(settleCalls, 1);
+  assert.equal(executions, 1);
+});
+
+test('restart before verification fails closed without facilitator, execution, or journal growth', async () => {
+  let facilitatorCalls = 0;
+  let executions = 0;
+  const transport = createMockFacilitatorTransport(async () => {
+    facilitatorCalls += 1;
+    throw new Error('facilitator must not run for an orphaned paid retry');
+  });
+  const beforeRestart = createCollar({
+    facilitatorTransport: transport,
+    executeSkill: async () => { throw new Error('must not execute'); },
+  });
+  const idempotencyKey = 'idem-restart-before-verification';
+  let requests = 0;
+  const signed = await withheldPayingFetch(throwawayAccount(), invokeUrl, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: requestBody,
+  }, {
+    idempotencyKey,
+    fetchImpl: async (url, init) => {
+      requests += 1;
+      if (requests === 1) return beforeRestart.app.request(url, init);
+      return new Response(JSON.stringify({ error: 'simulated process stop' }), {
+        status: 503, headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+  assert.deepEqual(beforeRestart.journal.events, []);
+
+  const afterRestart = createCollar({
+    facilitatorTransport: transport,
+    journal: beforeRestart.journal,
+    executeSkill: async () => {
+      executions += 1;
+      return { output: 'must not run', usage: KNOWN_USAGE };
+    },
+  });
+  const retry = await afterRestart.app.request(invokeUrl, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'Idempotency-Key': idempotencyKey,
+      'X-PAYMENT': signed.xPayment,
+    },
+    body: requestBody,
+  });
+  assert.equal(retry.status, 409);
+  assert.deepEqual(await retry.json(), { error: 'paid retry has no prior frozen x402 offer' });
+  assert.equal(facilitatorCalls, 0);
+  assert.equal(executions, 0);
+  assert.deepEqual(afterRestart.journal.events, []);
+});
+
+test('durable terminal replay requires the exact facilitator-verified payment header', async () => {
+  const { collar, result } = await invokeSettledFailure();
+  let facilitatorCalls = 0;
+  const restarted = createCollar({
+    journal: collar.journal,
+    facilitatorTransport: createMockFacilitatorTransport(async () => {
+      facilitatorCalls += 1;
+      throw new Error('a conflicting durable replay must fail before facilitator I/O');
+    }),
+    executeSkill: async () => {
+      throw new Error('a conflicting durable replay must not execute');
+    },
+  });
+  const forged = JSON.parse(Buffer.from(result.xPayment, 'base64').toString('utf8'));
+  const signature = forged.payload.signature;
+  forged.payload.signature = `${signature.slice(0, -1)}${signature.endsWith('0') ? '1' : '0'}`;
+  const response = await restarted.app.request(invokeUrl, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'Idempotency-Key': result.idempotencyKey,
+      'X-PAYMENT': Buffer.from(JSON.stringify(forged)).toString('base64'),
+    },
+    body: requestBody,
+  });
+  assert.equal(response.status, 409);
+  assert.equal(facilitatorCalls, 0);
+});
+
 test('live settlement refuses ephemeral authority and accepts only paired persistent paths', () => {
   const live = createLiveFacilitatorTransport(APPROVED_LIVE_FACILITATOR_BASE, async () => {
     throw new Error('network must not run');
@@ -745,7 +902,7 @@ test('Skill provider and settlement resolver secrets are replaced with stable pu
   assert.doesNotMatch(await resolution.text(), new RegExp(resolverSecret));
 });
 
-test('facilitator verification detail is absent from the response and durable journal', async () => {
+test('failed facilitator verification creates no authority and leaks no detail', async () => {
   const secret = 'verify-invalidReason-secret-sentinel';
   let settleCalls = 0;
   let executionCalls = 0;
@@ -778,11 +935,11 @@ test('facilitator verification detail is absent from the response and durable jo
   }), (error) => error.code === 'SECOND_PAYMENT_REQUIRED'
     && !error.message.includes(secret));
   const record = collar.journal.getByIdempotencyKey('idem-verifier-secret');
-  assert.equal(record.payment.state, 'rejected');
-  assert.equal(record.payment.reason, 'payment verification failed');
-  const durableBytes = fs.readFileSync(journalFile, 'utf8');
+  assert.equal(record, null);
+  assert.deepEqual(collar.journal.events, []);
+  const durableBytes = fs.existsSync(journalFile) ? fs.readFileSync(journalFile, 'utf8') : '';
   assert.doesNotMatch(durableBytes, new RegExp(secret));
-  assert.match(durableBytes, /payment verification failed/);
+  assert.equal(durableBytes, '');
   assert.equal(settleCalls, 0);
   assert.equal(executionCalls, 0);
 });

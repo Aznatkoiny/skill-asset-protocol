@@ -10,7 +10,11 @@ import {
   createPaymentPolicy,
   PaymentPolicyError,
 } from '../src/payment-policy.mjs';
-import { payingFetch } from '../src/proxy.mjs';
+import {
+  DEFAULT_PAID_RETRY_TIMEOUT_MS,
+  DEFAULT_UNPAID_FETCH_TIMEOUT_MS,
+  payingFetch,
+} from '../src/proxy.mjs';
 
 const PAYEE = '0x000000000000000000000000000000000000dead';
 const PAYER = '0x1000000000000000000000000000000000000000';
@@ -177,6 +181,65 @@ test('a forbidden first offer is never signed or retried', async () => {
   assert.equal(fetches, 1);
   assert.equal(signatureCount(), 0);
   assert.equal(paymentPolicy.snapshot().reservedAtomic, '0');
+});
+
+test('payingFetch timeout options cannot raise the secure deadline ceilings', async () => {
+  const { account, paymentPolicy, signatureCount } = setup();
+  let fetches = 0;
+  for (const [option, value, ceiling] of [
+    ['unpaidTimeoutMs', DEFAULT_UNPAID_FETCH_TIMEOUT_MS + 1, DEFAULT_UNPAID_FETCH_TIMEOUT_MS],
+    ['paidTimeoutMs', DEFAULT_PAID_RETRY_TIMEOUT_MS + 1, DEFAULT_PAID_RETRY_TIMEOUT_MS],
+  ]) {
+    await assert.rejects(() => payingFetch(account, URL, { method: 'POST', body: BODY }, {
+      fetchImpl: async () => {
+        fetches += 1;
+        return challenge();
+      },
+      idempotencyKey: `idem-${option}`,
+      paymentPolicy,
+      [option]: value,
+    }), new RegExp(`${option} cannot exceed ${ceiling}`));
+  }
+  assert.equal(fetches, 0);
+  assert.equal(signatureCount(), 0);
+  assert.equal(paymentPolicy.snapshot().reservedAtomic, '0');
+});
+
+test('payingFetch accepts exactly the seller canonical Idempotency-Key boundary', async () => {
+  const { account, paymentPolicy } = setup();
+  const accepted = `a${'Z9._:-'.repeat(22)}`.slice(0, 128);
+  let forwardedKey = null;
+  const result = await payingFetch(account, URL, { method: 'POST', body: BODY }, {
+    fetchImpl: async (_url, init) => {
+      forwardedKey = new Headers(init.headers).get('Idempotency-Key');
+      return new Response(null, { status: 204 });
+    },
+    idempotencyKey: accepted,
+    paymentPolicy,
+  });
+  assert.equal(accepted.length, 128);
+  assert.equal(forwardedKey, accepted);
+  assert.equal(result.paid, false);
+});
+
+test('payingFetch rejects Idempotency-Keys outside the seller canonical grammar', async () => {
+  const { account, paymentPolicy, signatureCount } = setup();
+  let fetches = 0;
+  for (const idempotencyKey of [
+    '.leading-punctuation',
+    `a${'x'.repeat(128)}`,
+  ]) {
+    await assert.rejects(() => payingFetch(account, URL, { method: 'POST', body: BODY }, {
+      fetchImpl: async () => {
+        fetches += 1;
+        return new Response(null, { status: 204 });
+      },
+      idempotencyKey,
+      paymentPolicy,
+    }), (error) => error.code === 'AUTHORIZATION_ID');
+  }
+  assert.equal(fetches, 0);
+  assert.equal(signatureCount(), 0);
 });
 
 test('freshness is captured from the injected clock immediately after the first 402', async () => {

@@ -59,6 +59,60 @@ test('caller abort is composed into the operation without exposing its reason', 
   assert.equal(operationSignal.aborted, true);
 });
 
+test('an already-aborted body signal cancels and rejects before starting a stalled read', async () => {
+  const controller = new AbortController();
+  controller.abort(new Error('caller secret must not escape'));
+
+  let cancelled = false;
+  let readCalls = 0;
+  let releaseRead;
+  const stalledRead = new Promise((resolve) => { releaseRead = resolve; });
+  const reader = {
+    async read() {
+      readCalls += 1;
+      return stalledRead;
+    },
+    async cancel() {
+      cancelled = true;
+      releaseRead({ done: true, value: undefined });
+    },
+    releaseLock() {},
+  };
+  const source = {
+    headers: new Headers(),
+    body: {
+      getReader: () => reader,
+      async cancel() {
+        cancelled = true;
+      },
+    },
+  };
+
+  const observed = readBodyBytes(source, {
+    maxBytes: 4,
+    tooLargeCode: 'TEST_TOO_LARGE',
+    tooLargeMessage: 'test body too large',
+    readErrorCode: 'TEST_READ_ERROR',
+    readErrorMessage: 'test body read failed',
+    signal: controller.signal,
+  }).then(
+    (value) => ({ value }),
+    (error) => ({ error }),
+  );
+
+  await new Promise((resolve) => setImmediate(resolve));
+  const cancelledBeforeRelease = cancelled;
+  const readCallsBeforeRelease = readCalls;
+  if (!cancelledBeforeRelease) releaseRead({ done: true, value: undefined });
+  const result = await observed;
+
+  assert.equal(cancelledBeforeRelease, true);
+  assert.equal(readCallsBeforeRelease, 0);
+  assert.ok(result.error instanceof RuntimeBoundaryError);
+  assert.equal(result.error.code, 'TEST_READ_ERROR');
+  assert.equal(result.error.message, 'test body read failed');
+});
+
 test('streaming byte ceiling accepts exactly the limit and cancels on the first excess chunk', async () => {
   const exact = new Response(new ReadableStream({
     start(controller) {

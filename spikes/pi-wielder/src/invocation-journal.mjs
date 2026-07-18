@@ -368,6 +368,7 @@ export function verifySignedReceipt(bundle, { publicKeyPem, keyId }) {
 const EVENT_DATA_KEYS = Object.freeze({
   'invocation.requested': ['invocationId', 'mode', 'skill', 'requestHash', 'creatorId', 'beneficiaryId'],
   'payment.offered': ['quote'],
+  'payment.authorization_verified': ['verifiedPaymentHash'],
   'payment.signed': ['settlementReference', 'payer'],
   'payment.settled': ['settlementReference', 'txHash', 'payer'],
   'payment.unresolved': ['reason'],
@@ -489,6 +490,7 @@ export function createInvocationJournal({
   const records = new Map();
   const settlementReferences = new Map();
   const transactionHashes = new Map();
+  const verifiedPaymentHashes = new Map();
   const eventLog = [];
   let nextSequence = 1;
   let headHash = null;
@@ -826,6 +828,18 @@ export function createInvocationJournal({
         }
         validateQuote(event.data.quote, event.schemaVersion);
         break;
+      case 'payment.authorization_verified':
+        if (!record || record.schemaVersion !== 2 || record.payment.state !== 'offered') {
+          throw new Error('payment.authorization_verified requires an offered v2 payment');
+        }
+        if (!/^sha256:[0-9a-f]{64}$/.test(String(event.data.verifiedPaymentHash ?? ''))) {
+          throw new Error('verified payment authorization hash must be one SHA-256 digest');
+        }
+        if (verifiedPaymentHashes.has(event.idempotencyKey)
+            && verifiedPaymentHashes.get(event.idempotencyKey) !== event.data.verifiedPaymentHash) {
+          throw new Error('idempotency key already binds a different verified payment authorization');
+        }
+        break;
       case 'payment.signed':
         if (!record || record.payment.state !== 'offered') throw new Error('payment.signed requires offered payment');
         assertUnique(settlementReferences, event.data.settlementReference, event.idempotencyKey, 'settlement reference');
@@ -943,6 +957,9 @@ export function createInvocationJournal({
         record.quote = event.data.quote;
         record.payment.state = 'offered';
         record.execution.state = 'quoted';
+        break;
+      case 'payment.authorization_verified':
+        verifiedPaymentHashes.set(event.idempotencyKey, event.data.verifiedPaymentHash);
         break;
       case 'payment.signed':
         record.payment = { ...record.payment, state: 'signed', ...event.data, reason: null };
@@ -1229,6 +1246,38 @@ export function createInvocationJournal({
 
   const markExternalPaymentSigned = (key, input) => claimExternalPaymentSigned(key, input).record;
 
+  function recordExternalPaymentVerification(key, input) {
+    refreshFromAuthority();
+    const record = requireRecord(records, key);
+    const verifiedPaymentHash = input?.verifiedPaymentHash;
+    if (!/^sha256:[0-9a-f]{64}$/.test(String(verifiedPaymentHash ?? ''))) {
+      throw new Error('verified payment authorization hash must be one SHA-256 digest');
+    }
+    const existing = verifiedPaymentHashes.get(key);
+    if (existing) {
+      if (existing !== verifiedPaymentHash) {
+        throw new Error('idempotency key already binds a different verified payment authorization');
+      }
+      return copy(record);
+    }
+    if (record.schemaVersion !== 2 || record.payment.state !== 'offered') {
+      throw new Error('verified payment authorization can only bind an offered v2 payment');
+    }
+    try {
+      append('payment.authorization_verified', key, { verifiedPaymentHash });
+      return copy(records.get(key));
+    } catch (error) {
+      if (error.code !== 'JOURNAL_CONFLICT') throw error;
+      const winner = verifiedPaymentHashes.get(key);
+      if (winner !== verifiedPaymentHash) {
+        throw new Error('idempotency key concurrently bound a different verified payment authorization', {
+          cause: error,
+        });
+      }
+      return copy(requireRecord(records, key));
+    }
+  }
+
   function markExternalPaymentSettled(key, input) {
     refreshFromAuthority();
     const record = requireRecord(records, key);
@@ -1485,6 +1534,7 @@ export function createInvocationJournal({
   return Object.freeze({
     requestInvocation,
     offerExternalPayment,
+    recordExternalPaymentVerification,
     claimExternalPaymentSigned,
     markExternalPaymentSigned,
     markExternalPaymentSettled,
@@ -1501,6 +1551,10 @@ export function createInvocationJournal({
     getByIdempotencyKey: (key) => {
       refreshFromAuthority();
       return records.has(key) ? copy(records.get(key)) : null;
+    },
+    getVerifiedPaymentHash: (key) => {
+      refreshFromAuthority();
+      return verifiedPaymentHashes.get(key) ?? null;
     },
     getBySettlementReference: (reference) => {
       refreshFromAuthority();

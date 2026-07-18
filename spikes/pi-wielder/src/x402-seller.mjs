@@ -22,9 +22,15 @@ export const USDC_ADDRESS = '0x036cbd53842c5426634e7929541ec2318f3dcf7e';
 export const USDC_EIP712 = Object.freeze({ name: 'USDC', version: '2' });
 export const APPROVED_LIVE_FACILITATOR_BASE = 'https://x402.org/facilitator';
 export const DEFAULT_X402_REQUEST_BODY_BYTES = 4096;
+// The generic x402 default stays at the Collar's 4 KiB contract. The fixed
+// model-gateway route is the only current consumer of the larger hard ceiling.
+export const MAX_X402_REQUEST_BODY_BYTES = 1024 * 1024;
 export const DEFAULT_X402_REQUEST_BODY_TIMEOUT_MS = 5_000;
 export const DEFAULT_FACILITATOR_TIMEOUT_MS = 10_000;
 export const DEFAULT_FACILITATOR_RESPONSE_BYTES = 64 * 1024;
+export const MAX_IDEMPOTENCY_KEY_CHARACTERS = 128;
+export const DEFAULT_PENDING_OFFER_LIMIT = 128;
+export const DEFAULT_PENDING_OFFER_TTL_MS = 60_000;
 
 export const usdcToAtomic = (display) => parseUsdc(display).toString();
 export const atomicToUsdc = (atomic) => formatUsdc(BigInt(atomic));
@@ -102,6 +108,12 @@ function positiveLimit(value, label) {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new TypeError(`${label} must be a positive safe integer`);
   }
+  return value;
+}
+
+function cappedLimit(value, label, ceiling) {
+  positiveLimit(value, label);
+  if (value > ceiling) throw new TypeError(`${label} cannot exceed ${ceiling}`);
   return value;
 }
 
@@ -200,18 +212,44 @@ export function x402Paywall({
   requestBodyTimeoutMs = DEFAULT_X402_REQUEST_BODY_TIMEOUT_MS,
   facilitatorTimeoutMs = DEFAULT_FACILITATOR_TIMEOUT_MS,
   facilitatorResponseMaxBytes = DEFAULT_FACILITATOR_RESPONSE_BYTES,
+  maxPendingOffers = DEFAULT_PENDING_OFFER_LIMIT,
+  pendingOfferTtlMs = DEFAULT_PENDING_OFFER_TTL_MS,
+  now = Date.now,
 }) {
   const transport = requireFacilitatorTransport(facilitatorTransport);
   const canonicalPayTo = canonicalAddress(payTo);
   if (quote !== null && typeof quote !== 'function') {
     throw new TypeError('quote must be an injected function or null');
   }
-  positiveLimit(maxRequestBodyBytes, 'maxRequestBodyBytes');
-  positiveLimit(requestBodyTimeoutMs, 'requestBodyTimeoutMs');
-  positiveLimit(facilitatorTimeoutMs, 'facilitatorTimeoutMs');
-  positiveLimit(facilitatorResponseMaxBytes, 'facilitatorResponseMaxBytes');
-  const frozenOffers = new Map();
+  cappedLimit(maxRequestBodyBytes, 'maxRequestBodyBytes', MAX_X402_REQUEST_BODY_BYTES);
+  cappedLimit(requestBodyTimeoutMs, 'requestBodyTimeoutMs', DEFAULT_X402_REQUEST_BODY_TIMEOUT_MS);
+  cappedLimit(facilitatorTimeoutMs, 'facilitatorTimeoutMs', DEFAULT_FACILITATOR_TIMEOUT_MS);
+  cappedLimit(
+    facilitatorResponseMaxBytes,
+    'facilitatorResponseMaxBytes',
+    DEFAULT_FACILITATOR_RESPONSE_BYTES,
+  );
+  cappedLimit(maxPendingOffers, 'maxPendingOffers', DEFAULT_PENDING_OFFER_LIMIT);
+  cappedLimit(pendingOfferTtlMs, 'pendingOfferTtlMs', DEFAULT_PENDING_OFFER_TTL_MS);
+  if (typeof now !== 'function') throw new TypeError('now must be a trusted clock function');
+  const pendingOffers = new Map();
   const locallyUnresolvedSettlements = new Set();
+  const transientAdmissions = new Set();
+
+  const activeKeyCount = () => new Set([
+    ...pendingOffers.keys(),
+    ...locallyUnresolvedSettlements,
+    ...transientAdmissions,
+  ]).size;
+
+  const reserveTransientAdmission = (idempotencyKey) => {
+    if (transientAdmissions.has(idempotencyKey)) return false;
+    const alreadyTracked = pendingOffers.has(idempotencyKey)
+      || locallyUnresolvedSettlements.has(idempotencyKey);
+    if (!alreadyTracked && activeKeyCount() >= maxPendingOffers) return false;
+    transientAdmissions.add(idempotencyKey);
+    return true;
+  };
 
   return async (c, next) => {
     const notifyUnresolved = async (payload) => {
@@ -223,8 +261,21 @@ export function x402Paywall({
         // ambiguity into a second settlement attempt or an unstructured 500.
       }
     };
-    const idempotencyKey = c.req.header('Idempotency-Key')?.trim();
+    const idempotencyKey = c.req.header('Idempotency-Key');
     if (!idempotencyKey) return c.json({ error: 'Idempotency-Key header is required' }, 400);
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(idempotencyKey)) {
+      return c.json({
+        error: `Idempotency-Key must be 1-${MAX_IDEMPOTENCY_KEY_CHARACTERS} canonical ASCII characters`,
+        code: 'IDEMPOTENCY_KEY_INVALID',
+      }, 400);
+    }
+    const requestNowMs = now();
+    if (!Number.isSafeInteger(requestNowMs) || requestNowMs < 0) {
+      return c.json({ error: 'trusted offer clock returned an invalid time' }, 503);
+    }
+    for (const [key, offer] of pendingOffers) {
+      if (offer.expiresAtMs <= requestNowMs) pendingOffers.delete(key);
+    }
     const paymentHeader = c.req.header('X-PAYMENT');
     let requestBodyBytes;
     try {
@@ -261,7 +312,23 @@ export function x402Paywall({
       .update(requestBodyBytes)
       .digest('hex')}`;
 
-    let frozen = frozenOffers.get(idempotencyKey) ?? null;
+    let transientAdmission = false;
+    const capacityResponse = () => {
+      const response = c.json({
+        error: 'pending x402 offer capacity is exhausted',
+        code: 'PENDING_OFFER_CAPACITY',
+      }, 503);
+      response.headers.set('Retry-After', '1');
+      return response;
+    };
+    const unresolvedResponse = (settlementReference = null) => c.json({
+      error: 'payment settlement unresolved; trusted reconciliation is required',
+      settlementReference,
+    }, 503);
+
+    try {
+
+    let frozen = pendingOffers.get(idempotencyKey) ?? null;
     if (!frozen) {
       let recovered = null;
       try {
@@ -273,12 +340,20 @@ export function x402Paywall({
         return c.json({ error: 'frozen offer recovery conflicts with authoritative state' }, 409);
       }
       if (recovered) {
-        if (!exactPlainObject(recovered, ['requirements', 'executionQuote'])) {
+        if (!exactPlainObject(recovered, [
+          'requirements', 'executionQuote', 'verificationRequired', 'verifiedPaymentHash',
+        ]) || typeof recovered.verificationRequired !== 'boolean'
+          || (recovered.verifiedPaymentHash !== null
+            && !/^sha256:[0-9a-f]{64}$/.test(recovered.verifiedPaymentHash))
+          || recovered.verificationRequired !== (recovered.verifiedPaymentHash === null)) {
           return c.json({ error: 'persisted frozen offer has an unsupported schema' }, 409);
         }
         frozen = structuredClone(recovered);
-        frozenOffers.set(idempotencyKey, frozen);
       }
+    }
+    if (frozen && (paymentHeader || !pendingOffers.has(idempotencyKey))) {
+      if (!reserveTransientAdmission(idempotencyKey)) return capacityResponse();
+      transientAdmission = true;
     }
     let requirements = frozen?.requirements ?? null;
     let executionQuote = frozen?.executionQuote ?? null;
@@ -287,7 +362,10 @@ export function x402Paywall({
         return c.json({ error: 'Idempotency-Key already binds a different request' }, 409);
       }
     } else {
+      if (locallyUnresolvedSettlements.has(idempotencyKey)) return unresolvedResponse();
       if (paymentHeader) return c.json({ error: 'paid retry has no prior frozen x402 offer' }, 409);
+      if (!reserveTransientAdmission(idempotencyKey)) return capacityResponse();
+      transientAdmission = true;
       try {
         executionQuote = quote ? structuredClone(await quote(c)) : null;
       } catch (error) {
@@ -315,8 +393,9 @@ export function x402Paywall({
       const amountAtomic = executionQuote == null
         ? usdcToAtomic(priceUsdc)
         : executionQuote.grossAtomic;
-      const issuedAt = new Date().toISOString();
-      const expiresAt = new Date(Date.now() + 60_000).toISOString();
+      const issuedAt = new Date(requestNowMs).toISOString();
+      const expiresAtMs = requestNowMs + pendingOfferTtlMs;
+      const expiresAt = new Date(expiresAtMs).toISOString();
       const base = {
         scheme: 'exact',
         network: NETWORK,
@@ -342,11 +421,18 @@ export function x402Paywall({
           expiresAt,
         },
       };
-      frozen = { requirements, executionQuote };
-      frozenOffers.set(idempotencyKey, structuredClone(frozen));
+      frozen = {
+        requirements,
+        executionQuote,
+        expiresAtMs,
+        verificationRequired: true,
+        verifiedPaymentHash: null,
+      };
+      pendingOffers.set(idempotencyKey, structuredClone(frozen));
     }
 
     if (!paymentHeader) {
+      if (locallyUnresolvedSettlements.has(idempotencyKey)) return unresolvedResponse();
       try {
         await lifecycle.onOffered?.({
           idempotencyKey,
@@ -379,7 +465,6 @@ export function x402Paywall({
     try {
       authorization = validateAuthorizationEnvelope(paymentPayload, requirements);
     } catch (error) {
-      await lifecycle.onRejected?.({ idempotencyKey, reason: error.message });
       return c.json({
         x402Version: X402_VERSION,
         error: error.message,
@@ -388,6 +473,49 @@ export function x402Paywall({
     }
     const settlementReference = authorization.nonce.toLowerCase();
     const payer = authorization.from.toLowerCase();
+    const paymentHash = `sha256:${crypto.createHash('sha256').update(paymentHeader).digest('hex')}`;
+    const facilitatorBody = {
+      x402Version: X402_VERSION,
+      paymentPayload,
+      paymentRequirements: requirements,
+    };
+    let facilitatorStarted = null;
+    if (frozen.verifiedPaymentHash !== null && frozen.verifiedPaymentHash !== paymentHash) {
+      return c.json({
+        error: 'paid retry does not match the facilitator-verified payment authorization',
+        code: 'VERIFIED_PAYMENT_MISMATCH',
+      }, 409);
+    }
+    let paymentVerified = frozen.verifiedPaymentHash === paymentHash;
+    const verifyPayment = async () => {
+      facilitatorStarted ??= performance.now();
+      try {
+        return await postJson(transport, 'verify', facilitatorBody, {
+          signal: c.req.raw.signal,
+          timeoutMs: facilitatorTimeoutMs,
+          maxResponseBytes: facilitatorResponseMaxBytes,
+        });
+      } catch {
+        return null;
+      }
+    };
+    if (frozen.verificationRequired && !paymentVerified) {
+      const verify = await verifyPayment();
+      if (verify === null) {
+        return c.json({ error: 'payment verification unresolved', settlementReference }, 503);
+      }
+      if (!verify?.isValid) {
+        return c.json({
+          x402Version: X402_VERSION,
+          error: 'payment verification failed',
+          accepts: [requirements],
+        }, 402);
+      }
+      paymentVerified = true;
+      if (pendingOffers.get(idempotencyKey) === frozen) {
+        frozen.verifiedPaymentHash = paymentHash;
+      }
+    }
     let priorDecision = null;
     try {
       priorDecision = await lifecycle.onSigned?.({
@@ -396,23 +524,30 @@ export function x402Paywall({
         payer,
         requirements: structuredClone(requirements),
         executionQuote: structuredClone(executionQuote),
+        verifiedPaymentHash: paymentHash,
       });
     } catch {
       return c.json({ error: 'paid retry conflicts with authoritative Invocation state' }, 409);
     }
+    const authoritativeSigned = priorDecision?.kind === 'signed';
+    const retainLocalUnresolved = () => {
+      // This key already owns either a pending or transient admission, so
+      // converting it to unresolved cannot raise the hard unique-key count.
+      locallyUnresolvedSettlements.add(idempotencyKey);
+      if (authoritativeSigned) pendingOffers.delete(idempotencyKey);
+    };
 
     if (locallyUnresolvedSettlements.has(idempotencyKey)
         && !['terminal', 'settled'].includes(priorDecision?.kind)) {
-      return c.json({
-        error: 'payment settlement unresolved; trusted reconciliation is required',
-        settlementReference,
-      }, 503);
+      return unresolvedResponse(settlementReference);
     }
 
     if (priorDecision?.kind === 'terminal') {
       if (!terminalReplayIsTrusted(priorDecision, payer)) {
         return c.json({ error: 'terminal replay lacks a settled or refunded transaction' }, 503);
       }
+      locallyUnresolvedSettlements.delete(idempotencyKey);
+      pendingOffers.delete(idempotencyKey);
       const body = {
         replayed: true,
         receipt: priorDecision.receipt,
@@ -443,11 +578,24 @@ export function x402Paywall({
       }, 503);
     }
 
-    const facilitatorBody = {
-      x402Version: X402_VERSION,
-      paymentPayload,
-      paymentRequirements: requirements,
-    };
+    try {
+      await lifecycle.beforeSettlement?.({
+        context: c,
+        idempotencyKey,
+        settlementReference,
+        payer,
+        requirements: structuredClone(requirements),
+        executionQuote: structuredClone(executionQuote),
+        verifiedPaymentHash: paymentHash,
+      });
+    } catch (error) {
+      const known = ['PROVIDER_SPEND_CAP', 'PROVIDER_ATTEMPT_IN_PROGRESS'].includes(error?.code);
+      return c.json({
+        error: known ? error.message : 'pre-settlement authorization failed',
+        code: known ? error.code : 'PRE_SETTLEMENT_AUTHORIZATION',
+      }, 503);
+    }
+
     let settle;
     let facilitatorMs = 0;
     if (priorDecision?.kind === 'settled') {
@@ -455,6 +603,8 @@ export function x402Paywall({
           || String(priorDecision.payer ?? '').toLowerCase() !== payer) {
         return c.json({ error: 'persisted settlement proof does not match the signed payer' }, 503);
       }
+      locallyUnresolvedSettlements.delete(idempotencyKey);
+      pendingOffers.delete(idempotencyKey);
       settle = {
         success: true,
         transaction: priorDecision.txHash,
@@ -462,13 +612,18 @@ export function x402Paywall({
         network: NETWORK,
       };
     } else {
-      const started = performance.now();
-      try {
-        const verify = await postJson(transport, 'verify', facilitatorBody, {
-          signal: c.req.raw.signal,
-          timeoutMs: facilitatorTimeoutMs,
-          maxResponseBytes: facilitatorResponseMaxBytes,
-        });
+      if (!paymentVerified) {
+        const verify = await verifyPayment();
+        if (verify === null) {
+          retainLocalUnresolved();
+          await notifyUnresolved({
+            idempotencyKey,
+            settlementReference,
+            payer,
+            reason: 'facilitator verification unresolved',
+          });
+          return c.json({ error: 'payment verification unresolved', settlementReference }, 503);
+        }
         if (!verify?.isValid) {
           const reason = 'payment verification failed';
           await lifecycle.onRejected?.({ idempotencyKey, reason, settlementReference, payer });
@@ -478,13 +633,17 @@ export function x402Paywall({
             accepts: [requirements],
           }, 402);
         }
+        paymentVerified = true;
+      }
+      try {
+        facilitatorStarted ??= performance.now();
         settle = await postJson(transport, 'settle', facilitatorBody, {
           signal: c.req.raw.signal,
           timeoutMs: facilitatorTimeoutMs,
           maxResponseBytes: facilitatorResponseMaxBytes,
         });
       } catch {
-        locallyUnresolvedSettlements.add(idempotencyKey);
+        retainLocalUnresolved();
         await notifyUnresolved({
           idempotencyKey,
           settlementReference,
@@ -493,11 +652,11 @@ export function x402Paywall({
         });
         return c.json({ error: 'payment settlement unresolved', settlementReference }, 503);
       }
-      facilitatorMs = performance.now() - started;
+      facilitatorMs = performance.now() - facilitatorStarted;
     }
     if (settle?.success !== true) {
       if (settle?.success !== false) {
-        locallyUnresolvedSettlements.add(idempotencyKey);
+        retainLocalUnresolved();
         await notifyUnresolved({
           idempotencyKey,
           settlementReference,
@@ -508,6 +667,7 @@ export function x402Paywall({
       }
       const reason = 'payment settlement failed';
       await lifecycle.onRejected?.({ idempotencyKey, reason, settlementReference, payer });
+      if (authoritativeSigned) pendingOffers.delete(idempotencyKey);
       return c.json({
         x402Version: X402_VERSION,
         error: reason,
@@ -519,7 +679,7 @@ export function x402Paywall({
     if (!validTxHash(settledTxHash)
         || settledPayer !== payer
         || settle.network !== NETWORK) {
-      locallyUnresolvedSettlements.add(idempotencyKey);
+      retainLocalUnresolved();
       await notifyUnresolved({
         idempotencyKey,
         settlementReference,
@@ -543,7 +703,7 @@ export function x402Paywall({
           executionQuote: structuredClone(executionQuote),
         });
       } catch {
-        locallyUnresolvedSettlements.add(idempotencyKey);
+        retainLocalUnresolved();
         await notifyUnresolved({
           idempotencyKey,
           settlementReference,
@@ -555,6 +715,7 @@ export function x402Paywall({
           settlementReference,
         }, 503);
       }
+      if (authoritativeSigned) pendingOffers.delete(idempotencyKey);
     }
 
     c.set('x402', {
@@ -576,6 +737,9 @@ export function x402Paywall({
       settlementReference,
     })));
     c.res.headers.set('X-402-FACILITATOR-MS', facilitatorMs.toFixed(1));
+    } finally {
+      if (transientAdmission) transientAdmissions.delete(idempotencyKey);
+    }
   };
 }
 

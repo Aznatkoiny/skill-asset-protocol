@@ -94,17 +94,37 @@ cross-seller accounting authority.
 
 The mock and standalone paths use the same bounded runtime contract as the tests.
 Collar/Skill request bodies stop at exactly 4,096 bytes; model requests stop at 1 MiB.
-x402 challenges and facilitator JSON stop at 64 KiB; Anthropic JSON and proxy upstream
-responses stop at 1 MiB. Streaming and chunked bodies are counted as they arrive, so
-omitting `Content-Length` does not bypass a limit.
+x402 challenges and facilitator JSON stop at 64 KiB; gateway provider JSON and proxy
+upstream responses stop at 1 MiB. Streaming and chunked bodies are counted as they
+arrive, so omitting `Content-Length` does not bypass a limit.
 
 The default deadlines are 15 seconds for an unpaid buyer fetch, 30 seconds for its
 single paid retry, 5 seconds for request-body reads, 10 seconds each for facilitator
-verify and settle, and 30 seconds for provider execution/upstream response reads. An
-unpaid timeout remains unreserved. Any timeout after the signature keeps the payment
+verify and settle, and 30 seconds for provider execution/upstream response reads. The
+gateway's provider deadline covers both the fetch and the streamed response read,
+cannot be configured above 30 seconds, composes the request abort signal, and refuses
+redirects. Provider HTTP failures never consume or expose the raw response body; all
+public failures are stable and sanitized.
+An unpaid timeout remains unreserved. Any timeout after the signature keeps the payment
 unresolved/held until trusted reconciliation. A provider timeout after settlement
 returns no output and finalizes a signed failed receipt with unknown COGS and the full
 gross held for reconciliation or refund.
+
+The Collar keeps no durable state for an unpaid challenge. Its paywall admits at most
+128 process-local pending offers, each with a 60-second TTL. New keys beyond the cap get
+`503 PENDING_OFFER_CAPACITY` with `Retry-After: 1`; active keys still get their frozen
+offer. `Idempotency-Key` is restricted to 1-128 canonical ASCII characters. Only expired
+unpaid entries are reclaimed. After facilitator verification, the exact payment-header
+digest and all signed, unresolved, settled, refunded, execution, and terminal state
+remain in the append-only journal and are never capacity-pruned. A replay must match that
+digest; legacy journal entries without one are sent back through facilitator verification.
+
+A restart after `402` but before successful verification intentionally loses that
+non-authoritative offer. A paid retry carrying the old key then gets `409` before any
+facilitator or provider call. Keep the Wielder reservation unresolved, reconcile the
+signed nonce through a trusted operator path, and issue a fresh key only after that
+check. A retry whose verified state was journaled continues through the normal durable
+reconciliation and replay paths.
 
 ## 3. Persistent authority contract
 
@@ -162,14 +182,41 @@ reconciliation design exists. Do not manually rewrite the journal.
 
 ## 5. Live Base Sepolia boundary — intentionally blocked in the CLI
 
-Before a live provider run, verify the current provider price sheet, add a new immutable
-catalog version with `evidenceLabel: human_verified`, source, and as-of timestamp. Compute
-its exact canonical `catalogDigest`, set that separately as `LIVE_CATALOG_DIGEST`, set an
-atomic `LIVE_SPEND_CAP_ATOMIC`, then set `ALLOW_LIVE_PROVIDER=1` and `MOCK_LLM=0`. Supply
-the provider credential only through the operator's secret injection. Do not embed approval
-or spend authorization in the catalog itself. Never relabel
-`synthetic-anthropic-2026-07-17-v1` as measured. Automated verification stays on the
-mock facilitator and mock model and uses no real funds.
+Before a live provider run, verify the current provider price sheet and construct a new
+immutable catalog version with `evidenceLabel: human_verified`, source, and as-of
+timestamp. Compute its exact canonical `catalogDigest`; the spend cap must cover the
+maximum worst-case provider cost across every allowed model in that catalog. Do not
+embed approval or spend authorization in the catalog itself, and never relabel a
+`synthetic_config` catalog as measured.
+
+The Collar and gateway use separate operator approvals:
+
+- Collar construction receives `LIVE_CATALOG_DIGEST` and `LIVE_SPEND_CAP_ATOMIC`.
+- The standalone gateway reads `GATEWAY_LIVE_CATALOG_DIGEST` and
+  `GATEWAY_LIVE_SPEND_CAP_ATOMIC`.
+- Both require `ALLOW_LIVE_PROVIDER=1` and `MOCK_LLM=0`; the provider credential is
+  supplied only through operator secret injection.
+
+The Collar approval checks the gross ceiling for one Invocation. The gateway approval
+instead funds one cumulative in-memory process-run budget. After facilitator verification
+and before settlement, the gateway synchronously reserves that request's catalog
+worst-case input/output cost. A valid provider response commits actual catalog-rated
+usage, while a timeout, HTTP failure, invalid usage, or other ambiguous outcome consumes
+the full reservation. A new paid retry is refused before settlement when its worst case
+no longer fits. The cap resets on process restart and is not durable or shared across
+workers, so a production integration still needs an independent persistent aggregate
+budget.
+
+The committed gateway catalog is deliberately `synthetic_config`, so `npm run gateway`
+remains blocked from live execution even if the flags, digest, cap, and provider key are
+set. A reviewed integration must inject a `human_verified` catalog and its exact digest.
+The gateway enforces its catalog's exact model allowlist, output bound, and conservative
+input bound before offering payment. That input bound treats each raw request byte as at
+most one provider token and reserves another 1,024 tokens for provider-side chat
+framing. Provider requests refuse redirects, use one absolute fetch-plus-body deadline,
+whose configurable value cannot exceed 30 seconds, and stream responses through a hard
+1 MiB cap. Automated verification stays on the mock facilitator and mock model and uses
+no real funds.
 
 Provider approval is separate from the x402 settlement gate below. Both gates must be
 satisfied by a future integration; enabling either one does not implicitly authorize

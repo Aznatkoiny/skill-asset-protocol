@@ -5,6 +5,8 @@ import test from 'node:test';
 import {
   createAnthropicExecutor,
   createCollar,
+  DEFAULT_PROVIDER_RESPONSE_BYTES,
+  DEFAULT_PROVIDER_TIMEOUT_MS,
   SKILL_ID,
 } from '../src/collar.mjs';
 import {
@@ -406,13 +408,10 @@ test('Anthropic adapter sends frozen model/cap, emits strict v2 usage, and rejec
     apiKey: 'test-only',
     fetchImpl: async (_url, init) => {
       requests.push(JSON.parse(init.body));
-      return {
-        ok: true,
-        json: async () => ({
+      return new Response(JSON.stringify({
           content: [{ text: 'ok' }],
           usage: { input_tokens: 11, output_tokens: 2 },
-        }),
-      };
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
     },
   });
   const frozen = { model: 'claude-sonnet-4-6', maxInputTokens: 300, maxOutputTokens: 17 };
@@ -429,6 +428,63 @@ test('Anthropic adapter sends frozen model/cap, emits strict v2 usage, and rejec
   }), (error) => error.code === 'PROMPT_TOKEN_BOUND');
   assert.equal(requests.length, 1);
   assert.throws(() => createAnthropicExecutor({ apiKey: '', fetchImpl: async () => {} }), /API key/);
+});
+
+test('Anthropic constructor options cannot raise secure byte or deadline ceilings', () => {
+  for (const [option, value, ceiling] of [
+    ['timeoutMs', DEFAULT_PROVIDER_TIMEOUT_MS + 1, DEFAULT_PROVIDER_TIMEOUT_MS],
+    ['maxResponseBytes', DEFAULT_PROVIDER_RESPONSE_BYTES + 1, DEFAULT_PROVIDER_RESPONSE_BYTES],
+  ]) {
+    assert.throws(
+      () => createAnthropicExecutor({
+        apiKey: 'test-only', fetchImpl: async () => {}, [option]: value,
+      }),
+      new RegExp(`Anthropic ${option} cannot exceed ${ceiling}`),
+    );
+  }
+});
+
+test('Collar constructor cannot raise the outer provider deadline ceiling', () => {
+  const facilitatorTransport = createMockFacilitatorTransport(async () => {
+    throw new Error('facilitator must not run during construction');
+  });
+  assert.throws(
+    () => createCollar({
+      facilitatorTransport,
+      providerTimeoutMs: DEFAULT_PROVIDER_TIMEOUT_MS + 1,
+    }),
+    new RegExp(`providerTimeoutMs cannot exceed ${DEFAULT_PROVIDER_TIMEOUT_MS}`),
+  );
+});
+
+test('Anthropic executor rejects a JSON-only response double without calling its parser', async () => {
+  let jsonCalls = 0;
+  const executor = createAnthropicExecutor({
+    apiKey: 'test-only',
+    fetchImpl: async () => ({
+      ok: true,
+      async json() {
+        jsonCalls += 1;
+        return {
+          content: [{ text: 'must not be trusted' }],
+          usage: { input_tokens: 11, output_tokens: 2 },
+        };
+      },
+    }),
+  });
+  await assert.rejects(() => executor({
+    skillContent: 'system',
+    input: 'hello',
+    model: 'claude-sonnet-4-6',
+    maxInputTokens: 300,
+    maxOutputTokens: 17,
+    promptBytes: 11,
+    estimatedInputTokens: 267,
+  }), (error) => (
+    error.code === 'UPSTREAM_PROVIDER_RESPONSE_SHAPE'
+      && error.message === 'provider response must expose a bounded byte stream'
+  ));
+  assert.equal(jsonCalls, 0);
 });
 
 test('body, complete-prompt, model, and token caps reject before a 402 offer', async () => {

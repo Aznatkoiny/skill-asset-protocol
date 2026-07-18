@@ -75,6 +75,12 @@ function positiveLimit(value, label) {
   return value;
 }
 
+function boundedLimit(value, label, ceiling) {
+  positiveLimit(value, label);
+  if (value > ceiling) throw new TypeError(`${label} cannot exceed ${ceiling}`);
+  return value;
+}
+
 function proxyBoundaryResponse(c, error) {
   const code = error instanceof RuntimeBoundaryError ? error.code : 'UPSTREAM_FAILURE';
   const statuses = {
@@ -299,8 +305,14 @@ export async function payingFetch(account, url, init, options = {}) {
   if (typeof nonceFactory !== 'function') {
     throw paymentError('NONCE_CAPABILITY', 'nonceFactory must be a synchronous function');
   }
-  if (typeof idempotencyKey !== 'string' || !/^[A-Za-z0-9._:-]{1,200}$/.test(idempotencyKey)) {
-    throw paymentError('AUTHORIZATION_ID', 'idempotencyKey must be a bounded canonical token');
+  boundedLimit(unpaidTimeoutMs, 'unpaidTimeoutMs', DEFAULT_UNPAID_FETCH_TIMEOUT_MS);
+  boundedLimit(paidTimeoutMs, 'paidTimeoutMs', DEFAULT_PAID_RETRY_TIMEOUT_MS);
+  if (typeof idempotencyKey !== 'string'
+      || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(idempotencyKey)) {
+    throw paymentError(
+      'AUTHORIZATION_ID',
+      'idempotencyKey must be 1-128 canonical ASCII characters',
+    );
   }
   const request = capturePayingRequestInit(init, idempotencyKey);
   const { method, callerSignal } = request;
@@ -655,11 +667,19 @@ export function createProxy({
   if (receiptKeyId(trustedCollarPublicKeyPem) !== trustedCollarKeyId) {
     throw new Error('pinned Collar public key and key ID do not match');
   }
-  positiveLimit(maxSkillRequestBytes, 'maxSkillRequestBytes');
-  positiveLimit(maxModelRequestBytes, 'maxModelRequestBytes');
-  positiveLimit(maxUpstreamResponseBytes, 'maxUpstreamResponseBytes');
-  positiveLimit(proxyRequestTimeoutMs, 'proxyRequestTimeoutMs');
-  positiveLimit(proxyResponseTimeoutMs, 'proxyResponseTimeoutMs');
+  boundedLimit(maxSkillRequestBytes, 'maxSkillRequestBytes', DEFAULT_PROXY_SKILL_REQUEST_BYTES);
+  boundedLimit(maxModelRequestBytes, 'maxModelRequestBytes', DEFAULT_PROXY_MODEL_REQUEST_BYTES);
+  boundedLimit(
+    maxUpstreamResponseBytes,
+    'maxUpstreamResponseBytes',
+    DEFAULT_PROXY_UPSTREAM_RESPONSE_BYTES,
+  );
+  boundedLimit(proxyRequestTimeoutMs, 'proxyRequestTimeoutMs', DEFAULT_PROXY_REQUEST_TIMEOUT_MS);
+  boundedLimit(
+    proxyResponseTimeoutMs,
+    'proxyResponseTimeoutMs',
+    DEFAULT_PROXY_RESPONSE_TIMEOUT_MS,
+  );
   const ledger = createLedger(ledgerFile);
   const sessionPaymentPolicy = paymentPolicy ?? createDefaultPaymentPolicy({ gatewayUrl, collarUrl });
   const app = new Hono();

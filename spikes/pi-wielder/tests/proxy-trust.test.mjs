@@ -11,6 +11,11 @@ import { canonicalJson, createReceiptSigner, verifySignedReceipt } from '../src/
 import {
   assertReceiptMatchesPayment,
   createProxy,
+  DEFAULT_PROXY_MODEL_REQUEST_BYTES,
+  DEFAULT_PROXY_REQUEST_TIMEOUT_MS,
+  DEFAULT_PROXY_RESPONSE_TIMEOUT_MS,
+  DEFAULT_PROXY_SKILL_REQUEST_BYTES,
+  DEFAULT_PROXY_UPSTREAM_RESPONSE_BYTES,
   loadPinnedCollarTrust,
   startProxy,
 } from '../src/proxy.mjs';
@@ -112,6 +117,26 @@ test('proxy startup accepts only an explicitly pinned public key and matching ke
     trustedCollarPublicKeyPem: signer.publicKeyPem,
     trustedCollarKeyId: `sha256:${'0'.repeat(64)}`,
   }), /do not match/);
+});
+
+test('proxy constructor options cannot raise secure byte or deadline ceilings', () => {
+  const signer = createReceiptSigner();
+  const trust = {
+    trustedCollarPublicKeyPem: signer.publicKeyPem,
+    trustedCollarKeyId: signer.keyId,
+  };
+  for (const [option, value, ceiling] of [
+    ['maxSkillRequestBytes', DEFAULT_PROXY_SKILL_REQUEST_BYTES + 1, DEFAULT_PROXY_SKILL_REQUEST_BYTES],
+    ['maxModelRequestBytes', DEFAULT_PROXY_MODEL_REQUEST_BYTES + 1, DEFAULT_PROXY_MODEL_REQUEST_BYTES],
+    ['maxUpstreamResponseBytes', DEFAULT_PROXY_UPSTREAM_RESPONSE_BYTES + 1, DEFAULT_PROXY_UPSTREAM_RESPONSE_BYTES],
+    ['proxyRequestTimeoutMs', DEFAULT_PROXY_REQUEST_TIMEOUT_MS + 1, DEFAULT_PROXY_REQUEST_TIMEOUT_MS],
+    ['proxyResponseTimeoutMs', DEFAULT_PROXY_RESPONSE_TIMEOUT_MS + 1, DEFAULT_PROXY_RESPONSE_TIMEOUT_MS],
+  ]) {
+    assert.throws(
+      () => createProxy({ account: throwawayAccount(), ...trust, [option]: value }),
+      new RegExp(`${option} cannot exceed ${ceiling}`),
+    );
+  }
 });
 
 test('a valid signature is insufficient when receipt semantics do not match the paid request', () => {

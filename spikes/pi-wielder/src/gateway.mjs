@@ -15,9 +15,20 @@ import { pathToFileURL } from 'node:url';
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
 import {
+  assertLiveCatalogApproval,
+  catalogDigest,
+  usageCostAtomic,
+} from './execution-economics.mjs';
+import {
+  readJsonBody,
+  RuntimeBoundaryError,
+  withWallClockDeadline,
+} from './runtime-boundaries.mjs';
+import {
   createLiveFacilitatorTransport,
   createMockFacilitatorTransport,
   x402Paywall,
+  x402RequestBodyBytes,
   x402RequestBodyText,
 } from './x402-seller.mjs';
 
@@ -25,10 +36,238 @@ import {
 // token; per-call keeps the 402 requirements computable before inference).
 export const MODEL_PRICES_USDC = Object.freeze({ claude: '0.041', gpt: '0.087', default: '0.05' });
 export const MAX_GATEWAY_REQUEST_BODY_BYTES = 1024 * 1024;
-const priceFor = (model = '') =>
-  model.startsWith('claude') ? MODEL_PRICES_USDC.claude
-  : model.startsWith('gpt') ? MODEL_PRICES_USDC.gpt
-  : MODEL_PRICES_USDC.default;
+export const DEFAULT_GATEWAY_PROVIDER_TIMEOUT_MS = 30_000;
+export const MAX_GATEWAY_PROVIDER_RESPONSE_BYTES = 1024 * 1024;
+export const GATEWAY_PROVIDER_FRAMING_TOKEN_ALLOWANCE = 1_024;
+export const GATEWAY_EXECUTION_CATALOG = deepFreeze({
+  schemaVersion: 2,
+  version: 'synthetic-gateway-2026-07-18-v1',
+  evidenceLabel: 'synthetic_config',
+  source: null,
+  asOf: null,
+  models: {
+    'claude-sonnet-4-6': {
+      provider: 'anthropic',
+      inputAtomicPerMillionTokens: '3000000',
+      outputAtomicPerMillionTokens: '15000000',
+      maxInputTokens: 200_000,
+      maxOutputTokens: 8_192,
+    },
+    'gpt-5.2': {
+      provider: 'openai',
+      inputAtomicPerMillionTokens: '1000000',
+      outputAtomicPerMillionTokens: '1000000',
+      maxInputTokens: 128_000,
+      maxOutputTokens: 8_192,
+    },
+    // Retained only for the offline protocol e2e's generic mock challenge.
+    'gpt-x': {
+      provider: 'openai',
+      inputAtomicPerMillionTokens: '1000000',
+      outputAtomicPerMillionTokens: '1000000',
+      maxInputTokens: 128_000,
+      maxOutputTokens: 8_192,
+    },
+  },
+});
+
+const LIVE_PROVIDERS = new Set(['anthropic', 'openai']);
+
+class GatewayBoundaryError extends Error {
+  constructor(code, message, status) {
+    super(message);
+    this.name = 'GatewayBoundaryError';
+    this.code = code;
+    this.status = status;
+  }
+}
+
+function deepFreeze(value) {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) deepFreeze(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+function positiveLimit(value, label) {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new TypeError(`${label} must be a positive safe integer`);
+  }
+  return value;
+}
+
+function gatewayFailure(code, message, status) {
+  throw new GatewayBoundaryError(code, message, status);
+}
+
+function priceForProvider(provider) {
+  if (provider === 'anthropic') return MODEL_PRICES_USDC.claude;
+  if (provider === 'openai') return MODEL_PRICES_USDC.gpt;
+  gatewayFailure('MODEL_NOT_ALLOWED', 'gateway model is not allowed', 400);
+}
+
+function frozenCatalog(value) {
+  const snapshot = structuredClone(value);
+  catalogDigest(snapshot);
+  for (const policy of Object.values(snapshot.models)) {
+    if (!LIVE_PROVIDERS.has(policy.provider)) {
+      throw new TypeError('gateway catalog provider must be anthropic or openai');
+    }
+  }
+  return deepFreeze(snapshot);
+}
+
+function configuredLiveApproval(value) {
+  if (value !== undefined) return value;
+  return process.env.GATEWAY_LIVE_CATALOG_DIGEST && process.env.GATEWAY_LIVE_SPEND_CAP_ATOMIC
+    ? {
+      catalogDigest: process.env.GATEWAY_LIVE_CATALOG_DIGEST,
+      spendCapAtomic: process.env.GATEWAY_LIVE_SPEND_CAP_ATOMIC,
+    }
+    : null;
+}
+
+function configuredProviderKeys(value) {
+  if (value !== undefined) return structuredClone(value);
+  return {
+    anthropic: process.env.ANTHROPIC_API_KEY ?? null,
+    openai: process.env.OPENAI_API_KEY ?? null,
+  };
+}
+
+function assertLiveGatewayApproval({ catalog, approval }) {
+  let maximumWorstCaseCost = 0n;
+  for (const [model, policy] of Object.entries(catalog.models)) {
+    const cost = usageCostAtomic({
+      schemaVersion: 2,
+      model,
+      inputTokens: policy.maxInputTokens,
+      outputTokens: policy.maxOutputTokens,
+    }, catalog);
+    if (cost > maximumWorstCaseCost) maximumWorstCaseCost = cost;
+  }
+  return assertLiveCatalogApproval({
+    catalog,
+    approval,
+    grossAtomic: maximumWorstCaseCost.toString(),
+  });
+}
+
+function createProviderSpendBudget(catalog, approvedBoundary) {
+  const cap = BigInt(approvedBoundary.spendCapAtomic);
+  let committed = 0n;
+  let reserved = 0n;
+
+  const worstCaseCost = (plan) => usageCostAtomic({
+    schemaVersion: 2,
+    model: plan.model,
+    inputTokens: plan.policy.maxInputTokens,
+    outputTokens: plan.maxOutputTokens,
+  }, catalog);
+
+  const availableReservation = (plan) => {
+    const amount = worstCaseCost(plan);
+    if (committed + reserved + amount > cap) {
+      gatewayFailure(
+        'PROVIDER_SPEND_CAP',
+        'live provider spend budget cannot cover this request',
+        503,
+      );
+    }
+    return amount;
+  };
+
+  return {
+    assertAvailable(plan) {
+      availableReservation(plan);
+    },
+    reserve(plan) {
+      const amount = availableReservation(plan);
+      reserved += amount;
+      let state = 'reserved';
+      return {
+        commit(usage) {
+          if (state !== 'reserved') return;
+          const actual = usageCostAtomic({
+            schemaVersion: 2,
+            model: plan.model,
+            inputTokens: usage.prompt_tokens,
+            outputTokens: usage.completion_tokens,
+          }, catalog);
+          if (actual > amount) {
+            gatewayFailure(
+              'UPSTREAM_PROVIDER_USAGE',
+              'upstream provider usage is invalid',
+              502,
+            );
+          }
+          reserved -= amount;
+          committed += actual;
+          state = 'committed';
+        },
+        holdWorstCase() {
+          if (state !== 'reserved') return;
+          reserved -= amount;
+          committed += amount;
+          state = 'held';
+        },
+        releaseBeforeFetch() {
+          if (state !== 'reserved') return;
+          reserved -= amount;
+          state = 'released';
+        },
+      };
+    },
+  };
+}
+
+function requestPlan(c, catalog) {
+  const cached = c.get('gatewayRequestPlan');
+  if (cached) return cached;
+  const body = gatewayRequestBody(c);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    gatewayFailure('REQUEST_SCHEMA', 'gateway request is invalid', 400);
+  }
+  if (typeof body.model !== 'string' || !Object.hasOwn(catalog.models, body.model)) {
+    gatewayFailure('MODEL_NOT_ALLOWED', 'gateway model is not allowed', 400);
+  }
+  const policy = catalog.models[body.model];
+  const hasLegacyLimit = Object.hasOwn(body, 'max_tokens');
+  const hasCurrentLimit = Object.hasOwn(body, 'max_completion_tokens');
+  if (hasLegacyLimit && hasCurrentLimit) {
+    gatewayFailure('TOKEN_LIMIT', 'gateway request must provide only one output-token limit', 400);
+  }
+  const requestedOutputTokens = hasLegacyLimit
+    ? body.max_tokens
+    : hasCurrentLimit ? body.max_completion_tokens : Math.min(2_048, policy.maxOutputTokens);
+  if (!Number.isSafeInteger(requestedOutputTokens)
+      || requestedOutputTokens <= 0
+      || requestedOutputTokens > policy.maxOutputTokens) {
+    gatewayFailure('TOKEN_LIMIT', 'gateway output-token limit exceeds the catalog policy', 400);
+  }
+  const requestBodyBytes = x402RequestBodyBytes(c).byteLength;
+  const conservativeInputTokenBound = requestBodyBytes
+    + GATEWAY_PROVIDER_FRAMING_TOKEN_ALLOWANCE;
+  if (conservativeInputTokenBound > policy.maxInputTokens) {
+    gatewayFailure(
+      'PROMPT_TOKEN_BOUND',
+      'gateway request plus provider framing exceeds the conservative catalog input-token bound',
+      400,
+    );
+  }
+  const plan = deepFreeze({
+    body,
+    model: body.model,
+    provider: policy.provider,
+    policy,
+    maxOutputTokens: requestedOutputTokens,
+    requestBodyBytes,
+    conservativeInputTokenBound,
+  });
+  c.set('gatewayRequestPlan', plan);
+  return plan;
+}
 
 function gatewayRequestBody(c) {
   const cached = c.get('gatewayRequestBody');
@@ -42,9 +281,76 @@ function gatewayRequestBody(c) {
 export function createGateway({
   facilitatorTransport,
   payTo = process.env.PAY_TO_ADDRESS || '0x000000000000000000000000000000000000dEaD',
-  mockLlm = process.env.MOCK_LLM === '1',
+  mockLlm = process.env.MOCK_LLM !== '0',
+  allowLiveProvider = process.env.ALLOW_LIVE_PROVIDER === '1',
+  providerCatalog = GATEWAY_EXECUTION_CATALOG,
+  liveApproval = undefined,
+  providerFetch = fetch,
+  providerApiKeys = undefined,
+  providerTimeoutMs = DEFAULT_GATEWAY_PROVIDER_TIMEOUT_MS,
+  maxProviderResponseBytes = MAX_GATEWAY_PROVIDER_RESPONSE_BYTES,
 } = {}) {
+  positiveLimit(providerTimeoutMs, 'providerTimeoutMs');
+  positiveLimit(maxProviderResponseBytes, 'maxProviderResponseBytes');
+  if (providerTimeoutMs > DEFAULT_GATEWAY_PROVIDER_TIMEOUT_MS) {
+    throw new RangeError(`providerTimeoutMs must not exceed ${DEFAULT_GATEWAY_PROVIDER_TIMEOUT_MS} milliseconds`);
+  }
+  if (maxProviderResponseBytes > MAX_GATEWAY_PROVIDER_RESPONSE_BYTES) {
+    throw new RangeError('maxProviderResponseBytes must not exceed one MiB');
+  }
+  const catalog = frozenCatalog(providerCatalog);
+  const keys = configuredProviderKeys(providerApiKeys);
+  let approvedLiveBoundary = null;
+  if (!mockLlm) {
+    if (allowLiveProvider !== true) {
+      throw new Error('live gateway execution requires an explicit live provider gate');
+    }
+    if (typeof providerFetch !== 'function') throw new TypeError('gateway providerFetch must be a function');
+    approvedLiveBoundary = assertLiveGatewayApproval({
+      catalog,
+      approval: configuredLiveApproval(liveApproval),
+    });
+    for (const provider of new Set(Object.values(catalog.models).map((policy) => policy.provider))) {
+      if (typeof keys?.[provider] !== 'string' || keys[provider].length === 0) {
+        throw new Error(`live gateway requires an injected ${provider} provider key`);
+      }
+    }
+  }
+  const providerSpendBudget = approvedLiveBoundary
+    ? createProviderSpendBudget(catalog, approvedLiveBoundary)
+    : null;
+  const providerSpendClaims = new Map();
+  const releaseProviderSpendClaim = (idempotencyKey) => {
+    const claim = providerSpendClaims.get(idempotencyKey);
+    if (!claim) return;
+    if (claim.state === 'reserved') claim.reservation.releaseBeforeFetch();
+    providerSpendClaims.delete(idempotencyKey);
+  };
+  const providerPaymentLifecycle = providerSpendBudget ? {
+    async beforeSettlement({ context, idempotencyKey }) {
+      if (providerSpendClaims.has(idempotencyKey)) {
+        gatewayFailure(
+          'PROVIDER_ATTEMPT_IN_PROGRESS',
+          'a provider attempt already owns this payment authorization',
+          503,
+        );
+      }
+      const plan = requestPlan(context, catalog);
+      const reservation = providerSpendBudget.reserve(plan);
+      providerSpendClaims.set(idempotencyKey, { plan, reservation, state: 'reserved' });
+    },
+    async onRejected({ idempotencyKey }) {
+      releaseProviderSpendClaim(idempotencyKey);
+    },
+    async onUnresolved({ idempotencyKey }) {
+      releaseProviderSpendClaim(idempotencyKey);
+    },
+  } : {};
   const app = new Hono();
+  app.onError((error, c) => {
+    const failure = publicGatewayFailure(error);
+    return c.json({ error: failure.message, code: failure.code }, failure.status);
+  });
   app.get('/healthz', (c) => c.json({ ok: true, prices: MODEL_PRICES_USDC }));
 
   app.post(
@@ -52,18 +358,51 @@ export function createGateway({
     x402Paywall({
       // The x402 boundary owns one bounded stream read. Pricing and execution
       // parse its cached text instead of consuming the request twice.
-      price: async (c) => priceFor(gatewayRequestBody(c).model),
+      price: async (c) => {
+        const plan = requestPlan(c, catalog);
+        providerSpendBudget?.assertAvailable(plan);
+        return priceForProvider(plan.provider);
+      },
       payTo,
       facilitatorTransport,
+      lifecycle: providerPaymentLifecycle,
       description: 'per-call model inference (x402 reseller, testnet)',
       maxRequestBodyBytes: MAX_GATEWAY_REQUEST_BODY_BYTES,
     }),
     async (c) => {
-      const body = gatewayRequestBody(c);
-      const model = body.model ?? '';
-      const completion = mockLlm ? mockCompletion(body)
-        : model.startsWith('claude') ? await viaAnthropic(body)
-        : await viaOpenAI(body); // gpt-* and anything else
+      const plan = requestPlan(c, catalog);
+      const body = plan.body;
+      let completion;
+      if (mockLlm) {
+        completion = mockCompletion(body);
+      } else {
+        const x402State = c.get('x402');
+        const claim = providerSpendClaims.get(x402State?.idempotencyKey);
+        if (!claim || claim.state !== 'reserved' || claim.plan.model !== plan.model) {
+          if (x402State?.idempotencyKey) releaseProviderSpendClaim(x402State.idempotencyKey);
+          gatewayFailure(
+            'PROVIDER_RESERVATION_MISSING',
+            'provider spend authorization is unavailable after settlement',
+            503,
+          );
+        }
+        claim.state = 'executing';
+        try {
+          completion = await executeLiveProvider(plan, {
+            fetchImpl: providerFetch,
+            apiKey: keys[plan.provider],
+            signal: c.req.raw.signal,
+            timeoutMs: providerTimeoutMs,
+            maxResponseBytes: maxProviderResponseBytes,
+          });
+          claim.reservation.commit(completion.usage);
+        } catch (error) {
+          claim.reservation.holdWorstCase();
+          throw error;
+        } finally {
+          providerSpendClaims.delete(x402State.idempotencyKey);
+        }
+      }
       if (!body.stream) return c.json(completion);
       // OpenAI-style clients (pi included) speak SSE. The spike computes the
       // full completion first, then replays it as one compliant stream:
@@ -134,31 +473,142 @@ function toAnthropicMessages(oaiMessages = []) {
   return out;
 }
 
-async function viaAnthropic(body) {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY required for claude-* models unless MOCK_LLM=1');
+function publicGatewayFailure(error) {
+  if (error instanceof GatewayBoundaryError) {
+    return { code: error.code, message: error.message, status: error.status };
+  }
+  if (error instanceof RuntimeBoundaryError) {
+    const failures = {
+      UPSTREAM_PROVIDER_TIMEOUT: {
+        message: 'upstream provider timed out', status: 504,
+      },
+      UPSTREAM_PROVIDER_ABORTED: {
+        message: 'upstream provider was aborted', status: 504,
+      },
+      UPSTREAM_PROVIDER_RESPONSE_TOO_LARGE: {
+        message: 'upstream provider response exceeds the byte limit', status: 502,
+      },
+      UPSTREAM_PROVIDER_RESPONSE_READ_FAILED: {
+        message: 'upstream provider response is invalid', status: 502,
+      },
+      UPSTREAM_PROVIDER_RESPONSE_JSON: {
+        message: 'upstream provider response is invalid', status: 502,
+      },
+    };
+    const known = failures[error.code];
+    if (known) return { code: error.code, ...known };
+  }
+  return {
+    code: 'UPSTREAM_PROVIDER_ERROR',
+    message: 'upstream provider request failed',
+    status: 502,
+  };
+}
+
+function providerReadOptions(maxResponseBytes, signal) {
+  return {
+    maxBytes: maxResponseBytes,
+    tooLargeCode: 'UPSTREAM_PROVIDER_RESPONSE_TOO_LARGE',
+    tooLargeMessage: 'upstream provider response exceeds the JSON byte limit',
+    readErrorCode: 'UPSTREAM_PROVIDER_RESPONSE_READ_FAILED',
+    readErrorMessage: 'upstream provider response could not be read',
+    jsonErrorCode: 'UPSTREAM_PROVIDER_RESPONSE_JSON',
+    jsonErrorMessage: 'upstream provider response was not JSON',
+    signal,
+  };
+}
+
+function validateProviderUsage(plan, inputTokens, outputTokens) {
+  if (!Number.isSafeInteger(inputTokens) || inputTokens < 0
+      || !Number.isSafeInteger(outputTokens) || outputTokens < 0
+      || inputTokens > plan.policy.maxInputTokens
+      || outputTokens > plan.maxOutputTokens) {
+    gatewayFailure('UPSTREAM_PROVIDER_USAGE', 'upstream provider usage is invalid', 502);
+  }
+  return { inputTokens, outputTokens };
+}
+
+function anthropicRequest(plan, apiKey) {
+  const body = plan.body;
   const system = (body.messages ?? []).filter((m) => m.role === 'system').map((m) => contentToText(m.content)).join('\n') || undefined;
   const tools = (body.tools ?? []).map((t) => ({
     name: t.function.name,
     description: t.function.description ?? '',
     input_schema: t.function.parameters ?? { type: 'object', properties: {} },
   }));
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-    body: JSON.stringify({
-      model: body.model,
-      max_tokens: body.max_tokens ?? 2048,
-      system,
-      messages: toAnthropicMessages(body.messages),
-      ...(tools.length ? { tools } : {}),
-    }),
-  });
-  if (!res.ok) throw new Error(`Anthropic API ${res.status}: ${await res.text()}`);
-  const data = await res.json();
-  const text = data.content?.filter((b) => b.type === 'text').map((b) => b.text).join('') ?? '';
-  const toolCalls = (data.content ?? []).filter((b) => b.type === 'tool_use').map((b) => ({
-    id: b.id, type: 'function', function: { name: b.name, arguments: JSON.stringify(b.input ?? {}) },
+  return {
+    url: 'https://api.anthropic.com/v1/messages',
+    init: {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: plan.model,
+        max_tokens: plan.maxOutputTokens,
+        system,
+        messages: toAnthropicMessages(body.messages),
+        ...(tools.length ? { tools } : {}),
+      }),
+    },
+  };
+}
+
+function openAiRequest(plan, apiKey) {
+  const body = plan.body;
+  const allowedFields = [
+    'messages', 'tools', 'tool_choice', 'temperature', 'top_p', 'stop',
+    'presence_penalty', 'frequency_penalty', 'response_format', 'seed', 'user',
+  ];
+  const forwarded = Object.fromEntries(allowedFields
+    .filter((field) => Object.hasOwn(body, field))
+    .map((field) => [field, body[field]]));
+  return {
+    url: 'https://api.openai.com/v1/chat/completions',
+    init: {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        authorization: `Bearer ${apiKey}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        ...forwarded,
+        model: plan.model,
+        max_completion_tokens: plan.maxOutputTokens,
+        n: 1,
+        stream: false,
+      }),
+    },
+  };
+}
+
+function providerRequest(plan, apiKey) {
+  return plan.provider === 'anthropic'
+    ? anthropicRequest(plan, apiKey)
+    : openAiRequest(plan, apiKey);
+}
+
+function anthropicCompletion(plan, data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)
+      || !Array.isArray(data.content) || !data.usage || typeof data.usage !== 'object') {
+    gatewayFailure('UPSTREAM_PROVIDER_RESPONSE_SCHEMA', 'upstream provider response is invalid', 502);
+  }
+  const usage = validateProviderUsage(
+    plan,
+    data.usage.input_tokens,
+    data.usage.output_tokens,
+  );
+  const text = data.content.filter((block) => block?.type === 'text')
+    .map((block) => (typeof block.text === 'string' ? block.text : ''))
+    .join('');
+  const toolCalls = data.content.filter((block) => block?.type === 'tool_use').map((block) => ({
+    id: block.id,
+    type: 'function',
+    function: { name: block.name, arguments: JSON.stringify(block.input ?? {}) },
   }));
   return {
     id: data.id,
@@ -176,28 +626,67 @@ async function viaAnthropic(body) {
         : data.stop_reason === 'max_tokens' ? 'length' : 'stop',
     }],
     usage: {
-      prompt_tokens: data.usage?.input_tokens ?? 0,
-      completion_tokens: data.usage?.output_tokens ?? 0,
-      total_tokens: (data.usage?.input_tokens ?? 0) + (data.usage?.output_tokens ?? 0),
+      prompt_tokens: usage.inputTokens,
+      completion_tokens: usage.outputTokens,
+      total_tokens: usage.inputTokens + usage.outputTokens,
     },
   };
 }
 
-async function viaOpenAI(body) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error('OPENAI_API_KEY required for gpt-* models unless MOCK_LLM=1');
-  // Always fetch buffered — the gateway synthesizes its own SSE downstream.
-  const { stream, stream_options, max_tokens, ...rest } = body;
-  // Newer OpenAI models reject max_tokens (400 unsupported_parameter) and
-  // require max_completion_tokens; clients (pi included) send max_tokens.
-  if (max_tokens != null && rest.max_completion_tokens == null) rest.max_completion_tokens = max_tokens;
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
-    body: JSON.stringify(rest),
-  });
-  if (!res.ok) throw new Error(`OpenAI API ${res.status}: ${await res.text()}`);
-  return res.json();
+function openAiCompletion(plan, data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)
+      || !Array.isArray(data.choices) || data.choices.length === 0
+      || !data.usage || typeof data.usage !== 'object') {
+    gatewayFailure('UPSTREAM_PROVIDER_RESPONSE_SCHEMA', 'upstream provider response is invalid', 502);
+  }
+  validateProviderUsage(
+    plan,
+    data.usage.prompt_tokens,
+    data.usage.completion_tokens,
+  );
+  return data;
+}
+
+async function executeLiveProvider(plan, {
+  fetchImpl,
+  apiKey,
+  signal,
+  timeoutMs,
+  maxResponseBytes,
+}) {
+  try {
+    return await withWallClockDeadline({
+      signal,
+      timeoutMs,
+      timeoutCode: 'UPSTREAM_PROVIDER_TIMEOUT',
+      timeoutMessage: 'upstream provider timed out',
+      abortedCode: 'UPSTREAM_PROVIDER_ABORTED',
+      abortedMessage: 'upstream provider was aborted',
+    }, async (composedSignal) => {
+      const request = providerRequest(plan, apiKey);
+      const response = await fetchImpl(request.url, {
+        ...request.init,
+        redirect: 'error',
+        signal: composedSignal,
+      });
+      if (!response?.ok) {
+        try {
+          Promise.resolve(response?.body?.cancel?.()).catch(() => {});
+        } catch { /* the sanitized HTTP failure owns the result */ }
+        gatewayFailure('UPSTREAM_PROVIDER_HTTP', 'upstream provider request failed', 502);
+      }
+      const data = await readJsonBody(
+        response,
+        providerReadOptions(maxResponseBytes, composedSignal),
+      );
+      return plan.provider === 'anthropic'
+        ? anthropicCompletion(plan, data)
+        : openAiCompletion(plan, data);
+    });
+  } catch (error) {
+    if (error instanceof GatewayBoundaryError || error instanceof RuntimeBoundaryError) throw error;
+    gatewayFailure('UPSTREAM_PROVIDER_ERROR', 'upstream provider request failed', 502);
+  }
 }
 
 /** Boot helper shared by the standalone script and e2e.mjs. */

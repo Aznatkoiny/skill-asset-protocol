@@ -105,6 +105,11 @@ export async function readBodyBytes(source, {
 }) {
   assertPositiveLimit(maxBytes, 'maxBytes');
   const bodySignal = assertSignal(signal);
+  if (bodySignal?.aborted) {
+    const error = new RuntimeBoundaryError(readErrorCode, readErrorMessage);
+    await cancelQuietly(source?.body, error);
+    throw error;
+  }
   const declared = contentLength(source);
   if (declared !== null && declared > maxBytes) {
     await cancelQuietly(source?.body, new RuntimeBoundaryError(tooLargeCode, tooLargeMessage));

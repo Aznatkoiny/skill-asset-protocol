@@ -387,6 +387,25 @@ test('payment authorization claim distinguishes the first signer from exact retr
   assert.equal(journal.events.filter((event) => event.type === 'payment.signed').length, 1);
 });
 
+test('verified payment header identity is append-only and rejects a conflicting replay', () => {
+  const journal = fixture();
+  offer(journal);
+  const verifiedPaymentHash = `sha256:${'a'.repeat(64)}`;
+  journal.recordExternalPaymentVerification(declaration.idempotencyKey, { verifiedPaymentHash });
+  journal.recordExternalPaymentVerification(declaration.idempotencyKey, { verifiedPaymentHash });
+  assert.equal(journal.getVerifiedPaymentHash(declaration.idempotencyKey), verifiedPaymentHash);
+  assert.equal(
+    journal.events.filter((event) => event.type === 'payment.authorization_verified').length,
+    1,
+  );
+  assert.throws(
+    () => journal.recordExternalPaymentVerification(declaration.idempotencyKey, {
+      verifiedPaymentHash: `sha256:${'b'.repeat(64)}`,
+    }),
+    /different verified payment authorization/,
+  );
+});
+
 function temporaryAuthority(prefix = 'collar-journal-') {
   const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
   return {

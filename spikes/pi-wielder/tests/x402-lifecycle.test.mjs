@@ -11,6 +11,13 @@ import {
   APPROVED_LIVE_FACILITATOR_BASE,
   createLiveFacilitatorTransport,
   createMockFacilitatorTransport,
+  DEFAULT_FACILITATOR_RESPONSE_BYTES,
+  DEFAULT_FACILITATOR_TIMEOUT_MS,
+  DEFAULT_PENDING_OFFER_LIMIT,
+  DEFAULT_PENDING_OFFER_TTL_MS,
+  DEFAULT_X402_REQUEST_BODY_BYTES,
+  DEFAULT_X402_REQUEST_BODY_TIMEOUT_MS,
+  MAX_X402_REQUEST_BODY_BYTES,
   x402Paywall,
 } from '../src/x402-seller.mjs';
 
@@ -59,6 +66,9 @@ function resourceApp({
   requestBodyTimeoutMs,
   facilitatorTimeoutMs,
   facilitatorResponseMaxBytes,
+  maxPendingOffers,
+  pendingOfferTtlMs,
+  now,
 } = {}) {
   const app = new Hono();
   app.post('/resource', x402Paywall({
@@ -71,6 +81,9 @@ function resourceApp({
     ...(requestBodyTimeoutMs === undefined ? {} : { requestBodyTimeoutMs }),
     ...(facilitatorTimeoutMs === undefined ? {} : { facilitatorTimeoutMs }),
     ...(facilitatorResponseMaxBytes === undefined ? {} : { facilitatorResponseMaxBytes }),
+    ...(maxPendingOffers === undefined ? {} : { maxPendingOffers }),
+    ...(pendingOfferTtlMs === undefined ? {} : { pendingOfferTtlMs }),
+    ...(now === undefined ? {} : { now }),
   }), handler ?? ((c) => c.json({ ok: true })));
   return app;
 }
@@ -128,7 +141,10 @@ test('a restarted paywall accepts only the complete persisted frozen offer', asy
     quote: async () => { quoteCalls += 1; return structuredClone(executionQuote); },
     lifecycle: {
       async onOffered({ requirements, executionQuote: offeredQuote }) {
-        persistedOffer = structuredClone({ requirements, executionQuote: offeredQuote });
+        persistedOffer = structuredClone({
+          requirements, executionQuote: offeredQuote, verificationRequired: true,
+          verifiedPaymentHash: null,
+        });
         offeredQuote.model = 'mutated-by-untrusted-hook';
       },
     },
@@ -194,7 +210,12 @@ test('restart rejects different request bytes under the frozen idempotency key b
     facilitatorTransport: transport,
     lifecycle: {
       async loadFrozenOffer() {
-        return { requirements: structuredClone(persistedRequirements), executionQuote: null };
+        return {
+          requirements: structuredClone(persistedRequirements),
+          executionQuote: null,
+          verificationRequired: true,
+          verifiedPaymentHash: null,
+        };
       },
     },
     handler: (c) => { executions += 1; return c.json({ ok: true }); },
@@ -227,6 +248,290 @@ test('missing idempotency and paid retry without a frozen offer fail before faci
   });
   assert.equal(orphan.status, 409);
   assert.equal(facilitatorCalls, 0);
+});
+
+test('idempotency keys are canonical bounded ASCII before quote, lifecycle, or facilitator work', async () => {
+  let quoteCalls = 0;
+  let lifecycleCalls = 0;
+  let facilitatorCalls = 0;
+  const app = resourceApp({
+    facilitatorTransport: createMockFacilitatorTransport(async () => {
+      facilitatorCalls += 1;
+      throw new Error('facilitator must not run');
+    }),
+    quote: async () => {
+      quoteCalls += 1;
+      return structuredClone(executionQuote);
+    },
+    lifecycle: { async onOffered() { lifecycleCalls += 1; } },
+  });
+
+  for (const idempotencyKey of [
+    'key-with-unicode-é',
+    'x'.repeat(129),
+    'key/with/slashes',
+  ]) {
+    const response = await app.request('http://seller.test/resource', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: '{}',
+    });
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), {
+      error: 'Idempotency-Key must be 1-128 canonical ASCII characters',
+      code: 'IDEMPOTENCY_KEY_INVALID',
+    });
+  }
+
+  const accepted = await app.request('http://seller.test/resource', {
+    method: 'POST',
+    headers: { 'Idempotency-Key': `a${'x'.repeat(127)}` },
+    body: '{}',
+  });
+  assert.equal(accepted.status, 402);
+  assert.equal(quoteCalls, 1);
+  assert.equal(lifecycleCalls, 1);
+  assert.equal(facilitatorCalls, 0);
+});
+
+test('pending unpaid offers have a strict admission cap and expire without evicting active keys', async () => {
+  let clockMs = 1_000_000;
+  let quoteCalls = 0;
+  const app = resourceApp({
+    facilitatorTransport: createMockFacilitatorTransport(async () => {
+      throw new Error('facilitator must not run for unpaid offers');
+    }),
+    quote: async () => {
+      quoteCalls += 1;
+      return structuredClone(executionQuote);
+    },
+    maxPendingOffers: 2,
+    pendingOfferTtlMs: 1_000,
+    now: () => clockMs,
+  });
+  const request = (key) => app.request('http://seller.test/resource', {
+    method: 'POST', headers: { 'Idempotency-Key': key }, body: '{}',
+  });
+
+  assert.equal((await request('pending-a')).status, 402);
+  assert.equal((await request('pending-b')).status, 402);
+  const full = await request('pending-c');
+  assert.equal(full.status, 503);
+  assert.deepEqual(await full.json(), {
+    error: 'pending x402 offer capacity is exhausted',
+    code: 'PENDING_OFFER_CAPACITY',
+  });
+  assert.equal(full.headers.get('Retry-After'), '1');
+  assert.equal((await request('pending-a')).status, 402);
+  assert.equal(quoteCalls, 2);
+
+  clockMs += 1_001;
+  assert.equal((await request('pending-c')).status, 402);
+  assert.equal(quoteCalls, 3);
+});
+
+test('pending admission is reserved before concurrent quote work begins', async () => {
+  let quoteCalls = 0;
+  let releaseFirstQuote;
+  let firstQuoteStarted;
+  const quoteStarted = new Promise((resolve) => { firstQuoteStarted = resolve; });
+  const quoteRelease = new Promise((resolve) => { releaseFirstQuote = resolve; });
+  const app = resourceApp({
+    facilitatorTransport: createMockFacilitatorTransport(async () => {
+      throw new Error('facilitator must not run for unpaid offers');
+    }),
+    quote: async () => {
+      quoteCalls += 1;
+      firstQuoteStarted();
+      await quoteRelease;
+      return structuredClone(executionQuote);
+    },
+    maxPendingOffers: 1,
+  });
+  const request = (key) => app.request('http://seller.test/resource', {
+    method: 'POST', headers: { 'Idempotency-Key': key }, body: '{}',
+  });
+
+  const firstPromise = request('concurrent-pending-a');
+  await quoteStarted;
+  const secondPromise = request('concurrent-pending-b');
+  await new Promise((resolve) => setImmediate(resolve));
+  releaseFirstQuote();
+
+  const [first, second] = await Promise.all([firstPromise, secondPromise]);
+  assert.equal(first.status, 402);
+  assert.equal(second.status, 503);
+  assert.deepEqual(await second.json(), {
+    error: 'pending x402 offer capacity is exhausted',
+    code: 'PENDING_OFFER_CAPACITY',
+  });
+  assert.equal(quoteCalls, 1);
+});
+
+test('a paid request retains admission if its pending offer expires during verification', async () => {
+  let clockMs = Date.now();
+  let releaseVerification;
+  let verificationStarted;
+  const started = new Promise((resolve) => { verificationStarted = resolve; });
+  const release = new Promise((resolve) => { releaseVerification = resolve; });
+  const facilitator = createMockFacilitator();
+  const app = resourceApp({
+    facilitatorTransport: createMockFacilitatorTransport(async (url, init) => {
+      if (new URL(url).pathname === '/verify') {
+        verificationStarted();
+        await release;
+      }
+      return facilitator.request(url, init);
+    }),
+    maxPendingOffers: 1,
+    pendingOfferTtlMs: 1_000,
+    now: () => clockMs,
+  });
+  let sellerRequests = 0;
+  const signed = await withheldAttempt(throwawayAccount(), 'http://seller.test/resource', {
+    method: 'POST', body: '{}',
+  }, {
+    idempotencyKey: 'expiring-paid-admission',
+    fetchImpl: (url, init) => {
+      sellerRequests += 1;
+      return sellerRequests === 1
+        ? app.request(url, init)
+        : Response.json({ error: 'withheld paid retry' }, { status: 503 });
+    },
+  });
+
+  const paidPromise = app.request('http://seller.test/resource', {
+    method: 'POST',
+    headers: { 'Idempotency-Key': signed.idempotencyKey, 'X-PAYMENT': signed.xPayment },
+    body: '{}',
+  });
+  await started;
+  clockMs += 1_001;
+  const concurrent = await app.request('http://seller.test/resource', {
+    method: 'POST', headers: { 'Idempotency-Key': 'blocked-by-paid-request' }, body: '{}',
+  });
+  releaseVerification();
+  const paid = await paidPromise;
+  assert.equal(concurrent.status, 503);
+  assert.equal(paid.status, 200);
+});
+
+test('unresolved keys retain bounded admission across TTL and release only for trusted authority', async () => {
+  for (const resolutionKind of ['settled', 'terminal']) {
+    let clockMs = Date.now();
+    let persistedOffer = null;
+    let authorityDecision = null;
+    let executions = 0;
+    const facilitator = createMockFacilitator();
+    const transport = createMockFacilitatorTransport(async (url, init) => {
+      if (new URL(url).pathname === '/verify') return facilitator.request(url, init);
+      return Response.json({});
+    });
+    const account = throwawayAccount();
+    const originalKey = `unresolved-${resolutionKind}`;
+    const app = resourceApp({
+      facilitatorTransport: transport,
+      maxPendingOffers: 1,
+      pendingOfferTtlMs: 1_000,
+      now: () => clockMs,
+      lifecycle: {
+        async onOffered({ idempotencyKey, requirements, executionQuote: offeredQuote }) {
+          if (idempotencyKey === originalKey) {
+            persistedOffer = structuredClone({
+              requirements,
+              executionQuote: offeredQuote,
+              verificationRequired: true,
+              verifiedPaymentHash: null,
+            });
+          }
+        },
+        async loadFrozenOffer({ idempotencyKey }) {
+          return idempotencyKey === originalKey ? structuredClone(persistedOffer) : null;
+        },
+        async onSigned() { return authorityDecision; },
+        async onUnresolved() {},
+      },
+      handler: (c) => { executions += 1; return c.json({ ok: true }); },
+    });
+    const first = await withheldAttempt(account, 'http://seller.test/resource', {
+      method: 'POST', body: '{}',
+    }, {
+      idempotencyKey: originalKey,
+      fetchImpl: (url, init) => app.request(url, init),
+    });
+    assert.equal(first.state, 'unresolved');
+
+    clockMs += 1_001;
+    const differentWhileUnresolved = await app.request('http://seller.test/resource', {
+      method: 'POST', headers: { 'Idempotency-Key': `blocked-${resolutionKind}` }, body: '{}',
+    });
+    assert.equal(differentWhileUnresolved.status, 503, resolutionKind);
+
+    const recreate = await app.request('http://seller.test/resource', {
+      method: 'POST', headers: { 'Idempotency-Key': originalKey }, body: '{}',
+    });
+    assert.equal(recreate.status, 503, resolutionKind);
+    assert.deepEqual(await recreate.json(), {
+      error: 'payment settlement unresolved; trusted reconciliation is required',
+      settlementReference: null,
+    });
+
+    authorityDecision = resolutionKind === 'settled'
+      ? { kind: 'settled', txHash: `0x${'8'.repeat(64)}`, payer: `0x${'0'.repeat(40)}` }
+      : {
+        kind: 'terminal', paymentState: 'rejected', txHash: null, payer: account.address,
+        httpStatus: 500, receipt: { receipt: { execution: { message: 'failed' } } },
+      };
+    const untrusted = await app.request('http://seller.test/resource', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': originalKey, 'X-PAYMENT': first.xPayment },
+      body: '{}',
+    });
+    assert.equal(untrusted.status, 503, resolutionKind);
+    const stillBlocked = await app.request('http://seller.test/resource', {
+      method: 'POST', headers: { 'Idempotency-Key': `still-blocked-${resolutionKind}` }, body: '{}',
+    });
+    assert.equal(stillBlocked.status, 503, resolutionKind);
+
+    authorityDecision = resolutionKind === 'settled'
+      ? { kind: 'settled', txHash: `0x${'8'.repeat(64)}`, payer: account.address.toLowerCase() }
+      : {
+        kind: 'terminal', paymentState: 'settled', txHash: `0x${'8'.repeat(64)}`,
+        payer: account.address.toLowerCase(), httpStatus: 500,
+        receipt: { receipt: { execution: { message: 'provider failed' } } },
+      };
+    const trusted = await app.request('http://seller.test/resource', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': originalKey, 'X-PAYMENT': first.xPayment },
+      body: '{}',
+    });
+    assert.equal(trusted.status, resolutionKind === 'settled' ? 200 : 500, resolutionKind);
+
+    const afterResolution = await app.request('http://seller.test/resource', {
+      method: 'POST', headers: { 'Idempotency-Key': `released-${resolutionKind}` }, body: '{}',
+    });
+    assert.equal(afterResolution.status, 402, resolutionKind);
+    assert.equal(executions, resolutionKind === 'settled' ? 1 : 0, resolutionKind);
+  }
+});
+
+test('x402 constructor options cannot raise secure memory, byte, or deadline ceilings', () => {
+  const facilitatorTransport = createMockFacilitatorTransport(async () => {
+    throw new Error('facilitator must not run');
+  });
+  for (const [option, value, ceiling] of [
+    ['maxRequestBodyBytes', MAX_X402_REQUEST_BODY_BYTES + 1, MAX_X402_REQUEST_BODY_BYTES],
+    ['requestBodyTimeoutMs', DEFAULT_X402_REQUEST_BODY_TIMEOUT_MS + 1, DEFAULT_X402_REQUEST_BODY_TIMEOUT_MS],
+    ['facilitatorTimeoutMs', DEFAULT_FACILITATOR_TIMEOUT_MS + 1, DEFAULT_FACILITATOR_TIMEOUT_MS],
+    ['facilitatorResponseMaxBytes', DEFAULT_FACILITATOR_RESPONSE_BYTES + 1, DEFAULT_FACILITATOR_RESPONSE_BYTES],
+    ['maxPendingOffers', DEFAULT_PENDING_OFFER_LIMIT + 1, DEFAULT_PENDING_OFFER_LIMIT],
+    ['pendingOfferTtlMs', DEFAULT_PENDING_OFFER_TTL_MS + 1, DEFAULT_PENDING_OFFER_TTL_MS],
+  ]) {
+    assert.throws(
+      () => resourceApp({ facilitatorTransport, [option]: value }),
+      new RegExp(`${option} cannot exceed ${ceiling}`),
+    );
+  }
 });
 
 test('authorization amount must equal the frozen quote exactly before facilitator submission', async () => {
@@ -296,11 +601,14 @@ test('seller rejects numeric and unknown authorization fields before facilitator
   }
 });
 
-test('unresolved payment retries return 503 without re-verification or settlement', async () => {
+test('an unresolved authority decision after verification returns 503 without settlement', async () => {
+  const facilitator = createMockFacilitator();
   let facilitatorCalls = 0;
-  const transport = createMockFacilitatorTransport(async () => {
+  let settleCalls = 0;
+  const transport = createMockFacilitatorTransport(async (url, init) => {
     facilitatorCalls += 1;
-    throw new Error('must not run');
+    if (new URL(url).pathname === '/settle') settleCalls += 1;
+    return facilitator.request(url, init);
   });
   const app = resourceApp({
     facilitatorTransport: transport,
@@ -315,14 +623,17 @@ test('unresolved payment retries return 503 without re-verification or settlemen
     fetchImpl: (url, init) => app.request(url, init),
   });
   assert.equal(result.state, 'unresolved');
-  assert.equal(facilitatorCalls, 0);
+  assert.equal(facilitatorCalls, 1);
+  assert.equal(settleCalls, 0);
 });
 
 test('terminal replay requires settled or refunded payment with a transaction and preserves HTTP status', async () => {
+  const facilitator = createMockFacilitator();
   let calls = 0;
-  const transport = createMockFacilitatorTransport(async () => {
+  const transport = createMockFacilitatorTransport(async (url, init) => {
     calls += 1;
-    throw new Error('must not run');
+    assert.equal(new URL(url).pathname, '/verify');
+    return facilitator.request(url, init);
   });
   const account = throwawayAccount();
   for (const [decision, expectedStatus] of [[{
@@ -359,7 +670,7 @@ test('terminal replay requires settled or refunded payment with a transaction an
       assert.equal(result.txHash, decision.txHash);
     }
   }
-  assert.equal(calls, 0);
+  assert.equal(calls, 2);
 });
 
 test('live facilitator configuration pins one exact HTTPS base before authorization exists', () => {
@@ -652,14 +963,18 @@ test('facilitator verify and settle deadlines abort ignoring transports and rema
       fetchImpl: (url, init) => app.request(url, init),
     });
     assert.equal(facilitatorSignal.aborted, true, timedOutOperation);
-    assert.equal(unresolvedReason, 'facilitator response unresolved', timedOutOperation);
+    assert.equal(
+      unresolvedReason,
+      timedOutOperation === 'verify' ? null : 'facilitator response unresolved',
+      timedOutOperation,
+    );
     assert.equal(held.state, 'unresolved', timedOutOperation);
     assert.equal(held.paymentPolicy.snapshot().reservedAtomic, '250000', timedOutOperation);
     assert.equal(executions, 0, timedOutOperation);
   }
 });
 
-test('oversized chunked facilitator JSON is cancelled and treated as ambiguous settlement', async () => {
+test('oversized verification JSON is cancelled before authoritative payment state', async () => {
   let cancelled = false;
   let unresolvedReason = null;
   let executions = 0;
@@ -685,7 +1000,7 @@ test('oversized chunked facilitator JSON is cancelled and treated as ambiguous s
     fetchImpl: (url, init) => app.request(url, init),
   });
   assert.equal(cancelled, true);
-  assert.equal(unresolvedReason, 'facilitator response unresolved');
+  assert.equal(unresolvedReason, null);
   assert.equal(held.state, 'unresolved');
   assert.equal(executions, 0);
 });
