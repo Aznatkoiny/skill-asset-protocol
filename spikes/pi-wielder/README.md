@@ -28,6 +28,29 @@ Mock transaction hashes and timings are synthetic protocol evidence. They are no
 evidence of live funds, mainnet readiness, production custody, distributed locking, or
 durable production key management.
 
+## Wielder payment policy
+
+The Wielder does not accept the first x402 offer blindly. Before signing, it requires
+the exact Base Sepolia network (`84532`) and Base Sepolia USDC contract, a canonical
+trusted seller route and payee, an exact resource and request-byte match, a fresh
+bounded-time quote, a per-call cap, and remaining session budget. The policy rejects
+numeric or coerced atomic amounts, unknown protocol fields, caller-supplied payment or
+idempotency headers, ambiguous URL forms, and path-prefix confusion.
+
+Budget is synchronously reserved before signing. The exact authorization, signature,
+and encoded `X-PAYMENT` value are stored before the one paid retry begins. A recovery
+path can reuse those exact stored bytes after a local interruption; it never creates a
+replacement signature. A changed second offer, another `402`, a lost retry response,
+or missing/mismatched settlement evidence aborts without exposing the upstream body
+and retains the amount as `unresolved`. Only exact response evidence or an injected
+trusted reconciliation capability may advance that state.
+
+This policy is an in-memory, one-process session control. Restarting the proxy loses
+its policy snapshot, so this is not production spend enforcement and provides no
+cross-restart budget guarantee. A durable deployment must persist and replay signed
+authorizations, reject nonce and transaction reuse across workers, and reconcile every
+unresolved reservation before it can advertise such a guarantee.
+
 ## What the offline proof demonstrates
 
 `npm run e2e` exercises one wallet across two paid asset classes without opening a
@@ -36,14 +59,15 @@ socket:
 1. Model inference and a hosted Skill both return an x402 `exact` challenge before
    execution.
 2. The Wielder signs one EIP-3009 authorization per challenge and retries with the same
-   client idempotency key.
+   Wielder-owned idempotency key after the local payment policy reserves budget.
 3. The Collar records one authoritative external Invocation and returns derived output
    plus a signed receipt. The hosted `SKILL.md` bytes are read server-side and are not
    directly returned.
 4. An exact terminal retry returns the same receipt without another settlement or Skill
    execution. Different request bytes under the same key return `409`.
 5. A lost settlement response becomes `unresolved`; exact retries return `503` and do
-   not verify, settle, or execute again until a trusted resolver advances it.
+   not verify, settle, or execute again until a trusted resolver advances it. The
+   Wielder withholds the response body and retains the exact budget reservation.
 6. The Wielder view contains canonical atomic-USDC strings. Finalized Skill claims are
    projected from the signed receipt; a failed full-gross hold produces no invented
    creator or treasury claim.
@@ -101,8 +125,9 @@ Offline tests inject src/facilitator-mock.mjs; no arbitrary URL is accepted.
 ```
 
 The proxy demonstrates the wallet-bound HTTP 402 transport shape contemplated by
-ADR-0008, but it contains no Story SDK, token custody, Royalty calculator, or Plan 6
-payment policy. It is not proof of the complete protocol or production readiness.
+ADR-0008 plus a conservative one-process payment policy, but it contains no Story SDK,
+token custody, or Royalty calculator. It is not proof of the complete protocol,
+cross-process spend enforcement, or production readiness.
 
 ## Run the verified path
 
@@ -112,7 +137,7 @@ npm test
 npm run e2e
 ```
 
-Expected current results are 62 offline unit/integration tests and 24 offline e2e
+Expected current results are 113 offline unit/integration tests and 30 offline e2e
 checks. Counts can increase as regressions are added; zero failures is the contract.
 The e2e labels all timing output synthetic and uses in-process Hono requests only.
 
@@ -122,6 +147,8 @@ Focused commands:
 npm run test:journal
 npm run test:collar
 npm run test:proxy
+npm run test:policy
+npm run test:payment
 ```
 
 For standalone mock processes, persistent trust bootstrapping, and the intentionally
@@ -135,6 +162,7 @@ blocked live boundary, see [RUNBOOK.md](./RUNBOOK.md).
 | `src/collar.mjs` | Hosted Skill boundary, execution outcomes, receipts, settlement/refund operator routes |
 | `src/x402-seller.mjs` | Seller x402 v1 `exact` middleware and approved transport constructors |
 | `src/proxy.mjs` | Wielder wallet, paying fetch, pinned receipt verification, and local receipt view |
+| `src/payment-policy.mjs` | Strict Base Sepolia offer validation, one-process reservation state, exact signed authorization recovery, and trusted reconciliation boundary |
 | `src/ledger.mjs` | JSONL-capable Wielder receipt-view storage and rendering |
 | `src/gateway.mjs` | Simulated x402 model reseller |
 | `src/facilitator-mock.mjs` | Offline signature verification plus synthetic settlement |

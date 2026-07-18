@@ -9,6 +9,8 @@
     "test:journal": "node --test tests/invocation-journal.test.mjs",
     "test:collar": "node --test tests/collar-failure.test.mjs tests/x402-lifecycle.test.mjs",
     "test:proxy": "node --test tests/proxy-trust.test.mjs",
+    "test:policy": "node --test tests/payment-policy.test.mjs",
+    "test:payment": "node --test tests/payment-policy.test.mjs tests/paying-fetch.test.mjs tests/seller-payment-response.test.mjs",
     "e2e": "MOCK_LLM=1 node e2e.mjs",
     "collar": "node src/collar.mjs",
     "gateway": "node src/gateway.mjs",
