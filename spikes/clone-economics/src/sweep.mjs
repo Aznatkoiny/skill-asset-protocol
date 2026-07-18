@@ -252,20 +252,20 @@ export async function writeSweepEvidenceBundle({
   const { verifyEvidenceBundle, writeEvidenceBundle } = await import('./evidence.mjs');
   const samples = normalizeSweepSamples({ experimentId, attempts: result.samples });
   const incompleteCosts = samples.some((sample) => sample.providerCostUsd === null);
-  const interpretation = [
-    result.publishableHighN
-      ? 'The preregistered high-N publication gate passed.'
-      : `Aggregate clone and economics conclusions are suppressed: ${result.suppressionReason ?? result.benchmark?.verdict ?? 'INCOMPLETE'}.`,
-    incompleteCosts
-      ? 'Limitations: at least one attempted provider call has unknown cost, so aggregate provider cost is incomplete.'
-      : 'All normalized attempted-call costs are present.',
-  ].join(' ');
+  const verdict = result.publishableHighN
+    ? 'HIGH_N_PUBLICATION_GATE_PASSED'
+    : result.suppressionReason ?? result.benchmark?.verdict ?? 'HIGH_N_INCOMPLETE';
+  const limitations = [
+    ...(samples.some((sample) => sample.acquisitionEvidence === 'MODELED') ? ['ACQUISITION_MODELED'] : []),
+    ...(incompleteCosts ? ['INCOMPLETE_PROVIDER_COST'] : []),
+    ...(evidenceLabel.startsWith('SYNTHETIC') ? ['SYNTHETIC_ONLY'] : []),
+  ].sort();
   const manifest = writeEvidenceBundle({
     outputDir,
     manifest: {
       experimentId,
-      recordedAtUtc,
-      gitCommit,
+      ...(recordedAtUtc === undefined ? {} : { recordedAtUtc }),
+      ...(gitCommit === undefined ? {} : { gitCommit }),
       command,
       modelProvider,
       model,
@@ -283,7 +283,12 @@ export async function writeSweepEvidenceBundle({
       },
     },
     samples,
-    interpretation,
+    reportInputs: {
+      evidenceLabel,
+      verdict,
+      suppressionReason: result.publishableHighN ? null : verdict,
+      limitations,
+    },
     reproduction: reproduction ?? `node scripts/verify-bundle.mjs ${outputDir}`,
   });
   return { manifest, verified: verifyEvidenceBundle(outputDir) };

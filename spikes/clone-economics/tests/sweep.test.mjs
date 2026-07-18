@@ -27,6 +27,12 @@ const config = {
     { replicateId: 'r3', pairOrderSeed: 1703, distillationSeed: 2703 },
   ],
   highNDefinition: 100,
+  targetThreshold: 0.8,
+  requireAllTargetCriticalGates: true,
+  acquisitionTreatment: 'modeled_unless_x402_receipts_attached',
+  attemptCostTreatment: 'include_every_attempted_provider_call',
+  publicationRequiresValidTarget: true,
+  publicationRequiresIndependentDistillationSeeds: true,
 };
 
 test('sweep contract requires the exact preregistered dimensions', () => {

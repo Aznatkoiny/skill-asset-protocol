@@ -155,7 +155,12 @@ export function importLegacyRun(argv) {
       },
     },
     samples,
-    interpretation: 'INVALID_BENCHMARK_TARGET_FAILED. The target scored 0.400 and failed its critical gates, so clone quality, fidelity defense, moat, retention, break-even, and economics conclusions are suppressed. Provider execution was measured where retained; acquisition was modeled. Four earlier setup attempts have no normalized records.',
+    reportInputs: {
+      evidenceLabel: 'HISTORICAL MIXED — INVALID BENCHMARK; acquisition MODELED',
+      verdict: 'INVALID_BENCHMARK_TARGET_FAILED',
+      suppressionReason: 'INVALID_BENCHMARK_TARGET_FAILED',
+      limitations: ['ACQUISITION_MODELED', 'HISTORICAL_ATTEMPTS_INCOMPLETE'],
+    },
     reproduction: 'node scripts/verify-bundle.mjs evidence/2026-07-12-n6-invalid',
   });
   return { output: args.output, samples: samples.length };
