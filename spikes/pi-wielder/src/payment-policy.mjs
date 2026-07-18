@@ -405,8 +405,10 @@ export function createPaymentPolicy(config) {
     const issuedAtMs = canonicalTimestamp(candidate.extra.issuedAt, 'issuedAt');
     const expiresAtMs = canonicalTimestamp(candidate.extra.expiresAt, 'expiresAt');
     const receivedAtMs = receivedAt.receivedAtMs;
+    const validationTimeMs = trustedNow();
     if (issuedAtMs > receivedAtMs || receivedAtMs - issuedAtMs > config.maxQuoteAgeMs
-        || expiresAtMs <= receivedAtMs || issuedAtMs >= expiresAtMs) {
+        || expiresAtMs <= receivedAtMs || expiresAtMs <= validationTimeMs
+        || issuedAtMs >= expiresAtMs) {
       fail('QUOTE_EXPIRY', 'x402 quote is stale, future-issued, expired, or inverted');
     }
     const amount = canonicalAtomic(candidate.maxAmountRequired, 'maxAmountRequired');
@@ -502,34 +504,44 @@ export function createPaymentPolicy(config) {
   }
 
   function releaseUnsigned(authorizationId, input) {
-    exactObject(input, ['reasonCode'], 'UNSIGNED_RELEASE_SCHEMA', 'unsigned release');
+    const transition = frozenCopy(exactObject(
+      input, ['reasonCode'], 'UNSIGNED_RELEASE_SCHEMA', 'unsigned release',
+    ));
+    const reasonCode = canonicalReason(transition.reasonCode);
     const record = get(authorizationId);
     if (!['reserved', 'signing'].includes(record.state)) {
       fail('UNSIGNED_RELEASE_STATE', 'only an authorization that cannot have produced a signature may be released');
     }
     reservedAtomic -= BigInt(record.amountAtomic);
     record.state = 'released';
-    record.reasonCode = canonicalReason(input.reasonCode);
+    record.reasonCode = reasonCode;
     return publicRecord(record);
   }
 
   function markPotentiallySigned(authorizationId, input) {
-    exactObject(input, ['reasonCode'], 'UNRESOLVED_SCHEMA', 'potential signature result');
+    const transition = frozenCopy(exactObject(
+      input, ['reasonCode'], 'UNRESOLVED_SCHEMA', 'potential signature result',
+    ));
+    const reasonCode = canonicalReason(transition.reasonCode);
     const record = get(authorizationId);
     if (record.state !== 'signing') fail('POTENTIAL_SIGNATURE_STATE', 'potential signature requires a signing claim');
     record.state = 'unresolved';
-    record.reasonCode = canonicalReason(input.reasonCode);
+    record.reasonCode = reasonCode;
     return publicRecord(record);
   }
 
   function persistSignedAuthorization(authorizationId, input) {
-    exactObject(input, ['authorization', 'signature', 'xPayment'],
-      'SIGNED_AUTHORIZATION_SCHEMA', 'signed authorization');
+    const transition = frozenCopy(exactObject(
+      input,
+      ['authorization', 'signature', 'xPayment'],
+      'SIGNED_AUTHORIZATION_SCHEMA',
+      'signed authorization',
+    ));
     const record = get(authorizationId);
     if (record.state !== 'signing') fail('SIGNED_STATE', 'signed authorization can only follow one signature claim');
-    const authorization = frozenCopy(authorizationSchema(input.authorization));
-    const signature = canonicalSignature(input.signature);
-    const envelope = paymentEnvelopeSchema(decodeCanonicalBase64Json(input.xPayment));
+    const authorization = authorizationSchema(transition.authorization);
+    const signature = canonicalSignature(transition.signature);
+    const envelope = paymentEnvelopeSchema(decodeCanonicalBase64Json(transition.xPayment));
     if (envelope.x402Version !== 1 || envelope.scheme !== 'exact'
         || envelope.network !== BASE_SEPOLIA_NETWORK
         || canonicalJson(envelope.payload.authorization) !== canonicalJson(authorization)
@@ -549,7 +561,7 @@ export function createPaymentPolicy(config) {
     authorizationNonces.set(authorization.nonce, record.authorizationId);
     record.authorization = authorization;
     record.signature = signature;
-    record.xPayment = input.xPayment;
+    record.xPayment = transition.xPayment;
     record.state = 'signed';
     record.reasonCode = null;
     return publicRecord(record);
@@ -591,6 +603,17 @@ export function createPaymentPolicy(config) {
     return publicRecord(record);
   }
 
+  function assertAuthorizationFresh(authorizationId) {
+    const record = get(authorizationId);
+    const currentTimeMs = trustedNow();
+    const expiresAtMs = canonicalTimestamp(record.offer.extra.expiresAt, 'expiresAt');
+    const currentTimeSeconds = BigInt(Math.floor(currentTimeMs / 1_000));
+    if (currentTimeMs >= expiresAtMs || currentTimeSeconds >= BigInt(record.validBefore)) {
+      fail('QUOTE_EXPIRY', 'x402 quote or signed authorization expired before the paid retry');
+    }
+    return publicRecord(record);
+  }
+
   function assertRetryChallenge(authorizationId, secondChallenge) {
     const record = get(authorizationId);
     let second;
@@ -604,14 +627,17 @@ export function createPaymentPolicy(config) {
   }
 
   function markUnresolved(authorizationId, input) {
-    exactObject(input, ['reasonCode'], 'UNRESOLVED_SCHEMA', 'unresolved transition');
+    const transition = frozenCopy(exactObject(
+      input, ['reasonCode'], 'UNRESOLVED_SCHEMA', 'unresolved transition',
+    ));
+    const reasonCode = canonicalReason(transition.reasonCode);
     const record = get(authorizationId);
     if (record.state === 'unresolved') return publicRecord(record);
     if (!['signing', 'signed', 'retrying'].includes(record.state)) {
       fail('UNRESOLVED_STATE', 'only a potentially signed authorization can become unresolved');
     }
     record.state = 'unresolved';
-    record.reasonCode = canonicalReason(input.reasonCode);
+    record.reasonCode = reasonCode;
     return publicRecord(record);
   }
 
@@ -662,37 +688,39 @@ export function createPaymentPolicy(config) {
   }
 
   function verifierAccepted(verifier, record, proof) {
-    const result = verifier({ authorization: publicRecord(record), proof: frozenCopy(proof) });
+    const result = verifier({ authorization: publicRecord(record), proof });
     if (result && typeof result.then === 'function') fail('PROOF_ASYNC', 'proof verifier must be a synchronous trust capability');
     return result === true;
   }
 
   function reconcileSettlement(authorizationId, proof) {
+    const capturedProof = frozenCopy(proof);
+    const evidence = reconciliationSchema(capturedProof, 'settled');
     const record = get(authorizationId);
     if (!['signed', 'retrying', 'unresolved', 'settled'].includes(record.state)) {
       fail('RECONCILIATION_STATE', 'settlement reconciliation requires a signed authorization');
     }
-    const evidence = reconciliationSchema(frozenCopy(proof), 'settled');
     assertSettlementMatches(record, evidence, 'RECONCILIATION_MISMATCH');
-    if (!verifierAccepted(verifySettlementProof, record, proof)) {
+    if (!verifierAccepted(verifySettlementProof, record, capturedProof)) {
       fail('SETTLEMENT_PROOF', 'trusted settlement proof verifier rejected evidence');
     }
     return settle(record, evidence);
   }
 
   function reconcileRejection(authorizationId, proof) {
+    const capturedProof = frozenCopy(proof);
+    const evidence = reconciliationSchema(capturedProof, 'rejected');
     const record = get(authorizationId);
     if (!['signed', 'retrying', 'unresolved'].includes(record.state)) {
       fail('RECONCILIATION_STATE', 'rejection reconciliation requires a nonterminal signed authorization');
     }
-    const evidence = reconciliationSchema(frozenCopy(proof), 'rejected');
     assertSettlementMatches(record, evidence, 'RECONCILIATION_MISMATCH');
-    if (!verifierAccepted(verifyRejectionProof, record, proof)) {
+    if (!verifierAccepted(verifyRejectionProof, record, capturedProof)) {
       fail('REJECTION_PROOF', 'trusted rejection proof verifier rejected evidence');
     }
     reservedAtomic -= BigInt(record.amountAtomic);
     record.state = 'rejected';
-    record.reasonCode = proof.reasonCode;
+    record.reasonCode = capturedProof.reasonCode;
     return publicRecord(record);
   }
 
@@ -719,6 +747,7 @@ export function createPaymentPolicy(config) {
     markPotentiallySigned,
     persistSignedAuthorization,
     recoverSignedAuthorization,
+    assertAuthorizationFresh,
     beginRetry,
     assertRetryChallenge,
     markUnresolved,

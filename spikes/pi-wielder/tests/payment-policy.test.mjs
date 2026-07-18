@@ -294,6 +294,32 @@ test('authorization, signature, and encoded payment are exact, immutable, and co
   }), (error) => ['SIGNED_STATE', 'AUTHORIZATION_SCHEMA'].includes(error.code));
 });
 
+test('signed authorization transition captures accessor-backed fields exactly once', () => {
+  const subject = policy();
+  const record = reserve(subject);
+  subject.claimSignature('auth-1', { offerFingerprint: record.offerFingerprint });
+  const auth = authorization(record);
+  const encoded = encodePayment(record, auth);
+  let paymentReads = 0;
+  const input = {
+    authorization: auth,
+    signature: SIGNATURE,
+  };
+  Object.defineProperty(input, 'xPayment', {
+    enumerable: true,
+    get() {
+      paymentReads += 1;
+      if (paymentReads > 1) throw new Error('raw xPayment was reread');
+      return encoded;
+    },
+  });
+
+  const persisted = subject.persistSignedAuthorization('auth-1', input);
+  assert.equal(paymentReads, 1);
+  assert.equal(persisted.xPayment, encoded);
+  assert.equal(subject.snapshot().authorizations[0].state, 'signed');
+});
+
 test('unsigned signer rejection releases exactly once but a potentially produced signature holds budget', () => {
   const unsigned = policy();
   const first = reserve(unsigned);
@@ -311,6 +337,40 @@ test('unsigned signer rejection releases exactly once but a potentially produced
   assert.equal(uncertain.snapshot().authorizations[0].state, 'unresolved');
   assert.throws(() => uncertain.releaseUnsigned('auth-1', { reasonCode: 'LATE_RELEASE' }),
     (error) => error.code === 'UNSIGNED_RELEASE_STATE');
+});
+
+test('invalid transition inputs and throwing accessors leave policy snapshots unchanged', () => {
+  const transitions = [
+    ['releaseUnsigned', (subject) => {
+      const record = reserve(subject);
+      subject.claimSignature('auth-1', { offerFingerprint: record.offerFingerprint });
+    }],
+    ['markPotentiallySigned', (subject) => {
+      const record = reserve(subject);
+      subject.claimSignature('auth-1', { offerFingerprint: record.offerFingerprint });
+    }],
+    ['markUnresolved', (subject) => {
+      sign(subject);
+      subject.beginRetry('auth-1');
+    }],
+  ];
+  const inputs = [
+    () => ({ reasonCode: 'not-canonical' }),
+    () => Object.defineProperty({}, 'reasonCode', {
+      enumerable: true,
+      get() { throw new Error('synthetic reason accessor failure'); },
+    }),
+  ];
+
+  for (const [method, arrange] of transitions) {
+    for (const makeInput of inputs) {
+      const subject = policy();
+      arrange(subject);
+      const before = subject.snapshot();
+      assert.throws(() => subject[method]('auth-1', makeInput()));
+      assert.deepEqual(subject.snapshot(), before);
+    }
+  }
 });
 
 test('exact persisted signed authorization is recoverable without a replacement signature', () => {
@@ -417,6 +477,42 @@ test('trusted proof capability cannot authorize mismatched request data', () => 
   assert.equal(verifierCalls, 1);
   assert.equal(subject.snapshot().reservedAtomic, '0');
   assert.equal(subject.snapshot().spentAtomic, '0');
+});
+
+test('trusted reconciliation captures accessor-backed proof fields exactly once', () => {
+  let reasonReads = 0;
+  let verifiedProof = null;
+  const subject = policy({
+    verifyRejectionProof: ({ proof }) => {
+      verifiedProof = proof;
+      return proof.trustToken === 'trusted-rejection';
+    },
+  });
+  sign(subject);
+  subject.beginRetry('auth-1');
+  subject.markUnresolved('auth-1', { reasonCode: 'SETTLEMENT_EVIDENCE_INVALID' });
+  const proof = {
+    ...settlementEvidence(subject),
+    success: false,
+    transaction: null,
+    outcome: 'rejected',
+    trustToken: 'trusted-rejection',
+  };
+  Object.defineProperty(proof, 'reasonCode', {
+    enumerable: true,
+    get() {
+      reasonReads += 1;
+      if (reasonReads > 1) throw new Error('raw reconciliation proof was reread');
+      return 'CHAIN_REJECTED';
+    },
+  });
+
+  subject.reconcileRejection('auth-1', proof);
+  assert.equal(reasonReads, 1);
+  assert.equal(Object.isFrozen(verifiedProof), true);
+  assert.equal(verifiedProof.reasonCode, 'CHAIN_REJECTED');
+  assert.equal(subject.snapshot().reservedAtomic, '0');
+  assert.equal(subject.snapshot().authorizations[0].reasonCode, 'CHAIN_REJECTED');
 });
 
 test('one EIP-3009 nonce cannot be persisted under two authorizations', () => {

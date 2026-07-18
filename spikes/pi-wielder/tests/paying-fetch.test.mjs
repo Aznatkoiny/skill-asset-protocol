@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import test from 'node:test';
 
 import {
@@ -43,11 +44,38 @@ function baseOffer(overrides = {}) {
 }
 
 function challenge(candidate = baseOffer()) {
-  return new Response(JSON.stringify({
+  return new Response(JSON.stringify(challengePayload(candidate)), {
+    status: 402, headers: { 'content-type': 'application/json' },
+  });
+}
+
+function challengePayload(candidate = baseOffer()) {
+  return {
     x402Version: 1,
     error: 'X-PAYMENT header is required',
     accepts: [candidate],
-  }), { status: 402, headers: { 'content-type': 'application/json' } });
+  };
+}
+
+function listenLoopback(server) {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+}
+
+function closeServer(server) {
+  if (!server.listening) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+async function readNodeRequest(req) {
+  let body = '';
+  req.setEncoding('utf8');
+  for await (const chunk of req) body += chunk;
+  return body;
 }
 
 function decodePayment(init) {
@@ -156,6 +184,30 @@ test('freshness is captured from the injected clock immediately after the first 
   }), (error) => error.code === 'PAYING_FETCH_OPTIONS');
 });
 
+test('a quote expiring while the first 402 JSON is parsed is rejected before signing', async () => {
+  const { account, paymentPolicy, setClock, signatureCount } = setup();
+  let fetches = 0;
+  await assert.rejects(() => payingFetch(account, URL, { method: 'POST', body: BODY }, {
+    fetchImpl: async () => {
+      fetches += 1;
+      if (fetches > 1) throw new Error('paid retry must not start for an expired quote');
+      return {
+        status: 402,
+        async json() {
+          setClock(NOW + 59_000);
+          return challengePayload();
+        },
+      };
+    },
+    idempotencyKey: 'idem-expired-during-parse',
+    paymentPolicy,
+  }), (error) => error.code === 'QUOTE_EXPIRY');
+  assert.equal(fetches, 1);
+  assert.equal(signatureCount(), 0);
+  assert.deepEqual(paymentPolicy.snapshot().authorizations, []);
+  assert.equal(paymentPolicy.snapshot().reservedAtomic, '0');
+});
+
 test('caller-supplied payment and idempotency headers are rejected case-insensitively before fetch', async () => {
   for (const headers of [
     { 'idempotency-key': 'caller-owned' },
@@ -173,6 +225,140 @@ test('caller-supplied payment and idempotency headers are rejected case-insensit
     assert.equal(fetches, 0);
     assert.equal(signatureCount(), 0);
   }
+});
+
+test('native unpaid fetch refuses redirects even when caller asks to follow', async (t) => {
+  const redirectedRequests = [];
+  const redirectTarget = http.createServer(async (req, res) => {
+    redirectedRequests.push({
+      body: await readNodeRequest(req),
+      payment: req.headers['x-payment'] ?? null,
+    });
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"redirected":true}');
+  });
+  await listenLoopback(redirectTarget);
+  const redirectTargetUrl = `http://127.0.0.1:${redirectTarget.address().port}/capture`;
+  const seller = http.createServer(async (req, res) => {
+    await readNodeRequest(req);
+    res.writeHead(307, { location: redirectTargetUrl });
+    res.end();
+  });
+  await listenLoopback(seller);
+  t.after(async () => {
+    await closeServer(seller);
+    await closeServer(redirectTarget);
+  });
+
+  const requestUrl = `http://127.0.0.1:${seller.address().port}/invoke/skill-a`;
+  const now = Date.now();
+  let signatures = 0;
+  const account = {
+    address: PAYER,
+    async signTypedData() { signatures += 1; return SIGNATURE; },
+  };
+  const paymentPolicy = createPaymentPolicy({
+    network: BASE_SEPOLIA_NETWORK,
+    chainId: BASE_SEPOLIA_CHAIN_ID,
+    asset: BASE_SEPOLIA_USDC,
+    sessionBudgetAtomic: '500000',
+    maxQuoteAgeMs: 5_000,
+    maxAuthorizationSeconds: 60,
+    now: () => now,
+    sellers: [{
+      origin: new globalThis.URL(requestUrl).origin,
+      pathPrefix: '/invoke/',
+      payTo: PAYEE,
+      maxPerCallAtomic: '300000',
+    }],
+  });
+
+  await assert.rejects(() => payingFetch(account, requestUrl, {
+    method: 'POST', body: BODY, redirect: 'follow',
+  }, {
+    idempotencyKey: 'idem-unpaid-redirect', paymentPolicy,
+  }));
+  assert.equal(redirectedRequests.length, 0);
+  assert.equal(signatures, 0);
+  assert.equal(paymentPolicy.snapshot().authorizations.length, 0);
+});
+
+test('native paid retry refuses redirects without forwarding payment header or body', async (t) => {
+  const redirectedRequests = [];
+  const redirectTarget = http.createServer(async (req, res) => {
+    redirectedRequests.push({
+      body: await readNodeRequest(req),
+      payment: req.headers['x-payment'] ?? null,
+    });
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"redirected":true}');
+  });
+  await listenLoopback(redirectTarget);
+  const redirectTargetUrl = `http://127.0.0.1:${redirectTarget.address().port}/capture`;
+  let requestUrl;
+  let firstChallenge;
+  let sellerRequests = 0;
+  const seller = http.createServer(async (req, res) => {
+    await readNodeRequest(req);
+    sellerRequests += 1;
+    if (sellerRequests === 1) {
+      res.writeHead(402, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(firstChallenge));
+      return;
+    }
+    res.writeHead(307, { location: redirectTargetUrl });
+    res.end();
+  });
+  await listenLoopback(seller);
+  t.after(async () => {
+    await closeServer(seller);
+    await closeServer(redirectTarget);
+  });
+
+  requestUrl = `http://127.0.0.1:${seller.address().port}/invoke/skill-a`;
+  const now = Date.now();
+  const localOffer = {
+    ...baseOffer(),
+    resource: requestUrl,
+    extra: {
+      ...baseOffer().extra,
+      requestHash: canonicalRequestHash({ method: 'POST', requestUrl, bodyBytes: BODY }),
+      issuedAt: new Date(now - 1_000).toISOString(),
+      expiresAt: new Date(now + 59_000).toISOString(),
+    },
+  };
+  firstChallenge = challengePayload(localOffer);
+  let signatures = 0;
+  const account = {
+    address: PAYER,
+    async signTypedData() { signatures += 1; return SIGNATURE; },
+  };
+  const paymentPolicy = createPaymentPolicy({
+    network: BASE_SEPOLIA_NETWORK,
+    chainId: BASE_SEPOLIA_CHAIN_ID,
+    asset: BASE_SEPOLIA_USDC,
+    sessionBudgetAtomic: '500000',
+    maxQuoteAgeMs: 5_000,
+    maxAuthorizationSeconds: 60,
+    now: () => now,
+    sellers: [{
+      origin: new globalThis.URL(requestUrl).origin,
+      pathPrefix: '/invoke/',
+      payTo: PAYEE,
+      maxPerCallAtomic: '300000',
+    }],
+  });
+
+  await assert.rejects(() => payingFetch(account, requestUrl, {
+    method: 'POST', body: BODY, redirect: 'follow',
+  }, {
+    idempotencyKey: 'idem-paid-redirect', paymentPolicy,
+  }));
+  assert.equal(sellerRequests, 2);
+  assert.equal(redirectedRequests.length, 0);
+  assert.equal(signatures, 1);
+  assert.equal(paymentPolicy.snapshot().reservedAtomic, '250000');
+  assert.equal(paymentPolicy.snapshot().authorizations[0].state, 'unresolved');
 });
 
 test('a changed second offer gets no second signature or third request and holds budget', async () => {
@@ -349,6 +535,28 @@ test('an invalid signer return is potentially signed and never releases budget',
   assert.equal(paymentPolicy.snapshot().authorizations[0].state, 'unresolved');
 });
 
+test('a quote expiring after signature persistence never starts the paid retry', async () => {
+  const { account, paymentPolicy, setClock, signatureCount } = setup();
+  let fetches = 0;
+  await assert.rejects(() => payingFetch(account, URL, { method: 'POST', body: BODY }, {
+    fetchImpl: async () => {
+      fetches += 1;
+      if (fetches === 1) return challenge();
+      throw new Error('paid retry must not start after authorization expiry');
+    },
+    idempotencyKey: 'idem-expired-after-signing',
+    paymentPolicy,
+    onSignedAuthorizationPersisted: ({ authorization: persisted }) => {
+      assert.equal(persisted.state, 'signed');
+      setClock(NOW + 59_000);
+    },
+  }), (error) => error.code === 'QUOTE_EXPIRY');
+  assert.equal(fetches, 1);
+  assert.equal(signatureCount(), 1);
+  assert.equal(paymentPolicy.snapshot().reservedAtomic, '250000');
+  assert.equal(paymentPolicy.snapshot().authorizations[0].state, 'unresolved');
+});
+
 test('a fault after synchronous signature persistence recovers exact X-PAYMENT without signing again', async () => {
   const { account, paymentPolicy, signatureCount } = setup();
   let firstFetches = 0;
@@ -378,6 +586,40 @@ test('a fault after synchronous signature persistence recovers exact X-PAYMENT w
   assert.equal(signatureCount(), 1);
   assert.equal(recoveryFetches, 2);
   assert.equal(retryPayment, result.xPayment);
+});
+
+test('signed recovery rechecks expiry and holds the reservation without a retry', async () => {
+  let clockReads = 0;
+  const { account, paymentPolicy, signatureCount } = setup({
+    policy: {
+      now: () => {
+        clockReads += 1;
+        return clockReads >= 5 ? NOW + 59_000 : NOW;
+      },
+    },
+  });
+  await assert.rejects(() => payingFetch(account, URL, { method: 'POST', body: BODY }, {
+    fetchImpl: async () => challenge(),
+    idempotencyKey: 'idem-expired-recovery',
+    paymentPolicy,
+    onSignedAuthorizationPersisted: () => { throw new Error('synthetic process interruption'); },
+  }), /synthetic process interruption/);
+  assert.equal(paymentPolicy.snapshot().authorizations[0].state, 'signed');
+
+  let recoveryFetches = 0;
+  await assert.rejects(() => payingFetch(account, URL, { method: 'POST', body: BODY }, {
+    fetchImpl: async () => {
+      recoveryFetches += 1;
+      if (recoveryFetches > 1) throw new Error('expired recovery must not start a paid retry');
+      return challenge();
+    },
+    idempotencyKey: 'idem-expired-recovery',
+    paymentPolicy,
+  }), (error) => error.code === 'QUOTE_EXPIRY');
+  assert.equal(recoveryFetches, 1);
+  assert.equal(signatureCount(), 1);
+  assert.equal(paymentPolicy.snapshot().reservedAtomic, '250000');
+  assert.equal(paymentPolicy.snapshot().authorizations[0].state, 'unresolved');
 });
 
 test('retry transport loss leaves the signed amount unresolved and never retries internally', async () => {

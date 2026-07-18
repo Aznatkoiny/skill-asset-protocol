@@ -140,7 +140,7 @@ export async function payingFetch(account, url, init, options = {}) {
     'Idempotency-Key': idempotencyKey,
   };
   const t0 = performance.now();
-  const first = await fetchImpl(url, { ...init, headers: requestHeaders });
+  const first = await fetchImpl(url, { ...init, redirect: 'error', headers: requestHeaders });
   if (first.status !== 402) return { res: first, paid: false, idempotencyKey };
   const receivedAt = paymentPolicy.captureReceivedAt();
   const ms402 = performance.now() - t0;
@@ -260,6 +260,14 @@ export async function payingFetch(account, url, init, options = {}) {
     );
   }
 
+  try {
+    signedRecord = paymentPolicy.assertAuthorizationFresh(idempotencyKey);
+  } catch (error) {
+    paymentPolicy.markUnresolved(idempotencyKey, {
+      reasonCode: 'AUTHORIZATION_EXPIRED_BEFORE_RETRY',
+    });
+    throw error;
+  }
   const { authorization, xPayment } = signedRecord;
   paymentPolicy.beginRetry(idempotencyKey);
   const tRetry = performance.now();
@@ -267,6 +275,7 @@ export async function payingFetch(account, url, init, options = {}) {
   try {
     res = await fetchImpl(url, {
       ...init,
+      redirect: 'error',
       headers: { ...requestHeaders, 'X-PAYMENT': xPayment },
     });
   } catch (error) {
