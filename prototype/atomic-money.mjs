@@ -53,3 +53,76 @@ export function formatUsdc(value) {
 export function floorBps(amountAtomic, bps) {
   return (assertAtomic(amountAtomic) * assertBps(bps)) / BPS_DENOMINATOR;
 }
+
+function weightToBigInt(value, label) {
+  if (typeof value === 'bigint') {
+    if (value < 0n) fail('WEIGHT_NEGATIVE', `${label} must be non-negative`);
+    return value;
+  }
+  if (!Number.isSafeInteger(value) || value < 0) {
+    fail('WEIGHT_INTEGER', `${label} must be a non-negative safe integer or bigint`);
+  }
+  return BigInt(value);
+}
+
+function compareKeys(left, right) {
+  if (left.key < right.key) return -1;
+  if (left.key > right.key) return 1;
+  return 0;
+}
+
+export function allocateByWeights(amountAtomic, shares) {
+  const amount = assertAtomic(amountAtomic);
+  if (!Array.isArray(shares) || shares.length === 0) {
+    fail('ALLOCATIONS_EMPTY', 'shares must contain at least one allocation');
+  }
+
+  const seen = new Set();
+  const rows = shares.map((share, index) => {
+    const key = String(share?.key ?? '');
+    if (!key) fail('ALLOCATION_KEY', `shares[${index}].key must be non-empty`);
+    if (seen.has(key)) fail('ALLOCATION_DUPLICATE', `duplicate allocation key '${key}'`);
+    seen.add(key);
+    return { key, weight: weightToBigInt(share.weight, `shares[${index}].weight`) };
+  }).sort(compareKeys);
+
+  const totalWeight = rows.reduce((sum, row) => sum + row.weight, 0n);
+  if (totalWeight === 0n) {
+    fail('WEIGHTS_ZERO', 'at least one allocation weight must be positive');
+  }
+
+  const allocations = rows.map((row) => ({
+    key: row.key,
+    weight: row.weight,
+    amountAtomic: (amount * row.weight) / totalWeight,
+  }));
+  let remainder = amount - allocations.reduce((sum, row) => sum + row.amountAtomic, 0n);
+  for (const row of allocations) {
+    if (remainder === 0n) break;
+    if (row.weight === 0n) continue;
+    row.amountAtomic += 1n;
+    remainder -= 1n;
+  }
+  if (remainder !== 0n) {
+    throw new Error('internal invariant: weighted remainder was not exhausted');
+  }
+  return allocations.map(({ key, amountAtomic: allocated }) => ({
+    key,
+    amountAtomic: allocated,
+  }));
+}
+
+export function allocateByBps(amountAtomic, shares) {
+  if (!Array.isArray(shares) || shares.length === 0) {
+    fail('ALLOCATIONS_EMPTY', 'shares must contain at least one allocation');
+  }
+  const normalized = shares.map((share, index) => ({
+    key: share?.key,
+    weight: assertBps(share?.bps, `shares[${index}].bps`),
+  }));
+  const total = normalized.reduce((sum, row) => sum + row.weight, 0n);
+  if (total !== BPS_DENOMINATOR) {
+    fail('BPS_TOTAL', `basis-point allocations must sum to 10000 (got ${total})`);
+  }
+  return allocateByWeights(amountAtomic, normalized);
+}
