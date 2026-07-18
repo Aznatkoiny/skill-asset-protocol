@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "entries": {
+    "0x3333333333333333333333333333333333333333": {
+      "beneficiaryId": "creator-affiliate",
+      "payerClusterId": "verified-billing-owner:creator-affiliate",
+      "relationship": "linked",
+      "evidenceRef": "billing-review:creator-affiliate:2026-07-17",
+      "reviewedAt": "2026-07-17T00:00:00.000Z"
+    },
+    "0x4444444444444444444444444444444444444444": {
+      "beneficiaryId": "otherco",
+      "payerClusterId": "cluster-otherco",
+      "relationship": "independent",
+      "evidenceRef": "billing-review:otherco:2026-07-17",
+      "reviewedAt": "2026-07-17T00:00:00.000Z"
+    },
+    "0x5555555555555555555555555555555555555555": {
+      "beneficiaryId": "otherco",
+      "payerClusterId": "cluster-otherco",
+      "relationship": "independent",
+      "evidenceRef": "billing-review:otherco-second-wallet:2026-07-17",
+      "reviewedAt": "2026-07-17T00:00:00.000Z"
+    },
+    "0x6666666666666666666666666666666666666666": {
+      "beneficiaryId": "failedco",
+      "payerClusterId": "cluster-failedco",
+      "relationship": "independent",
+      "evidenceRef": "billing-review:failedco:2026-07-17",
+      "reviewedAt": "2026-07-17T00:00:00.000Z"
+    },
+    "0x7777777777777777777777777777777777777777": {
+      "beneficiaryId": "unresolvedco",
+      "payerClusterId": "cluster-unresolvedco",
+      "relationship": "independent",
+      "evidenceRef": "billing-review:unresolvedco:2026-07-17",
+      "reviewedAt": "2026-07-17T00:00:00.000Z"
+    },
+    "0x8888888888888888888888888888888888888888": {
+      "beneficiaryId": "refundco",
+      "payerClusterId": "cluster-refundco",
+      "relationship": "independent",
+      "evidenceRef": "billing-review:refundco:2026-07-17",
+      "reviewedAt": "2026-07-17T00:00:00.000Z"
+    },
+    "0x9999999999999999999999999999999999999999": {
+      "beneficiaryId": "recycleco",
+      "payerClusterId": "cluster-recycleco",
+      "relationship": "independent",
+      "evidenceRef": "billing-review:recycleco:2026-07-17",
+      "reviewedAt": "2026-07-17T00:00:00.000Z"
+    },
+    "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": {
+      "beneficiaryId": "thirdco",
+      "payerClusterId": "cluster-thirdco",
+      "relationship": "independent",
+      "evidenceRef": "billing-review:thirdco:2026-07-17",
+      "reviewedAt": "2026-07-17T00:00:00.000Z"
+    }
+  }
+}
