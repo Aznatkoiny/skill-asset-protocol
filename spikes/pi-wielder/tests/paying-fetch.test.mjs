@@ -49,6 +49,23 @@ function challenge(candidate = baseOffer()) {
   });
 }
 
+function challengeWithReadHook(candidate, onRead) {
+  const bytes = new TextEncoder().encode(JSON.stringify(challengePayload(candidate)));
+  let emitted = false;
+  return new Response(new ReadableStream({
+    pull(controller) {
+      if (emitted) return;
+      emitted = true;
+      onRead();
+      controller.enqueue(bytes);
+      controller.close();
+    },
+  }, { highWaterMark: 0 }), {
+    status: 402,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
 function challengePayload(candidate = baseOffer()) {
   return {
     x402Version: 1,
@@ -191,13 +208,7 @@ test('a quote expiring while the first 402 JSON is parsed is rejected before sig
     fetchImpl: async () => {
       fetches += 1;
       if (fetches > 1) throw new Error('paid retry must not start for an expired quote');
-      return {
-        status: 402,
-        async json() {
-          setClock(NOW + 59_000);
-          return challengePayload();
-        },
-      };
+      return challengeWithReadHook(baseOffer(), () => setClock(NOW + 59_000));
     },
     idempotencyKey: 'idem-expired-during-parse',
     paymentPolicy,
@@ -205,6 +216,28 @@ test('a quote expiring while the first 402 JSON is parsed is rejected before sig
   assert.equal(fetches, 1);
   assert.equal(signatureCount(), 0);
   assert.deepEqual(paymentPolicy.snapshot().authorizations, []);
+  assert.equal(paymentPolicy.snapshot().reservedAtomic, '0');
+});
+
+test('a JSON-only injected challenge is rejected without calling an unbounded parser', async () => {
+  const { account, paymentPolicy, signatureCount } = setup();
+  let jsonCalls = 0;
+  await assert.rejects(() => payingFetch(account, URL, { method: 'POST', body: BODY }, {
+    fetchImpl: async () => ({
+      status: 402,
+      async json() {
+        jsonCalls += 1;
+        return challengePayload();
+      },
+    }),
+    idempotencyKey: 'idem-json-only-challenge',
+    paymentPolicy,
+  }), (error) => (
+    error.code === 'CHALLENGE_RESPONSE_SHAPE'
+      && error.message === 'x402 challenge response must expose a bounded byte stream'
+  ));
+  assert.equal(jsonCalls, 0);
+  assert.equal(signatureCount(), 0);
   assert.equal(paymentPolicy.snapshot().reservedAtomic, '0');
 });
 
@@ -239,13 +272,7 @@ test('trusted quote age is rechecked after JSON parse against receipt and issue 
       paymentPolicy,
       fetchImpl: async () => {
         fetches += 1;
-        return {
-          status: 402,
-          async json() {
-            setClock(afterParse);
-            return challengePayload(candidate);
-          },
-        };
+        return challengeWithReadHook(candidate, () => setClock(afterParse));
       },
     }), (error) => error.code === 'QUOTE_FRESHNESS');
     assert.equal(fetches, 1, name);

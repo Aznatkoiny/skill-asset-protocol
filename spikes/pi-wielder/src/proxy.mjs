@@ -250,14 +250,13 @@ const challengeReadOptions = Object.freeze({
 });
 
 async function readChallenge(response, signal) {
-  if (response?.body !== undefined && response?.headers?.get) {
-    return readJsonBody(response, { ...challengeReadOptions, signal });
+  if (!(response instanceof Response)) {
+    throw paymentError(
+      'CHALLENGE_RESPONSE_SHAPE',
+      'x402 challenge response must expose a bounded byte stream',
+    );
   }
-  try {
-    return await response.json();
-  } catch {
-    throw paymentError('CHALLENGE_SCHEMA', challengeReadOptions.jsonErrorMessage);
-  }
+  return readJsonBody(response, { ...challengeReadOptions, signal });
 }
 
 function decodeSettlementHeader(value) {
