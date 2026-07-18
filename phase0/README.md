@@ -72,8 +72,13 @@ A repository statement hash, challenge nonce, wallet signature, and bound forge
 observation are single-use credentials across the entire log. An organization
 statement hash and signature are also single-use. Revocation does not make an
 old credential reusable under a fresh event ID or sequence. Reactivation
-requires genuinely fresh signed repository evidence and, where applicable, a
-fresh organization approval.
+requires genuinely fresh signed evidence, not merely a later event envelope.
+After a repository-level revocation, both the wallet-signed challenge's
+`issuedAt` and the forge observation's `observedAt` must be strictly later than
+the latest repository revocation. After an organization-level revocation, or a
+repository revocation that cascades to organization evidence, the new
+organization approval's signed `approvedAt` must be strictly later than that
+latest revocation cutoff.
 
 Inspect evidence without a network or chain write:
 
@@ -132,8 +137,10 @@ At mapping load, the verifier pins the checkout directory's device and inode.
 It reopens and compares that identity before, between, and after external Git
 operations. This detects ordinary checkout-path replacement, but the spike
 cannot portably keep one directory file descriptor bound across every external
-Git process. A privileged same-machine attacker capable of replacing and
-restoring the path inside a single check-to-exec interval remains a residual
+Git process. Directory identity also does not freeze in-place changes to the
+checkout's refs, object database, configuration, or worktree. A privileged
+same-machine attacker capable of changing those contents, or of replacing and
+restoring the path inside a single check-to-exec interval, remains a residual
 local-verifier risk. Production hardening would require a platform-specific
 descriptor-bound execution boundary or an isolated immutable snapshot.
 

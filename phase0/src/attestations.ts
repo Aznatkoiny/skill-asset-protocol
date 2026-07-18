@@ -679,6 +679,8 @@ export async function reduceAttestationEvents(
     organizationActive: boolean;
     repositoryActivatedAt: number | null;
     organizationActivatedAt: number | null;
+    repositoryRevokedAt: number | null;
+    organizationRevokedAt: number | null;
   }> = {};
   for (const subject of Object.values(subjects)) {
     registrations[subject.registrationId] = {
@@ -693,6 +695,8 @@ export async function reduceAttestationEvents(
       organizationActive: false,
       repositoryActivatedAt: null,
       organizationActivatedAt: null,
+      repositoryRevokedAt: null,
+      organizationRevokedAt: null,
     };
   }
 
@@ -760,6 +764,13 @@ export async function reduceAttestationEvents(
           || consumedForgeObservations.has(forgeCredential)) {
         throw new Error("repository credential, statement, nonce, or forge observation was already consumed");
       }
+      const challengeIssuedAt = Date.parse(event.challenge.issuedAt);
+      const forgeObservedAt = Date.parse(event.forgeObservation.observedAt);
+      if (registration.repositoryRevokedAt !== null
+          && (challengeIssuedAt <= registration.repositoryRevokedAt
+            || forgeObservedAt <= registration.repositoryRevokedAt)) {
+        throw new Error("repository reactivation requires a signed challenge and forge observation strictly after the latest repository revocation");
+      }
       await verifyRepositoryEventSignature(event);
       if (!trust.repositoryVerifier) throw new Error("repository verifier context required");
       await trust.repositoryVerifier(event);
@@ -779,6 +790,9 @@ export async function reduceAttestationEvents(
         throw new Error("organization approval credential was already consumed");
       }
       const approvedAt = Date.parse(event.approval.approvedAt);
+      if (registration.organizationRevokedAt !== null && approvedAt <= registration.organizationRevokedAt) {
+        throw new Error("organization reactivation requires an approval strictly after the latest organization revocation");
+      }
       if (approvedAt > occurredAt) throw new Error("organization approvedAt must not follow its event envelope");
       if (registration.repositoryActivatedAt === null || approvedAt < registration.repositoryActivatedAt) {
         throw new Error("organization approvedAt must not precede active repository evidence");
@@ -834,11 +848,14 @@ export async function reduceAttestationEvents(
         registration.organizationActive = false;
         registration.repositoryActivatedAt = null;
         registration.organizationActivatedAt = null;
+        registration.repositoryRevokedAt = occurredAt;
+        registration.organizationRevokedAt = occurredAt;
       } else {
         if (!registration.organizationActive) throw new Error("organization evidence is not active");
         if (registration.organizationActivatedAt === null || occurredAt < registration.organizationActivatedAt) throw new Error("revocation must follow active organization evidence");
         registration.organizationActive = false;
         registration.organizationActivatedAt = null;
+        registration.organizationRevokedAt = occurredAt;
       }
       registration.revocations = Object.freeze([...registration.revocations, {
         level: event.level,
@@ -869,6 +886,8 @@ export async function reduceAttestationEvents(
       organizationActive: _organizationActive,
       repositoryActivatedAt: _repositoryActivatedAt,
       organizationActivatedAt: _organizationActivatedAt,
+      repositoryRevokedAt: _repositoryRevokedAt,
+      organizationRevokedAt: _organizationRevokedAt,
       ...publicValue
     } = value;
     return [id, deepFreeze(publicValue)];

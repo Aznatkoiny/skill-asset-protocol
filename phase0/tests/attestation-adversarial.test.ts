@@ -48,6 +48,9 @@ async function repositoryEvent(input: {
   sequence: number;
   nonceDigit: string;
   occurredAt?: string;
+  issuedAt?: string;
+  observedAt?: string;
+  expiresAt?: string;
 }): Promise<RepositoryControlEvent> {
   const challenge = {
     schemaVersion: 1 as const,
@@ -57,8 +60,8 @@ async function repositoryEvent(input: {
     artifactPath: "skills/demo/SKILL.md",
     challengePath: `attestations/${input.nonceDigit}.json`,
     nonce: `0x${input.nonceDigit.repeat(64)}` as `0x${string}`,
-    issuedAt: T0,
-    expiresAt: T4,
+    issuedAt: input.issuedAt ?? T0,
+    expiresAt: input.expiresAt ?? T4,
   };
   return {
     type: "repository_control_verified",
@@ -74,7 +77,7 @@ async function repositoryEvent(input: {
       trustedRef: "refs/heads/main",
       proofCommitSha: input.nonceDigit.repeat(40),
       challengeNonce: challenge.nonce,
-      observedAt: T1,
+      observedAt: input.observedAt ?? T1,
       forgeSignerId: "forge-1",
       signature: `forge-${input.nonceDigit}`,
     },
@@ -253,7 +256,16 @@ test("revocation permanently consumes old evidence while genuinely fresh credent
     adminSigners: { "admin-1": admin.address.toLowerCase() as `0x${string}` }, now: new Date(T4),
   };
   await assert.rejects(reduceAttestationEvents([repo, revoked, { ...repo, eventId: "repo-replay", sequence: 3, occurredAt: T3 }], trust), /already consumed/i);
-  const fresh = await repositoryEvent({ subject: base, account, eventId: "repo-fresh", sequence: 3, nonceDigit: "3", occurredAt: T3 });
+  const fresh = await repositoryEvent({
+    subject: base,
+    account,
+    eventId: "repo-fresh",
+    sequence: 3,
+    nonceDigit: "3",
+    issuedAt: T3,
+    observedAt: T3,
+    occurredAt: T3,
+  });
   const state = await reduceAttestationEvents([repo, revoked, fresh], trust);
   assert.equal(state.registrations[base.registrationId].level, "repository_control_verified");
 
@@ -279,7 +291,10 @@ test("revocation permanently consumes old evidence while genuinely fresh credent
     eventId: "repo-fresh-after-organization",
     sequence: 4,
     nonceDigit: "4",
-    occurredAt: T3,
+    issuedAt: T4,
+    observedAt: T4,
+    expiresAt: "2026-07-18T05:00:00.000Z",
+    occurredAt: T4,
   });
   await assert.rejects(reduceAttestationEvents([
     repo,
@@ -291,6 +306,123 @@ test("revocation permanently consumes old evidence while genuinely fresh credent
     ...trust,
     organizationSigners: { "example-org": [organization.approval.approverWallet] },
   }), /organization approval credential was already consumed/i);
+
+  const freshOrganization = await organizationEvent({
+    subject: base,
+    approver,
+    eventId: "organization-fresh-after-revocation",
+    sequence: 5,
+    approvedAt: T4,
+    occurredAt: T4,
+  });
+  const organizationReactivated = await reduceAttestationEvents([
+    repo,
+    organization,
+    revocationAfterOrganization,
+    freshAfterOrganization,
+    freshOrganization,
+  ], {
+    ...trust,
+    organizationSigners: { "example-org": [organization.approval.approverWallet] },
+  });
+  assert.equal(organizationReactivated.registrations[base.registrationId].level, "organization_approved");
+});
+
+test("unused pre-revocation repository evidence cannot reactivate through a later envelope", async () => {
+  const account = privateKeyToAccount(generatePrivateKey());
+  const admin = privateKeyToAccount(generatePrivateKey());
+  const base = subject(IP_A, account.address);
+  const active = await repositoryEvent({ subject: base, account, eventId: "repo-active", sequence: 1, nonceDigit: "2" });
+  const revoked = await revocation({
+    admin,
+    registrationId: base.registrationId,
+    eventId: "repo-revoked",
+    sequence: 2,
+    occurredAt: T2,
+  });
+  const staleButUnused = await repositoryEvent({
+    subject: base,
+    account,
+    eventId: "repo-stale-unused",
+    sequence: 3,
+    nonceDigit: "3",
+    issuedAt: T0,
+    observedAt: T1,
+    occurredAt: T3,
+  });
+  const staleChallengeWithFreshObservation = await repositoryEvent({
+    subject: base,
+    account,
+    eventId: "repo-stale-challenge-fresh-observation",
+    sequence: 3,
+    nonceDigit: "4",
+    issuedAt: T0,
+    observedAt: T3,
+    occurredAt: T3,
+  });
+
+  await assert.rejects(reduceAttestationEvents([active, revoked, staleButUnused], {
+    baseSubjects: [base],
+    repositoryVerifier: async () => undefined,
+    adminSigners: { "admin-1": admin.address.toLowerCase() as `0x${string}` },
+    now: new Date(T4),
+  }), /repository reactivation.*strictly after.*revocation/i);
+  await assert.rejects(reduceAttestationEvents([active, revoked, staleChallengeWithFreshObservation], {
+    baseSubjects: [base],
+    repositoryVerifier: async () => undefined,
+    adminSigners: { "admin-1": admin.address.toLowerCase() as `0x${string}` },
+    now: new Date(T4),
+  }), /repository reactivation.*strictly after.*revocation/i);
+});
+
+test("unused pre-revocation organization approval cannot reactivate through a later envelope", async () => {
+  const account = privateKeyToAccount(generatePrivateKey());
+  const approver = privateKeyToAccount(generatePrivateKey());
+  const admin = privateKeyToAccount(generatePrivateKey());
+  const base = subject(IP_A, account.address);
+  const repository = await repositoryEvent({ subject: base, account, eventId: "repo-active", sequence: 1, nonceDigit: "2" });
+  const active = await organizationEvent({
+    subject: base,
+    approver,
+    eventId: "organization-active",
+    sequence: 2,
+    approvedAt: T2,
+    occurredAt: T2,
+  });
+  const revocationBase = {
+    type: "attestation_revoked" as const,
+    eventId: "organization-revoked",
+    sequence: 3,
+    occurredAt: T3,
+    registrationId: base.registrationId,
+    level: "organization_approved" as const,
+    reason: "Organization approval withdrawn.",
+    adminSignerId: "admin-1",
+    statementHash: HASH,
+    signature: "0x00" as `0x${string}`,
+  };
+  const revocationHash = adminEventStatementHash(revocationBase);
+  const revoked: AttestationRevokedEvent = {
+    ...revocationBase,
+    statementHash: revocationHash,
+    signature: await admin.signMessage({ message: canonicalAdminEventStatement({ ...revocationBase, statementHash: revocationHash }) }),
+  };
+  const staleButUnused = await organizationEvent({
+    subject: base,
+    approver,
+    eventId: "organization-stale-unused",
+    sequence: 4,
+    approvedAt: "2026-07-18T02:30:00.000Z",
+    occurredAt: T4,
+  });
+
+  await assert.rejects(reduceAttestationEvents([repository, active, revoked, staleButUnused], {
+    baseSubjects: [base],
+    repositoryVerifier: async () => undefined,
+    organizationSigners: { "example-org": [approver.address.toLowerCase() as `0x${string}`] },
+    adminSigners: { "admin-1": admin.address.toLowerCase() as `0x${string}` },
+    now: new Date(T4),
+  }), /organization reactivation.*strictly after.*revocation/i);
 });
 
 test("event chronology and causal approval/resolution ordering fail closed against an injected clock", async () => {
