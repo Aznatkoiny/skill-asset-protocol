@@ -919,6 +919,28 @@ test('period cap counts every open maximum exposure', async () => {
   assert.equal(Object.keys(fx.store.snapshot().reservations).length, 1);
 });
 
+test('period cap retains committed future-policy awards after successful Invocations', async () => {
+  const fx = fixture({
+    policyOverrides: {
+      maxAwardPerPeriodAtomic: '3000000',
+      vestingRule: 'future_policy_controlled',
+    },
+  });
+  const firstQuote = makeQuote(fx.activePolicy, 'vesting-cap-1');
+  const firstAuthorization = await authorize(fx, firstQuote);
+  const first = await executeSuccess(fx, firstQuote, firstAuthorization);
+
+  assert.equal(first.invocation.state, 'succeeded');
+  assert.equal(first.award.state, 'vesting_pending');
+  assert.equal(first.award.amountAtomic, '2000000');
+
+  const secondQuote = makeQuote(fx.activePolicy, 'vesting-cap-2');
+  await assert.rejects(() => authorize(fx, secondQuote), /period award cap/);
+  const snapshot = fx.store.snapshot();
+  assert.equal(Object.keys(snapshot.awards).length, 1);
+  assert.equal(Object.hasOwn(snapshot.invocations, secondQuote.invocationId), false);
+});
+
 test('authorization Promise race, idempotency, and reservation bindings fail closed', async () => {
   const fx = fixture();
   const q1 = makeQuote(fx.activePolicy, 'authorize-race-1');
@@ -1093,7 +1115,7 @@ test('required policy, budget, signer, and lifecycle rejections happen before ex
   });
 });
 
-test('finance-authenticated append-only earned reversals reduce period exposure only after verification', async () => {
+test('finance-authenticated append-only earned reversals reduce period exposure exactly once after verification', async () => {
   const fx = fixture({ policyOverrides: { maxAwardPerPeriodAtomic: '3000000' } });
   const q1 = makeQuote(fx.activePolicy, 'reversal-cap-1');
   const firstAuthorization = await authorize(fx, q1);
@@ -1162,6 +1184,15 @@ test('finance-authenticated append-only earned reversals reduce period exposure 
   assert.equal(Object.keys(fx.store.snapshot().awardReversals).length, 1);
   const second = await authorize(fx, q2);
   assert.equal(second.reservation.state, 'reserved');
+  const secondResult = await executeSuccess(fx, q2, second);
+  assert.equal(secondResult.award.state, 'earned');
+
+  const q3 = makeQuote(fx.activePolicy, 'reversal-cap-3', {
+    maxInvocationAwardAtomic: '1000000',
+    maxGrossAtomic: '2050000',
+  });
+  await assert.rejects(() => authorize(fx, q3), /period award cap/);
+  assert.equal(Object.keys(fx.store.snapshot().awardReversals).length, 1);
 });
 
 test('executions crossing period close terminally hold with honest recognition time and no late award', async (t) => {

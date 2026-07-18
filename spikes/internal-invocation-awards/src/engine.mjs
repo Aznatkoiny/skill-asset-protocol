@@ -278,7 +278,7 @@ function awardExposureAtomic(state, policy, period) {
     if (award.policyId === policy.policyId
         && award.policyVersion === policy.version
         && award.period === period
-        && ['earned', 'payable', 'paid'].includes(award.state)) {
+        && ['vesting_pending', 'earned', 'payable', 'paid'].includes(award.state)) {
       exposure += toAtomic(award.amountAtomic);
     }
   }
