@@ -20,6 +20,12 @@ import { loadAccount } from './wallet.mjs';
 import { createLedger, renderLedger } from './ledger.mjs';
 import { receiptKeyId, verifySignedReceipt } from './invocation-journal.mjs';
 import {
+  readBodyBytes,
+  readJsonBody,
+  RuntimeBoundaryError,
+  withWallClockDeadline,
+} from './runtime-boundaries.mjs';
+import {
   BASE_SEPOLIA_CHAIN_ID,
   BASE_SEPOLIA_NETWORK,
   BASE_SEPOLIA_USDC,
@@ -31,6 +37,14 @@ import {
 // signature that IS the payment. (Constants restated here on purpose: the
 // Wielder must be self-contained, importing nothing from the seller side.)
 const CHAIN_ID = BASE_SEPOLIA_CHAIN_ID;
+export const DEFAULT_UNPAID_FETCH_TIMEOUT_MS = 15_000;
+export const DEFAULT_PAID_RETRY_TIMEOUT_MS = 30_000;
+export const MAX_X402_CHALLENGE_BYTES = 64 * 1024;
+export const DEFAULT_PROXY_SKILL_REQUEST_BYTES = 4096;
+export const DEFAULT_PROXY_MODEL_REQUEST_BYTES = 1024 * 1024;
+export const DEFAULT_PROXY_UPSTREAM_RESPONSE_BYTES = 1024 * 1024;
+export const DEFAULT_PROXY_REQUEST_TIMEOUT_MS = 5_000;
+export const DEFAULT_PROXY_RESPONSE_TIMEOUT_MS = 30_000;
 const EIP3009_TYPES = {
   TransferWithAuthorization: [
     { name: 'from', type: 'address' }, { name: 'to', type: 'address' },
@@ -42,6 +56,7 @@ const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64');
 
 const payingFetchOptionKeys = new Set([
   'fetchImpl', 'idempotencyKey', 'paymentPolicy', 'onSignedAuthorizationPersisted', 'nonceFactory',
+  'unpaidTimeoutMs', 'paidTimeoutMs',
 ]);
 const requestInitKeys = Object.freeze([
   'body', 'cache', 'credentials', 'dispatcher', 'duplex', 'headers', 'integrity', 'keepalive',
@@ -51,6 +66,47 @@ const requestInitKeySet = new Set(requestInitKeys);
 
 function paymentError(code, message) {
   return new PaymentPolicyError(code, message);
+}
+
+function positiveLimit(value, label) {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new TypeError(`${label} must be a positive safe integer`);
+  }
+  return value;
+}
+
+function proxyBoundaryResponse(c, error) {
+  const code = error instanceof RuntimeBoundaryError ? error.code : 'UPSTREAM_FAILURE';
+  const statuses = {
+    PROXY_REQUEST_TOO_LARGE: 413,
+    PROXY_REQUEST_TIMEOUT: 408,
+    PROXY_REQUEST_ABORTED: 408,
+    UPSTREAM_RESPONSE_TOO_LARGE: 502,
+    UPSTREAM_RESPONSE_TIMEOUT: 504,
+    UPSTREAM_RESPONSE_ABORTED: 504,
+    UNPAID_FETCH_TIMEOUT: 504,
+    PAID_RETRY_TIMEOUT: 504,
+    UNPAID_FETCH_ABORTED: 408,
+    PAID_RETRY_ABORTED: 504,
+    X402_CHALLENGE_TOO_LARGE: 502,
+  };
+  const messages = {
+    PROXY_REQUEST_TOO_LARGE: error.message,
+    PROXY_REQUEST_TIMEOUT: 'proxy request body timed out',
+    PROXY_REQUEST_ABORTED: 'proxy request body was aborted',
+    UPSTREAM_RESPONSE_TOO_LARGE: 'upstream response exceeds the proxy byte limit',
+    UPSTREAM_RESPONSE_TIMEOUT: 'upstream response timed out',
+    UPSTREAM_RESPONSE_ABORTED: 'upstream response was aborted',
+    UNPAID_FETCH_TIMEOUT: 'upstream unpaid request timed out',
+    PAID_RETRY_TIMEOUT: 'upstream paid retry timed out with settlement unresolved',
+    UNPAID_FETCH_ABORTED: 'upstream unpaid request was aborted',
+    PAID_RETRY_ABORTED: 'upstream paid retry was aborted with settlement unresolved',
+    X402_CHALLENGE_TOO_LARGE: 'upstream x402 challenge exceeds the byte limit',
+  };
+  return c.json({
+    error: messages[code] ?? 'Wielder proxy request failed',
+    code,
+  }, statuses[code] ?? 502);
 }
 
 function validatePayingFetchOptions(options) {
@@ -121,6 +177,7 @@ function capturePayingRequestInit(init, idempotencyKey) {
   }
 
   const callerBody = captured.body;
+  const callerSignal = captured.signal ?? null;
   let bodyBytes;
   let transportBody;
   if (callerBody == null) {
@@ -148,13 +205,15 @@ function capturePayingRequestInit(init, idempotencyKey) {
   delete baseInit.headers;
   delete baseInit.body;
   delete baseInit.redirect;
+  delete baseInit.signal;
   Object.freeze(baseInit);
 
-  function transportInit(xPayment = null) {
+  function transportInit(xPayment = null, signal = null) {
     const request = {
       ...baseInit,
       method,
       redirect: 'error',
+      ...(signal === null ? {} : { signal }),
       headers: {
         ...requestHeaders,
         ...(xPayment === null ? {} : { 'X-PAYMENT': xPayment }),
@@ -174,9 +233,31 @@ function capturePayingRequestInit(init, idempotencyKey) {
 
   return Object.freeze({
     method,
+    callerSignal,
     policyBodyBytes,
     transportInit,
   });
+}
+
+const challengeReadOptions = Object.freeze({
+  maxBytes: MAX_X402_CHALLENGE_BYTES,
+  tooLargeCode: 'X402_CHALLENGE_TOO_LARGE',
+  tooLargeMessage: 'x402 challenge exceeds the response byte limit',
+  readErrorCode: 'CHALLENGE_READ_FAILED',
+  readErrorMessage: 'x402 challenge body could not be read',
+  jsonErrorCode: 'CHALLENGE_SCHEMA',
+  jsonErrorMessage: '402 response does not contain strict x402 JSON',
+});
+
+async function readChallenge(response, signal) {
+  if (response?.body !== undefined && response?.headers?.get) {
+    return readJsonBody(response, { ...challengeReadOptions, signal });
+  }
+  try {
+    return await response.json();
+  } catch {
+    throw paymentError('CHALLENGE_SCHEMA', challengeReadOptions.jsonErrorMessage);
+  }
 }
 
 function decodeSettlementHeader(value) {
@@ -207,6 +288,8 @@ export async function payingFetch(account, url, init, options = {}) {
     paymentPolicy,
     onSignedAuthorizationPersisted = null,
     nonceFactory = () => `0x${crypto.randomBytes(32).toString('hex')}`,
+    unpaidTimeoutMs = DEFAULT_UNPAID_FETCH_TIMEOUT_MS,
+    paidTimeoutMs = DEFAULT_PAID_RETRY_TIMEOUT_MS,
   } = options;
   if (typeof fetchImpl !== 'function') throw paymentError('FETCH_CAPABILITY', 'fetchImpl must be a function');
   if (!paymentPolicy) throw paymentError('PAYMENT_POLICY_REQUIRED', 'paymentPolicy is required before any x402 signature');
@@ -221,19 +304,25 @@ export async function payingFetch(account, url, init, options = {}) {
     throw paymentError('AUTHORIZATION_ID', 'idempotencyKey must be a bounded canonical token');
   }
   const request = capturePayingRequestInit(init, idempotencyKey);
-  const { method } = request;
+  const { method, callerSignal } = request;
   const t0 = performance.now();
-  const first = await fetchImpl(url, request.transportInit());
+  const unpaid = await withWallClockDeadline({
+    signal: callerSignal,
+    timeoutMs: unpaidTimeoutMs,
+    timeoutCode: 'UNPAID_FETCH_TIMEOUT',
+    timeoutMessage: 'unpaid x402 request timed out before authorization',
+    abortedCode: 'UNPAID_FETCH_ABORTED',
+    abortedMessage: 'unpaid x402 request was aborted before authorization',
+  }, async (signal) => {
+    const first = await fetchImpl(url, request.transportInit(null, signal));
+    if (first.status !== 402) return { first, receivedAt: null, firstChallenge: null };
+    const receivedAt = paymentPolicy.captureReceivedAt();
+    const firstChallenge = await readChallenge(first, signal);
+    return { first, receivedAt, firstChallenge };
+  });
+  const { first, receivedAt, firstChallenge } = unpaid;
   if (first.status !== 402) return { res: first, paid: false, idempotencyKey };
-  const receivedAt = paymentPolicy.captureReceivedAt();
   const ms402 = performance.now() - t0;
-
-  let firstChallenge;
-  try {
-    firstChallenge = await first.json();
-  } catch {
-    throw paymentError('CHALLENGE_SCHEMA', '402 response does not contain strict x402 JSON');
-  }
   const authorizationRecord = paymentPolicy.reserveAuthorization({
     authorizationId: idempotencyKey,
     requestUrl: url,
@@ -364,17 +453,30 @@ export async function payingFetch(account, url, init, options = {}) {
   paymentPolicy.beginRetry(idempotencyKey);
   const tRetry = performance.now();
   let res;
+  let secondChallenge = null;
   try {
-    res = await fetchImpl(url, request.transportInit(xPayment));
+    ({ res, secondChallenge } = await withWallClockDeadline({
+      signal: callerSignal,
+      timeoutMs: paidTimeoutMs,
+      timeoutCode: 'PAID_RETRY_TIMEOUT',
+      timeoutMessage: 'paid x402 retry timed out with settlement unresolved',
+      abortedCode: 'PAID_RETRY_ABORTED',
+      abortedMessage: 'paid x402 retry was aborted with settlement unresolved',
+    }, async (signal) => {
+      const response = await fetchImpl(url, request.transportInit(xPayment, signal));
+      const challengeBody = response.status === 402 ? await readChallenge(response, signal) : null;
+      return { res: response, secondChallenge: challengeBody };
+    }));
   } catch (error) {
-    paymentPolicy.markUnresolved(idempotencyKey, { reasonCode: 'RETRY_RESPONSE_LOST' });
+    const reasonCode = error instanceof RuntimeBoundaryError
+      ? error.code
+      : 'RETRY_RESPONSE_LOST';
+    paymentPolicy.markUnresolved(idempotencyKey, { reasonCode });
     throw error;
   }
   const msPaidRoundtrip = performance.now() - tRetry;
 
   if (res.status === 402) {
-    let secondChallenge = null;
-    try { secondChallenge = await res.clone().json(); } catch { /* stable changed-quote error below */ }
     let secondError;
     try {
       paymentPolicy.assertRetryChallenge(idempotencyKey, secondChallenge);
@@ -542,6 +644,11 @@ export function createProxy({
   trustedCollarPublicKeyPem = null,
   trustedCollarKeyId = null,
   paymentPolicy = null,
+  maxSkillRequestBytes = DEFAULT_PROXY_SKILL_REQUEST_BYTES,
+  maxModelRequestBytes = DEFAULT_PROXY_MODEL_REQUEST_BYTES,
+  maxUpstreamResponseBytes = DEFAULT_PROXY_UPSTREAM_RESPONSE_BYTES,
+  proxyRequestTimeoutMs = DEFAULT_PROXY_REQUEST_TIMEOUT_MS,
+  proxyResponseTimeoutMs = DEFAULT_PROXY_RESPONSE_TIMEOUT_MS,
 } = {}) {
   if (!trustedCollarPublicKeyPem || !trustedCollarKeyId) {
     throw new Error('Skill routes require a pinned Collar public key and key ID');
@@ -549,22 +656,72 @@ export function createProxy({
   if (receiptKeyId(trustedCollarPublicKeyPem) !== trustedCollarKeyId) {
     throw new Error('pinned Collar public key and key ID do not match');
   }
+  positiveLimit(maxSkillRequestBytes, 'maxSkillRequestBytes');
+  positiveLimit(maxModelRequestBytes, 'maxModelRequestBytes');
+  positiveLimit(maxUpstreamResponseBytes, 'maxUpstreamResponseBytes');
+  positiveLimit(proxyRequestTimeoutMs, 'proxyRequestTimeoutMs');
+  positiveLimit(proxyResponseTimeoutMs, 'proxyResponseTimeoutMs');
   const ledger = createLedger(ledgerFile);
   const sessionPaymentPolicy = paymentPolicy ?? createDefaultPaymentPolicy({ gatewayUrl, collarUrl });
   const app = new Hono();
+  app.onError((error, c) => proxyBoundaryResponse(c, error));
 
   // One handler for both asset classes: /v1/* -> inference gateway (leg:
   // "model"), /invoke/* -> collar (leg: "skill"). Same wallet, one local view.
   const forward = (upstreamBase, leg, fetchImpl) => async (c) => {
     const path = c.req.path;
-    const bodyText = await c.req.text();
+    const requestLimit = leg === 'skill' ? maxSkillRequestBytes : maxModelRequestBytes;
+    let bodyBytes;
+    try {
+      bodyBytes = await withWallClockDeadline({
+        signal: c.req.raw.signal,
+        timeoutMs: proxyRequestTimeoutMs,
+        timeoutCode: 'PROXY_REQUEST_TIMEOUT',
+        timeoutMessage: 'proxy request body timed out',
+        abortedCode: 'PROXY_REQUEST_ABORTED',
+        abortedMessage: 'proxy request body was aborted',
+      }, (signal) => readBodyBytes(c.req.raw, {
+        maxBytes: requestLimit,
+        tooLargeCode: 'PROXY_REQUEST_TOO_LARGE',
+        tooLargeMessage: leg === 'skill'
+          ? `proxy Skill request exceeds the ${requestLimit}-byte limit`
+          : `proxy model request exceeds the ${requestLimit}-byte limit`,
+        readErrorCode: 'PROXY_REQUEST_READ_FAILED',
+        readErrorMessage: 'proxy request body could not be read',
+        signal,
+      }));
+    } catch (error) {
+      return proxyBoundaryResponse(c, error);
+    }
+    const bodyText = bodyBytes.toString('utf8');
     const {
       res, paid, xPayment, idempotencyKey, amountAtomic, txHash, payer,
       requestHash, quoteId, settlementReference, timings,
     } = await payingFetch(account, `${upstreamBase}${path}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: bodyText,
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: bodyBytes,
+      signal: c.req.raw.signal,
     }, { fetchImpl, paymentPolicy: sessionPaymentPolicy });
-    const resBody = await res.text();
+    let resBodyBytes;
+    try {
+      resBodyBytes = await withWallClockDeadline({
+        signal: c.req.raw.signal,
+        timeoutMs: proxyResponseTimeoutMs,
+        timeoutCode: 'UPSTREAM_RESPONSE_TIMEOUT',
+        timeoutMessage: 'upstream response timed out',
+        abortedCode: 'UPSTREAM_RESPONSE_ABORTED',
+        abortedMessage: 'upstream response was aborted',
+      }, (signal) => readBodyBytes(res, {
+        maxBytes: maxUpstreamResponseBytes,
+        tooLargeCode: 'UPSTREAM_RESPONSE_TOO_LARGE',
+        tooLargeMessage: 'upstream response exceeds the proxy byte limit',
+        readErrorCode: 'UPSTREAM_RESPONSE_READ_FAILED',
+        readErrorMessage: 'upstream response could not be read',
+        signal,
+      }));
+    } catch (error) {
+      return proxyBoundaryResponse(c, error);
+    }
+    const resBody = resBodyBytes.toString('utf8');
 
     if (paid && txHash) {
       let parsed = {};
@@ -631,7 +788,7 @@ export function createProxy({
       headers['x-wielder-overhead'] = JSON.stringify(timings);
       headers['x-wielder-payment'] = xPayment; // testnet-only; never expose a mainnet authorization like this
     }
-    return c.newResponse(resBody, res.status, headers);
+    return c.newResponse(resBodyBytes, res.status, headers);
   };
 
   app.post('/v1/*', forward(gatewayUrl, 'model', gatewayFetch));

@@ -18,15 +18,26 @@ import {
   createLiveFacilitatorTransport,
   createMockFacilitatorTransport,
   x402Paywall,
+  x402RequestBodyText,
 } from './x402-seller.mjs';
 
 // Flat per-call testnet prices by model family (real resellers price per
 // token; per-call keeps the 402 requirements computable before inference).
 export const MODEL_PRICES_USDC = Object.freeze({ claude: '0.041', gpt: '0.087', default: '0.05' });
+export const MAX_GATEWAY_REQUEST_BODY_BYTES = 1024 * 1024;
 const priceFor = (model = '') =>
   model.startsWith('claude') ? MODEL_PRICES_USDC.claude
   : model.startsWith('gpt') ? MODEL_PRICES_USDC.gpt
   : MODEL_PRICES_USDC.default;
+
+function gatewayRequestBody(c) {
+  const cached = c.get('gatewayRequestBody');
+  if (cached) return cached;
+  let body;
+  try { body = JSON.parse(x402RequestBodyText(c)); } catch { body = {}; }
+  c.set('gatewayRequestBody', body);
+  return body;
+}
 
 export function createGateway({
   facilitatorTransport,
@@ -39,15 +50,16 @@ export function createGateway({
   app.post(
     '/v1/chat/completions',
     x402Paywall({
-      // Per-request pricing: Hono caches the parsed body, so reading it here
-      // and again in the handler is safe.
-      price: async (c) => priceFor((await c.req.json().catch(() => ({}))).model),
+      // The x402 boundary owns one bounded stream read. Pricing and execution
+      // parse its cached text instead of consuming the request twice.
+      price: async (c) => priceFor(gatewayRequestBody(c).model),
       payTo,
       facilitatorTransport,
       description: 'per-call model inference (x402 reseller, testnet)',
+      maxRequestBodyBytes: MAX_GATEWAY_REQUEST_BODY_BYTES,
     }),
     async (c) => {
-      const body = await c.req.json();
+      const body = gatewayRequestBody(c);
       const model = body.model ?? '';
       const completion = mockLlm ? mockCompletion(body)
         : model.startsWith('claude') ? await viaAnthropic(body)

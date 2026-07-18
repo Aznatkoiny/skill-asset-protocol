@@ -18,6 +18,8 @@
 // on this file compiling.
 
 const PROXY = process.env.PI_WIELDER_PROXY ?? "http://localhost:8402";
+const HOSTED_SKILL_ID = "optimizing-claude-code-prompts";
+const HOSTED_SKILL_PATH = `/invoke/${encodeURIComponent(HOSTED_SKILL_ID)}`;
 
 const displayUsdc = (amountAtomic: string) => {
   const padded = BigInt(amountAtomic).toString().padStart(7, "0");
@@ -98,23 +100,17 @@ export default function activate(pi: Pi) {
     parameters: {
       type: "object",
       properties: {
-        skillId: {
-          type: "string",
-          description: "Hosted skill id",
-          default: "optimizing-claude-code-prompts",
-        },
         input: { type: "string", description: "The rough request to optimize" },
       },
       required: ["input"],
     },
-    async execute(args: { skillId?: string; input: string }) {
-      const skillId = args.skillId ?? "optimizing-claude-code-prompts";
-      const res = await fetch(`${PROXY}/invoke/${skillId}`, {
+    async execute(args: { input: string }) {
+      const res = await fetch(`${PROXY}${HOSTED_SKILL_PATH}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ input: args.input }),
       });
-      if (!res.ok) return `invoke_skill failed (HTTP ${res.status}): ${await res.text()}`;
+      if (!res.ok) return `invoke_skill failed (HTTP ${res.status})`;
       const { output, receipt } = (await res.json()) as {
         output: string;
         receipt: SignedInvocationReceipt;

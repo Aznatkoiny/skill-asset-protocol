@@ -156,7 +156,7 @@ npm test
 npm run e2e
 ```
 
-Expected current results are 172 offline unit/integration tests and 41 offline e2e
+Expected current results are 193 offline unit/integration tests and 41 offline e2e
 checks. Counts can increase as regressions are added; zero failures is the contract.
 The e2e labels all timing output synthetic and uses in-process Hono requests only.
 
@@ -183,6 +183,7 @@ blocked live boundary, see [RUNBOOK.md](./RUNBOOK.md).
 | `src/x402-seller.mjs` | Seller x402 v1 `exact` middleware and approved transport constructors |
 | `src/proxy.mjs` | Wielder wallet, paying fetch, pinned receipt verification, and local receipt view |
 | `src/payment-policy.mjs` | Strict Base Sepolia offer validation, one-process reservation state, exact signed authorization recovery, and trusted reconciliation boundary |
+| `src/runtime-boundaries.mjs` | Composed wall-clock deadlines plus streaming byte-limited body and JSON readers |
 | `src/ledger.mjs` | JSONL-capable Wielder receipt-view storage and rendering |
 | `src/gateway.mjs` | Simulated x402 model reseller |
 | `src/facilitator-mock.mjs` | Offline signature verification plus synthetic settlement |
@@ -190,6 +191,28 @@ blocked live boundary, see [RUNBOOK.md](./RUNBOOK.md).
 | `e2e.mjs` | Fully in-process offline proof |
 
 ## Security and operational boundaries
+
+Every body limit is enforced while chunks arrive, including when `Content-Length` is
+absent. A declared oversize is rejected before the body is pulled. The Collar and its
+default x402 middleware accept at most exactly 4,096 request bytes; 4,096 is accepted
+and 4,097 is rejected before an offer. The model gateway and proxy model route accept
+at most 1 MiB, while the proxy Skill route keeps the 4,096-byte contract. Buyer x402
+challenges and facilitator JSON responses are capped at 64 KiB. Anthropic JSON and
+proxy upstream responses are capped at 1 MiB.
+
+Default wall-clock bounds are 15 seconds for the unpaid buyer fetch, 30 seconds for
+the signed paid retry, 5 seconds for x402/proxy request-body reads, 10 seconds for each
+facilitator verify and settle operation, and 30 seconds for provider execution and
+proxy upstream-response reads. Caller abort signals are composed into child signals;
+an internal timeout never aborts the caller's controller. Redirects remain disabled.
+
+Timeout state follows the durable money boundary: an unpaid timeout creates no
+reservation; a signed retry or facilitator ambiguity stays `unresolved` with budget
+held; and a provider timeout after settlement finalizes a sanitized failed receipt,
+unknown COGS, one full-gross reconciliation hold, no output, and no Royalty credits.
+Raw transport and provider errors are not returned or journaled. The manual Pi tool
+has no caller-selected Skill route: it invokes only the fixed, encoded
+`optimizing-claude-code-prompts` path.
 
 - Base Sepolia only; no mainnet and no real funds in automated verification.
 - Live facilitator construction accepts only the byte-exact approved HTTPS base and
@@ -203,8 +226,8 @@ blocked live boundary, see [RUNBOOK.md](./RUNBOOK.md).
   not a distributed consensus mechanism.
 - The proxy trusts an operator-pinned public key file and one SHA-256 key ID of its SPKI
   DER. A key ID or key embedded in a receipt cannot authenticate that receipt.
-- The Pi extension is a manual demo adapter and is not compiled by this spike's test
-  suite.
+- The Pi extension is a manual demo adapter and is not type-compiled by this spike;
+  an offline source-contract test pins its fixed Skill route and tool schema.
 - Successful mock accounting records synthetic-config provider usage and allocates
   execution COGS and settlement cost before the Royalty pool. It is executable evidence
   of ordering and conservation, not a validated production margin model or current

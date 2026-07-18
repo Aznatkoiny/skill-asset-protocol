@@ -31,11 +31,18 @@ import {
   createMockFacilitatorTransport,
   usdcToAtomic,
   x402Paywall,
+  x402RequestBodyBytes,
+  x402RequestBodyText,
 } from './x402-seller.mjs';
 import {
   canonicalJson,
   createInvocationJournal,
 } from './invocation-journal.mjs';
+import {
+  readJsonBody,
+  RuntimeBoundaryError,
+  withWallClockDeadline,
+} from './runtime-boundaries.mjs';
 
 export const SKILL_ID = 'optimizing-claude-code-prompts';
 const SKILL_PATH = fileURLToPath(
@@ -50,6 +57,8 @@ const DEFAULT_EXECUTION = Object.freeze({
 const SETTLEMENT_COST_ATOMIC = '1000';
 const REFUND_RESERVE_ATOMIC = '5000';
 const MAX_REQUEST_BODY_BYTES = 4096;
+export const DEFAULT_PROVIDER_TIMEOUT_MS = 30_000;
+export const DEFAULT_PROVIDER_RESPONSE_BYTES = 1024 * 1024;
 const SKILL_VERSION = 'optimizing-claude-code-prompts/2026-07-17-v1';
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
 
@@ -143,11 +152,15 @@ export function createCollar({
   signingKeyFile = process.env.COLLAR_SIGNING_KEY_FILE || null,
   receiptSigner = null,
   executeSkill = null,
+  providerTimeoutMs = DEFAULT_PROVIDER_TIMEOUT_MS,
   lifecycleFaults = {},
   resolveSettlement = null,
   executeRefund = null,
   resolveRefund = null,
 } = {}) {
+  if (!Number.isSafeInteger(providerTimeoutMs) || providerTimeoutMs <= 0) {
+    throw new TypeError('providerTimeoutMs must be a positive safe integer');
+  }
   if (journal && (journalFile || signingKeyFile || receiptSigner)) {
     throw new Error('injected journal cannot be combined with journal/key paths or signer');
   }
@@ -205,8 +218,8 @@ export function createCollar({
   const readInvocationBody = async (c) => {
     const cached = c.get('invocationBody');
     if (cached) return cached;
-    const raw = await c.req.text();
-    const requestBodyBytes = Buffer.byteLength(raw, 'utf8');
+    const raw = x402RequestBodyText(c);
+    const requestBodyBytes = x402RequestBodyBytes(c).byteLength;
     if (requestBodyBytes > MAX_REQUEST_BODY_BYTES) {
       throw new ExecutionEconomicsError(
         'REQUEST_BODY_TOO_LARGE',
@@ -718,7 +731,14 @@ export function createCollar({
 
       let execution;
       try {
-        execution = await executor({
+        execution = await withWallClockDeadline({
+          signal: c.req.raw.signal,
+          timeoutMs: providerTimeoutMs,
+          timeoutCode: 'UPSTREAM_PROVIDER_TIMEOUT',
+          timeoutMessage: 'provider execution timed out after settlement',
+          abortedCode: 'UPSTREAM_PROVIDER_ABORTED',
+          abortedMessage: 'provider execution was aborted after settlement',
+        }, (signal) => executor({
           skillId: SKILL_ID,
           skillVersionHash,
           skillContent,
@@ -729,19 +749,28 @@ export function createCollar({
           maxOutputTokens: frozenQuote.maxOutputTokens,
           promptBytes: frozenQuote.promptBytes,
           estimatedInputTokens: frozenQuote.estimatedInputTokens,
-        });
+          signal,
+        }));
       } catch (error) {
         let retainedUsage = null;
         try { retainedUsage = error?.usage ?? null; } catch { retainedUsage = null; }
+        const safeProviderFailureClasses = new Set([
+          'UPSTREAM_PROVIDER_TIMEOUT',
+          'UPSTREAM_PROVIDER_ABORTED',
+          'UPSTREAM_PROVIDER_RESPONSE_TOO_LARGE',
+        ]);
+        const failureClass = safeProviderFailureClasses.has(error?.code)
+          ? error.code
+          : 'UPSTREAM_PROVIDER_ERROR';
         const accounting = createPendingExecutionAccounting({
           quote: frozenQuote,
           usage: retainedUsage,
-          failureClass: 'UPSTREAM_PROVIDER_ERROR',
+          failureClass,
           reason: 'provider execution failed after settlement',
           catalog: frozenExecutionCatalog,
         });
         return finishFailure(
-          'UPSTREAM_PROVIDER_ERROR',
+          failureClass,
           'Skill execution failed after settlement',
           500,
           accounting,
@@ -852,11 +881,19 @@ function mockSkillOutput(input) {
 export function createAnthropicExecutor({
   apiKey = process.env.ANTHROPIC_API_KEY,
   fetchImpl = fetch,
+  timeoutMs = DEFAULT_PROVIDER_TIMEOUT_MS,
+  maxResponseBytes = DEFAULT_PROVIDER_RESPONSE_BYTES,
 } = {}) {
   if (typeof apiKey !== 'string' || !apiKey) {
     throw new Error('Anthropic API key is required for the live executor');
   }
   if (typeof fetchImpl !== 'function') throw new TypeError('Anthropic executor requires fetch');
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new TypeError('Anthropic timeoutMs must be a positive safe integer');
+  }
+  if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes <= 0) {
+    throw new TypeError('Anthropic maxResponseBytes must be a positive safe integer');
+  }
   return async ({
     skillContent,
     input,
@@ -865,6 +902,7 @@ export function createAnthropicExecutor({
     maxOutputTokens,
     promptBytes,
     estimatedInputTokens,
+    signal = null,
   }) => {
     const rebound = conservativeProviderPromptBound({
       systemPrompt: skillContent,
@@ -880,32 +918,55 @@ export function createAnthropicExecutor({
         'provider prompt differs from the accepted quote',
       );
     }
-    let response;
-    try {
-      response = await fetchImpl('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        redirect: 'error',
-        headers: {
-          'content-type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model,
-          max_tokens: maxOutputTokens,
-          system: skillContent,
-          messages: [{ role: 'user', content: input }],
-        }),
-      });
-    } catch {
-      throw new ExecutionEconomicsError('UPSTREAM_PROVIDER_ERROR', 'provider request failed');
-    }
-    if (!response?.ok) {
-      throw new ExecutionEconomicsError('UPSTREAM_PROVIDER_ERROR', 'provider request failed');
-    }
     let data;
-    try { data = await response.json(); } catch {
-      throw new ExecutionEconomicsError('UPSTREAM_PROVIDER_ERROR', 'provider response was not JSON');
+    try {
+      data = await withWallClockDeadline({
+        signal,
+        timeoutMs,
+        timeoutCode: 'UPSTREAM_PROVIDER_TIMEOUT',
+        timeoutMessage: 'provider request timed out',
+        abortedCode: 'UPSTREAM_PROVIDER_ABORTED',
+        abortedMessage: 'provider request was aborted',
+      }, async (composedSignal) => {
+        const response = await fetchImpl('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          redirect: 'error',
+          signal: composedSignal,
+          headers: {
+            'content-type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+          },
+          body: JSON.stringify({
+            model,
+            max_tokens: maxOutputTokens,
+            system: skillContent,
+            messages: [{ role: 'user', content: input }],
+          }),
+        });
+        if (!response?.ok) {
+          throw new RuntimeBoundaryError('UPSTREAM_PROVIDER_ERROR', 'provider request failed');
+        }
+        if (response?.body !== undefined && response?.headers?.get) {
+          return readJsonBody(response, {
+            maxBytes: maxResponseBytes,
+            tooLargeCode: 'UPSTREAM_PROVIDER_RESPONSE_TOO_LARGE',
+            tooLargeMessage: 'provider response exceeds the JSON byte limit',
+            readErrorCode: 'UPSTREAM_PROVIDER_RESPONSE_READ_FAILED',
+            readErrorMessage: 'provider response could not be read',
+            jsonErrorCode: 'UPSTREAM_PROVIDER_RESPONSE_JSON',
+            jsonErrorMessage: 'provider response was not JSON',
+            signal: composedSignal,
+          });
+        }
+        return response.json();
+      });
+    } catch (error) {
+      if (error instanceof RuntimeBoundaryError) {
+        throw new ExecutionEconomicsError(error.code, error.message);
+      }
+      if (error instanceof ExecutionEconomicsError) throw error;
+      throw new ExecutionEconomicsError('UPSTREAM_PROVIDER_ERROR', 'provider request failed');
     }
     return {
       output: Array.isArray(data?.content)

@@ -90,6 +90,22 @@ routes without a separately pinned public key and expected key ID.
 `/ledger` is a payer-side receipt view. It is not the Collar journal and is not a
 cross-seller accounting authority.
 
+### Runtime limits
+
+The mock and standalone paths use the same bounded runtime contract as the tests.
+Collar/Skill request bodies stop at exactly 4,096 bytes; model requests stop at 1 MiB.
+x402 challenges and facilitator JSON stop at 64 KiB; Anthropic JSON and proxy upstream
+responses stop at 1 MiB. Streaming and chunked bodies are counted as they arrive, so
+omitting `Content-Length` does not bypass a limit.
+
+The default deadlines are 15 seconds for an unpaid buyer fetch, 30 seconds for its
+single paid retry, 5 seconds for request-body reads, 10 seconds each for facilitator
+verify and settle, and 30 seconds for provider execution/upstream response reads. An
+unpaid timeout remains unreserved. Any timeout after the signature keeps the payment
+unresolved/held until trusted reconciliation. A provider timeout after settlement
+returns no output and finalizes a signed failed receipt with unknown COGS and the full
+gross held for reconciliation or refund.
+
 ## 3. Persistent authority contract
 
 `COLLAR_JOURNAL_FILE` and `COLLAR_SIGNING_KEY_FILE` are one authority pair:

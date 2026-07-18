@@ -49,7 +49,17 @@ async function withheldAttempt(account, url, init, options = {}) {
   };
 }
 
-function resourceApp({ facilitatorTransport, lifecycle = {}, price = '0.25', quote = null, handler } = {}) {
+function resourceApp({
+  facilitatorTransport,
+  lifecycle = {},
+  price = '0.25',
+  quote = null,
+  handler,
+  maxRequestBodyBytes,
+  requestBodyTimeoutMs,
+  facilitatorTimeoutMs,
+  facilitatorResponseMaxBytes,
+} = {}) {
   const app = new Hono();
   app.post('/resource', x402Paywall({
     price,
@@ -57,6 +67,10 @@ function resourceApp({ facilitatorTransport, lifecycle = {}, price = '0.25', quo
     payTo,
     facilitatorTransport,
     lifecycle,
+    ...(maxRequestBodyBytes === undefined ? {} : { maxRequestBodyBytes }),
+    ...(requestBodyTimeoutMs === undefined ? {} : { requestBodyTimeoutMs }),
+    ...(facilitatorTimeoutMs === undefined ? {} : { facilitatorTimeoutMs }),
+    ...(facilitatorResponseMaxBytes === undefined ? {} : { facilitatorResponseMaxBytes }),
   }), handler ?? ((c) => c.json({ ok: true })));
   return app;
 }
@@ -550,4 +564,128 @@ test('onUnresolved may observe an already-settled append without turning the res
   assert.equal(retry.status, 200);
   assert.equal(settleCalls, 1);
   assert.equal(executions, 1);
+});
+
+test('chunked x402 request body is rejected at 4097 bytes before quote or lifecycle state', {
+  timeout: 1_000,
+}, async () => {
+  let quoteCalls = 0;
+  let lifecycleCalls = 0;
+  let pulls = 0;
+  let cancelled = false;
+  const transport = createMockFacilitatorTransport(async () => {
+    throw new Error('facilitator must not run for an oversized unpaid request');
+  });
+  const app = resourceApp({
+    facilitatorTransport: transport,
+    maxRequestBodyBytes: 4096,
+    quote: async () => { quoteCalls += 1; return structuredClone(executionQuote); },
+    lifecycle: { async onOffered() { lifecycleCalls += 1; } },
+  });
+  const body = new ReadableStream({
+    pull(controller) {
+      pulls += 1;
+      if (pulls === 1) controller.enqueue(new Uint8Array(4096));
+      else controller.enqueue(new Uint8Array([1]));
+    },
+    cancel() { cancelled = true; },
+  });
+  const response = await app.request('http://seller.test/resource', {
+    method: 'POST',
+    headers: { 'Idempotency-Key': 'idem-chunked-oversize' },
+    body,
+    duplex: 'half',
+  });
+  assert.equal(response.status, 413);
+  assert.deepEqual(await response.json(), {
+    error: 'request body exceeds the 4096-byte x402 limit',
+    code: 'REQUEST_BODY_TOO_LARGE',
+  });
+  assert.equal(cancelled, true);
+  assert.equal(quoteCalls, 0);
+  assert.equal(lifecycleCalls, 0);
+});
+
+test('x402 request body accepts exactly 4096 bytes', async () => {
+  const transport = createMockFacilitatorTransport(async () => {
+    throw new Error('facilitator must not run for an unpaid request');
+  });
+  const app = resourceApp({ facilitatorTransport: transport, maxRequestBodyBytes: 4096 });
+  const response = await app.request('http://seller.test/resource', {
+    method: 'POST',
+    headers: { 'Idempotency-Key': 'idem-exact-body-limit' },
+    body: 'x'.repeat(4096),
+  });
+  assert.equal(response.status, 402);
+  assert.equal((await response.json()).x402Version, 1);
+});
+
+test('facilitator verify and settle deadlines abort ignoring transports and remain unresolved', {
+  timeout: 1_000,
+}, async () => {
+  for (const timedOutOperation of ['verify', 'settle']) {
+    let facilitatorSignal = null;
+    let unresolvedReason = null;
+    let executions = 0;
+    const transport = createMockFacilitatorTransport(async (url, init) => {
+      const operation = new URL(url).pathname.slice(1);
+      if (operation === timedOutOperation) {
+        facilitatorSignal = init.signal;
+        return new Promise(() => {});
+      }
+      return new Response(JSON.stringify({ isValid: true }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    });
+    const app = resourceApp({
+      facilitatorTransport: transport,
+      facilitatorTimeoutMs: 20,
+      lifecycle: {
+        async onUnresolved({ reason }) { unresolvedReason = reason; },
+      },
+      handler: (c) => { executions += 1; return c.json({ ok: true }); },
+    });
+    const held = await withheldAttempt(throwawayAccount(), 'http://seller.test/resource', {
+      method: 'POST', body: '{}',
+    }, {
+      idempotencyKey: `idem-facilitator-${timedOutOperation}-timeout`,
+      fetchImpl: (url, init) => app.request(url, init),
+    });
+    assert.equal(facilitatorSignal.aborted, true, timedOutOperation);
+    assert.equal(unresolvedReason, 'facilitator response unresolved', timedOutOperation);
+    assert.equal(held.state, 'unresolved', timedOutOperation);
+    assert.equal(held.paymentPolicy.snapshot().reservedAtomic, '250000', timedOutOperation);
+    assert.equal(executions, 0, timedOutOperation);
+  }
+});
+
+test('oversized chunked facilitator JSON is cancelled and treated as ambiguous settlement', async () => {
+  let cancelled = false;
+  let unresolvedReason = null;
+  let executions = 0;
+  const transport = createMockFacilitatorTransport(async () => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array(40_000));
+      controller.enqueue(new Uint8Array(30_000));
+    },
+    cancel() { cancelled = true; },
+  }), { status: 200, headers: { 'content-type': 'application/json' } }));
+  const app = resourceApp({
+    facilitatorTransport: transport,
+    facilitatorResponseMaxBytes: 64 * 1024,
+    lifecycle: {
+      async onUnresolved({ reason }) { unresolvedReason = reason; },
+    },
+    handler: (c) => { executions += 1; return c.json({ ok: true }); },
+  });
+  const held = await withheldAttempt(throwawayAccount(), 'http://seller.test/resource', {
+    method: 'POST', body: '{}',
+  }, {
+    idempotencyKey: 'idem-facilitator-oversize',
+    fetchImpl: (url, init) => app.request(url, init),
+  });
+  assert.equal(cancelled, true);
+  assert.equal(unresolvedReason, 'facilitator response unresolved');
+  assert.equal(held.state, 'unresolved');
+  assert.equal(executions, 0);
 });

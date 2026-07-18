@@ -8,6 +8,12 @@
 import crypto from 'node:crypto';
 
 import { formatUsdc, parseUsdc } from '../../../prototype/atomic-money.mjs';
+import {
+  readBodyBytes,
+  readJsonBody,
+  RuntimeBoundaryError,
+  withWallClockDeadline,
+} from './runtime-boundaries.mjs';
 
 export const X402_VERSION = 1;
 export const NETWORK = 'base-sepolia';
@@ -15,6 +21,10 @@ export const CHAIN_ID = 84532;
 export const USDC_ADDRESS = '0x036cbd53842c5426634e7929541ec2318f3dcf7e';
 export const USDC_EIP712 = Object.freeze({ name: 'USDC', version: '2' });
 export const APPROVED_LIVE_FACILITATOR_BASE = 'https://x402.org/facilitator';
+export const DEFAULT_X402_REQUEST_BODY_BYTES = 4096;
+export const DEFAULT_X402_REQUEST_BODY_TIMEOUT_MS = 5_000;
+export const DEFAULT_FACILITATOR_TIMEOUT_MS = 10_000;
+export const DEFAULT_FACILITATOR_RESPONSE_BYTES = 64 * 1024;
 
 export const usdcToAtomic = (display) => parseUsdc(display).toString();
 export const atomicToUsdc = (atomic) => formatUsdc(BigInt(atomic));
@@ -86,6 +96,28 @@ function exactPlainObject(value, keys) {
   const expected = [...keys].sort();
   return actual.length === expected.length
     && actual.every((key, index) => key === expected[index]);
+}
+
+function positiveLimit(value, label) {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new TypeError(`${label} must be a positive safe integer`);
+  }
+  return value;
+}
+
+const X402_BODY_TEXT_KEY = 'x402RequestBodyText';
+const X402_BODY_BYTES_KEY = 'x402RequestBodyBytes';
+
+export function x402RequestBodyText(c) {
+  const value = c.get(X402_BODY_TEXT_KEY);
+  if (typeof value !== 'string') throw new Error('x402 request body was not captured');
+  return value;
+}
+
+export function x402RequestBodyBytes(c) {
+  const value = c.get(X402_BODY_BYTES_KEY);
+  if (!(value instanceof Uint8Array)) throw new Error('x402 request body was not captured');
+  return Buffer.from(value);
 }
 
 function terminalReplayIsTrusted(decision, payer) {
@@ -164,12 +196,20 @@ export function x402Paywall({
   description = '',
   lifecycle = {},
   quote = null,
+  maxRequestBodyBytes = DEFAULT_X402_REQUEST_BODY_BYTES,
+  requestBodyTimeoutMs = DEFAULT_X402_REQUEST_BODY_TIMEOUT_MS,
+  facilitatorTimeoutMs = DEFAULT_FACILITATOR_TIMEOUT_MS,
+  facilitatorResponseMaxBytes = DEFAULT_FACILITATOR_RESPONSE_BYTES,
 }) {
   const transport = requireFacilitatorTransport(facilitatorTransport);
   const canonicalPayTo = canonicalAddress(payTo);
   if (quote !== null && typeof quote !== 'function') {
     throw new TypeError('quote must be an injected function or null');
   }
+  positiveLimit(maxRequestBodyBytes, 'maxRequestBodyBytes');
+  positiveLimit(requestBodyTimeoutMs, 'requestBodyTimeoutMs');
+  positiveLimit(facilitatorTimeoutMs, 'facilitatorTimeoutMs');
+  positiveLimit(facilitatorResponseMaxBytes, 'facilitatorResponseMaxBytes');
   const frozenOffers = new Map();
   const locallyUnresolvedSettlements = new Set();
 
@@ -186,9 +226,39 @@ export function x402Paywall({
     const idempotencyKey = c.req.header('Idempotency-Key')?.trim();
     if (!idempotencyKey) return c.json({ error: 'Idempotency-Key header is required' }, 400);
     const paymentHeader = c.req.header('X-PAYMENT');
-    const requestBody = await c.req.text();
+    let requestBodyBytes;
+    try {
+      requestBodyBytes = await withWallClockDeadline({
+        signal: c.req.raw.signal,
+        timeoutMs: requestBodyTimeoutMs,
+        timeoutCode: 'REQUEST_BODY_TIMEOUT',
+        timeoutMessage: 'x402 request body timed out',
+        abortedCode: 'REQUEST_BODY_ABORTED',
+        abortedMessage: 'x402 request body was aborted',
+      }, (signal) => readBodyBytes(c.req.raw, {
+        maxBytes: maxRequestBodyBytes,
+        tooLargeCode: 'REQUEST_BODY_TOO_LARGE',
+        tooLargeMessage: `request body exceeds the ${maxRequestBodyBytes}-byte x402 limit`,
+        readErrorCode: 'REQUEST_BODY_READ_FAILED',
+        readErrorMessage: 'x402 request body could not be read',
+        signal,
+      }));
+    } catch (error) {
+      const code = error instanceof RuntimeBoundaryError ? error.code : 'REQUEST_BODY_READ_FAILED';
+      const status = code === 'REQUEST_BODY_TOO_LARGE' ? 413
+        : code === 'REQUEST_BODY_TIMEOUT' ? 408
+        : 400;
+      const message = error instanceof RuntimeBoundaryError
+        ? error.message
+        : 'x402 request body could not be read';
+      return c.json({ error: message, code }, status);
+    }
+    const requestBody = requestBodyBytes.toString('utf8');
+    c.set(X402_BODY_BYTES_KEY, Buffer.from(requestBodyBytes));
+    c.set(X402_BODY_TEXT_KEY, requestBody);
     const requestHash = `sha256:${crypto.createHash('sha256')
-      .update(`${c.req.method}\n${c.req.url}\n${requestBody}`)
+      .update(Buffer.from(`${c.req.method}\n${c.req.url}\n`, 'utf8'))
+      .update(requestBodyBytes)
       .digest('hex')}`;
 
     let frozen = frozenOffers.get(idempotencyKey) ?? null;
@@ -394,7 +464,11 @@ export function x402Paywall({
     } else {
       const started = performance.now();
       try {
-        const verify = await postJson(transport, 'verify', facilitatorBody);
+        const verify = await postJson(transport, 'verify', facilitatorBody, {
+          signal: c.req.raw.signal,
+          timeoutMs: facilitatorTimeoutMs,
+          maxResponseBytes: facilitatorResponseMaxBytes,
+        });
         if (!verify?.isValid) {
           const reason = 'payment verification failed';
           await lifecycle.onRejected?.({ idempotencyKey, reason, settlementReference, payer });
@@ -404,7 +478,11 @@ export function x402Paywall({
             accepts: [requirements],
           }, 402);
         }
-        settle = await postJson(transport, 'settle', facilitatorBody);
+        settle = await postJson(transport, 'settle', facilitatorBody, {
+          signal: c.req.raw.signal,
+          timeoutMs: facilitatorTimeoutMs,
+          maxResponseBytes: facilitatorResponseMaxBytes,
+        });
       } catch {
         locallyUnresolvedSettlements.add(idempotencyKey);
         await notifyUnresolved({
@@ -501,16 +579,39 @@ export function x402Paywall({
   };
 }
 
-async function postJson(transport, operation, body) {
+async function postJson(transport, operation, body, {
+  signal,
+  timeoutMs,
+  maxResponseBytes,
+}) {
   if (!['verify', 'settle'].includes(operation)) throw new Error('invalid facilitator operation');
-  const response = await transport.fetchImpl(`${transport.baseUrl}/${operation}`, {
-    method: 'POST',
-    redirect: 'error',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
+  return withWallClockDeadline({
+    signal,
+    timeoutMs,
+    timeoutCode: 'FACILITATOR_TIMEOUT',
+    timeoutMessage: `facilitator ${operation} timed out`,
+    abortedCode: 'FACILITATOR_ABORTED',
+    abortedMessage: `facilitator ${operation} was aborted`,
+  }, async (composedSignal) => {
+    const response = await transport.fetchImpl(`${transport.baseUrl}/${operation}`, {
+      method: 'POST',
+      redirect: 'error',
+      signal: composedSignal,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!response?.ok) {
+      throw new RuntimeBoundaryError('FACILITATOR_HTTP', 'facilitator returned an unsuccessful status');
+    }
+    return readJsonBody(response, {
+      maxBytes: maxResponseBytes,
+      tooLargeCode: 'FACILITATOR_RESPONSE_TOO_LARGE',
+      tooLargeMessage: 'facilitator response exceeds the JSON byte limit',
+      readErrorCode: 'FACILITATOR_RESPONSE_READ_FAILED',
+      readErrorMessage: 'facilitator response could not be read',
+      jsonErrorCode: 'FACILITATOR_RESPONSE_JSON',
+      jsonErrorMessage: 'facilitator response was not JSON',
+      signal: composedSignal,
+    });
   });
-  if (!response.ok) throw new Error(`facilitator HTTP ${response.status}`);
-  const json = await response.json().catch(() => null);
-  if (!json) throw new Error('facilitator returned no JSON result');
-  return json;
 }

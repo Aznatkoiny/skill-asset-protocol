@@ -884,3 +884,99 @@ test('retry transport loss leaves the signed amount unresolved and never retries
   assert.equal(paymentPolicy.snapshot().reservedAtomic, '250000');
   assert.equal(paymentPolicy.snapshot().authorizations[0].state, 'unresolved');
 });
+
+test('unpaid fetch deadline stops an ignoring transport before any reservation or signature', async () => {
+  const { account, paymentPolicy, signatureCount } = setup();
+  const caller = new AbortController();
+  let transportSignal = null;
+  await assert.rejects(() => payingFetch(account, URL, {
+    method: 'POST', body: BODY, signal: caller.signal,
+  }, {
+    fetchImpl: async (_url, init) => {
+      transportSignal = init.signal;
+      return new Promise(() => {});
+    },
+    idempotencyKey: 'idem-unpaid-timeout',
+    paymentPolicy,
+    unpaidTimeoutMs: 20,
+    paidTimeoutMs: 20,
+  }), (error) => error.code === 'UNPAID_FETCH_TIMEOUT');
+  assert.equal(transportSignal.aborted, true);
+  assert.notEqual(transportSignal, caller.signal);
+  assert.equal(caller.signal.aborted, false);
+  assert.equal(signatureCount(), 0);
+  assert.equal(paymentPolicy.snapshot().reservedAtomic, '0');
+  assert.deepEqual(paymentPolicy.snapshot().authorizations, []);
+});
+
+test('paid retry deadline leaves the signed authorization unresolved with budget held', async () => {
+  const { account, paymentPolicy, signatureCount } = setup();
+  let fetches = 0;
+  let retrySignal = null;
+  await assert.rejects(() => payingFetch(account, URL, { method: 'POST', body: BODY }, {
+    fetchImpl: async (_url, init) => {
+      fetches += 1;
+      if (fetches === 1) return challenge();
+      retrySignal = init.signal;
+      return new Promise(() => {});
+    },
+    idempotencyKey: 'idem-paid-timeout',
+    paymentPolicy,
+    unpaidTimeoutMs: 200,
+    paidTimeoutMs: 20,
+  }), (error) => error.code === 'PAID_RETRY_TIMEOUT');
+  assert.equal(fetches, 2);
+  assert.equal(retrySignal.aborted, true);
+  assert.equal(signatureCount(), 1);
+  assert.equal(paymentPolicy.snapshot().reservedAtomic, '250000');
+  assert.equal(paymentPolicy.snapshot().authorizations[0].state, 'unresolved');
+});
+
+test('chunked oversized 402 challenge is cancelled before signing or reservation', async () => {
+  const { account, paymentPolicy, signatureCount } = setup();
+  let cancelled = false;
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array(40_000));
+      controller.enqueue(new Uint8Array(30_000));
+    },
+    cancel() { cancelled = true; },
+  });
+  await assert.rejects(() => payingFetch(account, URL, { method: 'POST', body: BODY }, {
+    fetchImpl: async () => new Response(stream, {
+      status: 402,
+      headers: { 'content-type': 'application/json' },
+    }),
+    idempotencyKey: 'idem-oversized-challenge',
+    paymentPolicy,
+    unpaidTimeoutMs: 200,
+    paidTimeoutMs: 200,
+  }), (error) => error.code === 'X402_CHALLENGE_TOO_LARGE');
+  assert.equal(cancelled, true);
+  assert.equal(signatureCount(), 0);
+  assert.equal(paymentPolicy.snapshot().reservedAtomic, '0');
+});
+
+test('stalled 402 challenge body is cancelled at the unpaid deadline before signing', async () => {
+  const { account, paymentPolicy, signatureCount } = setup();
+  let cancelled = false;
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"x402Version":1'));
+    },
+    cancel() { cancelled = true; },
+  });
+  await assert.rejects(() => payingFetch(account, URL, { method: 'POST', body: BODY }, {
+    fetchImpl: async () => new Response(stream, {
+      status: 402,
+      headers: { 'content-type': 'application/json' },
+    }),
+    idempotencyKey: 'idem-stalled-challenge',
+    paymentPolicy,
+    unpaidTimeoutMs: 20,
+    paidTimeoutMs: 200,
+  }), (error) => error.code === 'UNPAID_FETCH_TIMEOUT');
+  assert.equal(cancelled, true);
+  assert.equal(signatureCount(), 0);
+  assert.equal(paymentPolicy.snapshot().reservedAtomic, '0');
+});

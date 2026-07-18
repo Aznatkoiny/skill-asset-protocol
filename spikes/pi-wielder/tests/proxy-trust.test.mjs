@@ -252,3 +252,100 @@ test('unknown Skill fails before payment through both Collar and proxy', async (
   assert.equal(collar.journal.events.length, 0);
   assert.equal(proxy.ledger.entries.length, 0);
 });
+
+test('proxy rejects a chunked 4097-byte Skill request before any upstream fetch', {
+  timeout: 1_000,
+}, async () => {
+  const signer = createReceiptSigner();
+  let upstreamCalls = 0;
+  let pulls = 0;
+  let cancelled = false;
+  const proxy = createProxy({
+    account: throwawayAccount(),
+    collarFetch: async () => { upstreamCalls += 1; throw new Error('must not fetch'); },
+    gatewayFetch: async () => { upstreamCalls += 1; throw new Error('must not fetch'); },
+    trustedCollarPublicKeyPem: signer.publicKeyPem,
+    trustedCollarKeyId: signer.keyId,
+    maxSkillRequestBytes: 4096,
+  });
+  const body = new ReadableStream({
+    pull(controller) {
+      pulls += 1;
+      if (pulls === 1) controller.enqueue(new Uint8Array(4096));
+      else controller.enqueue(new Uint8Array([1]));
+    },
+    cancel() { cancelled = true; },
+  });
+  const response = await proxy.app.request(`http://proxy.test/invoke/${SKILL_ID}`, {
+    method: 'POST', body, duplex: 'half',
+  });
+  assert.equal(response.status, 413);
+  assert.deepEqual(await response.json(), {
+    error: 'proxy Skill request exceeds the 4096-byte limit',
+    code: 'PROXY_REQUEST_TOO_LARGE',
+  });
+  assert.equal(cancelled, true);
+  assert.equal(upstreamCalls, 0);
+  assert.equal(proxy.ledger.entries.length, 0);
+});
+
+test('proxy cancels a chunked oversized upstream response before buffering it', {
+  timeout: 1_000,
+}, async () => {
+  const signer = createReceiptSigner();
+  let cancelled = false;
+  const proxy = createProxy({
+    account: throwawayAccount(),
+    gatewayFetch: async () => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array(600_000));
+        controller.enqueue(new Uint8Array(500_000));
+      },
+      cancel() { cancelled = true; },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }),
+    collarFetch: async () => { throw new Error('Collar must not run'); },
+    trustedCollarPublicKeyPem: signer.publicKeyPem,
+    trustedCollarKeyId: signer.keyId,
+    maxUpstreamResponseBytes: 1024 * 1024,
+  });
+  const response = await proxy.app.request('http://proxy.test/v1/chat/completions', {
+    method: 'POST',
+    body: JSON.stringify({ model: 'claude-sonnet-4-6', messages: [] }),
+  });
+  assert.equal(response.status, 502);
+  assert.deepEqual(await response.json(), {
+    error: 'upstream response exceeds the proxy byte limit',
+    code: 'UPSTREAM_RESPONSE_TOO_LARGE',
+  });
+  assert.equal(cancelled, true);
+  assert.equal(proxy.ledger.entries.length, 0);
+});
+
+test('proxy response deadline stops a slow chunked upstream without leaking its error', {
+  timeout: 1_000,
+}, async () => {
+  const signer = createReceiptSigner();
+  let cancelled = false;
+  const proxy = createProxy({
+    account: throwawayAccount(),
+    gatewayFetch: async () => new Response(new ReadableStream({
+      pull() { return new Promise(() => {}); },
+      cancel() { cancelled = true; },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }),
+    collarFetch: async () => { throw new Error('Collar must not run'); },
+    trustedCollarPublicKeyPem: signer.publicKeyPem,
+    trustedCollarKeyId: signer.keyId,
+    proxyResponseTimeoutMs: 20,
+  });
+  const response = await proxy.app.request('http://proxy.test/v1/chat/completions', {
+    method: 'POST',
+    body: JSON.stringify({ model: 'claude-sonnet-4-6', messages: [] }),
+  });
+  assert.equal(response.status, 504);
+  assert.deepEqual(await response.json(), {
+    error: 'upstream response timed out',
+    code: 'UPSTREAM_RESPONSE_TIMEOUT',
+  });
+  assert.equal(cancelled, true);
+  assert.equal(proxy.ledger.entries.length, 0);
+});

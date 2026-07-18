@@ -538,3 +538,97 @@ test('Collar snapshots the exact catalog before an executor can mutate caller-ow
   assert.equal(body.receipt.receipt.accounting.executionCogs.actualAtomic, '756');
   assert.equal(body.receipt.receipt.quote.executionQuote.catalogDigest, catalogDigest(EXECUTION_CATALOG));
 });
+
+test('post-settlement provider deadline finalizes a sanitized unknown-COGS hold', {
+  timeout: 1_000,
+}, async () => {
+  const secret = 'provider-timeout-secret-must-not-leak';
+  let providerSignal = null;
+  const services = stack({
+    providerTimeoutMs: 20,
+    executeSkill: async ({ signal }) => {
+      providerSignal = signal;
+      void secret;
+      return new Promise(() => {});
+    },
+  });
+  const { res, body } = await invoke(services.proxy);
+  assert.equal(res.status, 500);
+  assert.equal(body.output, undefined);
+  const receipt = body.receipt.receipt;
+  assert.equal(receipt.payment.state, 'settled');
+  assert.equal(receipt.execution.state, 'failed');
+  assert.equal(receipt.execution.failureClass, 'UPSTREAM_PROVIDER_TIMEOUT');
+  assert.equal(receipt.accounting.allocationState, 'pending_cogs_reconciliation');
+  assert.equal(receipt.accounting.executionCogs.status, 'unknown');
+  assert.equal(receipt.accounting.executionCogs.actualAtomic, null);
+  assert.equal(receipt.accounting.royaltyPoolAtomic, '0');
+  assert.deepEqual(receipt.accounting.holderCredits, []);
+  assert.deepEqual(receipt.accounting.ancestorCredits, []);
+  assert.equal(receipt.accounting.journalEntries[0].amountAtomic, receipt.accounting.grossAtomic);
+  assert.equal(providerSignal.aborted, true);
+  assert.equal(JSON.stringify(body).includes(secret), false);
+  assert.equal(JSON.stringify(services.collar.journal.events).includes(secret), false);
+});
+
+test('Anthropic executor cancels oversized chunked JSON before buffering provider output', {
+  timeout: 1_000,
+}, async () => {
+  let cancelled = false;
+  const executor = createAnthropicExecutor({
+    apiKey: 'test-only',
+    timeoutMs: 200,
+    maxResponseBytes: 64,
+    fetchImpl: async () => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"content":[{"text":"'));
+        controller.enqueue(new TextEncoder().encode('provider-secret-'.repeat(8)));
+      },
+      cancel() { cancelled = true; },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }),
+  });
+  await assert.rejects(() => executor({
+    skillContent: 'system',
+    input: 'hello',
+    model: 'claude-sonnet-4-6',
+    maxInputTokens: 300,
+    maxOutputTokens: 17,
+    promptBytes: 11,
+    estimatedInputTokens: 267,
+  }), (error) => (
+    error.code === 'UPSTREAM_PROVIDER_RESPONSE_TOO_LARGE'
+      && error.message === 'provider response exceeds the JSON byte limit'
+      && !error.message.includes('secret')
+  ));
+  assert.equal(cancelled, true);
+});
+
+test('Anthropic executor deadline aborts a never-resolving fetch with a stable error', {
+  timeout: 1_000,
+}, async () => {
+  let providerSignal = null;
+  const caller = new AbortController();
+  const executor = createAnthropicExecutor({
+    apiKey: 'test-only',
+    timeoutMs: 20,
+    fetchImpl: async (_url, init) => {
+      providerSignal = init.signal;
+      return new Promise(() => {});
+    },
+  });
+  await assert.rejects(() => executor({
+    skillContent: 'system',
+    input: 'hello',
+    model: 'claude-sonnet-4-6',
+    maxInputTokens: 300,
+    maxOutputTokens: 17,
+    promptBytes: 11,
+    estimatedInputTokens: 267,
+    signal: caller.signal,
+  }), (error) => (
+    error.code === 'UPSTREAM_PROVIDER_TIMEOUT'
+      && error.message === 'provider request timed out'
+  ));
+  assert.equal(providerSignal.aborted, true);
+  assert.equal(caller.signal.aborted, false);
+});
