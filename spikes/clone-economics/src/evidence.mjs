@@ -24,6 +24,7 @@ const CONFIGURATION_KEYS = new Set([
   'tokenCaps', 'pricingSnapshot', 'evidenceLabels', 'acquisitionTreatment',
   'historicalRunDate', 'sourceTimestamp', 'attemptCoverage', 'benchmarkVerdict',
   'publicationGate', 'suppressionReason', 'fixtureSet',
+  'liveEconomics',
 ]);
 const REQUIRED_BUNDLE_FILES = ['samples.jsonl', 'summary.json', 'report.md', 'README.md'];
 const rounded = (value) => Number(value.toFixed(12));
@@ -287,6 +288,7 @@ function verifyLiveRows(samples, manifest, dir) {
     'snapshotPath', 'snapshotSha256', 'authorizationHash', 'humanCapMicroUsd',
     'conservativeEstimateMicroUsd', 'worstCasePerCallMicroUsd', 'attemptedCalls',
     'knownAccruedMicroUsd', 'outstandingReservedMicroUsd', 'lock',
+    'economicsSnapshotPath', 'economicsSnapshotSha256',
   ];
   if (JSON.stringify(Object.keys(manifest.liveBudget).sort()) !== JSON.stringify(allowed.sort())) {
     throw new Error('liveBudget contains unexpected or missing fields');
@@ -298,9 +300,23 @@ function verifyLiveRows(samples, manifest, dir) {
   const snapshotBytes = fs.readFileSync(snapshotPath);
   if (sha256(snapshotBytes) !== manifest.liveBudget.snapshotSha256) throw new Error('Live budget snapshot hash mismatch');
   const snapshot = JSON.parse(snapshotBytes);
+  if (path.isAbsolute(manifest.liveBudget.economicsSnapshotPath)
+      || manifest.liveBudget.economicsSnapshotPath.includes('..')) {
+    throw new Error('liveBudget economicsSnapshotPath must be repository-relative');
+  }
+  const economicsPath = path.resolve(dir, '..', '..', manifest.liveBudget.economicsSnapshotPath);
+  const economicsBytes = fs.readFileSync(economicsPath);
+  if (sha256(economicsBytes) !== manifest.liveBudget.economicsSnapshotSha256) {
+    throw new Error('Live economics snapshot hash mismatch');
+  }
+  const economics = JSON.parse(economicsBytes);
+  if (JSON.stringify(canonicalize(economics)) !== JSON.stringify(canonicalize(manifest.configuration.liveEconomics))) {
+    throw new Error('Live economics configuration differs from hash-verified snapshot');
+  }
   const expectedAuthorization = liveAuthorizationHash({
     config: manifest.configuration.sweepConfig,
     snapshot,
+    economics,
   });
   if (expectedAuthorization !== manifest.liveBudget.authorizationHash) throw new Error('Live authorization hash mismatch');
   if (manifest.liveBudget.attemptedCalls !== samples.length) throw new Error('Live attempted-call count differs from samples');

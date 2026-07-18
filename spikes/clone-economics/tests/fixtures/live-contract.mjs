@@ -10,6 +10,11 @@ export const config = {
     { replicateId: 'r3', pairOrderSeed: 1703, distillationSeed: 2703 },
   ],
   highNDefinition: 100,
+  targetThreshold: 0.8,
+  requireAllTargetCriticalGates: true,
+  acquisitionTreatment: 'modeled_unless_x402_receipts_attached',
+  attemptCostTreatment: 'include_every_attempted_provider_call',
+  publicationRequiresValidTarget: true,
   publicationRequiresIndependentDistillationSeeds: true,
 };
 
@@ -28,4 +33,14 @@ export const approved = {
     source: 'https://example.invalid/synthetic-pricing-fixture',
   },
   tokenCaps: { maxInputTokens: 4096, maxOutputTokens: 1024 },
+};
+
+export const economics = {
+  schemaVersion: 1,
+  experimentFamily: config.experimentFamily,
+  approvalStatus: 'approved',
+  invocationPriceUsd: 0.25,
+  cloneServingCostUsd: 0.05,
+  deployCostUsd: 0.05,
+  laborCostUsd: 0,
 };

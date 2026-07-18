@@ -7,9 +7,11 @@ import test from 'node:test';
 import {
   classifyHighNSeedValidity,
   compliantHeldoutOutput,
+  reconcileCellSeedEvidence,
   runSweep,
   seededOrder,
   validateSweepConfig,
+  writeSweepEvidenceBundle,
 } from '../src/sweep.mjs';
 import { scoreEvaluation } from '../src/scoring.mjs';
 
@@ -55,6 +57,7 @@ test('publishable high-N requires three adapter-confirmed distillation seeds', (
     requestedDistillationSeed: replicate.distillationSeed,
     appliedDistillationSeed: replicate.distillationSeed,
     distillationSeedStatus: 'honored',
+    seedEvidenceReconciled: true,
     status: 'complete',
     benchmark: validBenchmark,
   }));
@@ -136,4 +139,97 @@ test('offline sweep completes all 12 cells without a publishable live conclusion
   assert.equal(result.samples.length, 1713);
   assert.equal(result.cells.every((cell) => cell.distillationSeedStatus === 'synthetic_honored'), true);
   assert.equal(networkAttempts, 0);
+});
+
+test('direct exported live sweep rejects without the module-private authorization capability', async () => {
+  let invocations = 0;
+  const adapter = {
+    records: [],
+    attempts: [],
+    async invoke() { invocations += 1; throw new Error('must not invoke'); },
+  };
+  await assert.rejects(runSweep({ mode: 'live', adapter }), /startLiveSweep authorization capability/i);
+  assert.equal(invocations, 0);
+});
+
+test('cell seed status is derived from recorded distillation attempt evidence', () => {
+  const result = reconcileCellSeedEvidence({
+    requestedSeed: 2701,
+    reported: {
+      appliedDistillationSeed: 2701,
+      distillationSeedStatus: 'honored',
+      distillationSeedMechanism: 'forged-report-claim',
+    },
+    attempts: [{
+      kind: 'distill',
+      requestedSeed: 2701,
+      appliedSeed: null,
+      status: 'unsupported',
+      mechanism: 'provider_seed_not_supported_by_adapter',
+    }],
+  });
+  assert.deepEqual(result, {
+    requestedDistillationSeed: 2701,
+    appliedDistillationSeed: null,
+    distillationSeedStatus: 'unsupported',
+    distillationSeedMechanism: 'provider_seed_not_supported_by_adapter',
+    reportMatchesAttempt: false,
+  });
+});
+
+test('standalone target execution failure preserves its attempt and final budget lock', async (t) => {
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clone-failed-target-'));
+  t.after(() => fs.rmSync(outputDir, { recursive: true, force: true }));
+  const budget = (await import('../src/budget.mjs')).createAttemptBudget({
+    capMicroUsd: 100n,
+    worstCaseCallMicroUsd: 100n,
+  });
+  const adapter = {
+    records: [],
+    attempts: [],
+    async invoke(request) {
+      const reservation = budget.reserveNextAttempt({ kind: request.kind, caseId: request.caseId });
+      this.attempts.push({
+        attemptId: `${request.kind}:${request.caseId}:1`,
+        kind: request.kind,
+        caseId: request.caseId,
+        success: false,
+        providerRequestId: null,
+        latencyMs: 1,
+        inputTokens: null,
+        outputTokens: null,
+        providerCostMicroUsd: null,
+        providerCostUsd: null,
+        failureClass: 'ProviderError',
+        requestedSeed: null,
+        appliedSeed: null,
+        status: 'not_requested',
+        mechanism: 'no_seed_requested',
+      });
+      budget.settleAttempt(reservation, { knownCostMicroUsd: null, success: false });
+    },
+  };
+  const result = await runSweep({ mode: 'mock', adapter, budget, outputDir });
+  assert.equal(result.publishableHighN, false);
+  assert.equal(result.suppressionReason, 'STANDALONE_TARGET_EXECUTION_FAILED');
+  assert.equal(result.samples.length, 1);
+  assert.deepEqual(result.budgetState, {
+    attemptedCalls: 1,
+    knownAccruedMicroUsd: 0n,
+    outstandingReservedMicroUsd: 100n,
+    lock: { kind: 'unknown_cost', attemptId: 'attempt-000001' },
+  });
+  const evidence = await writeSweepEvidenceBundle({
+    result,
+    config: {
+      ...config,
+      acquisitionTreatment: 'modeled_unless_x402_receipts_attached',
+    },
+    outputDir: path.join(outputDir, 'evidence'),
+    experimentId: 'failed-target-fixture',
+    evidenceLabel: 'SYNTHETIC FAILED TARGET',
+    command: 'synthetic failed-target test',
+  });
+  assert.equal(evidence.verified.valid, true);
+  assert.equal(evidence.verified.samples.length, 1);
 });

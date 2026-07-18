@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import {
   calculateProviderCostMicroUsd,
   conservativeSweepRequestCount,
@@ -7,6 +11,61 @@ import {
   validateApprovedBudgetSnapshot,
 } from './budget.mjs';
 import { liveAuthorizationHash, validateLiveApproval } from './authorization.mjs';
+import { loadFixtureSet } from './fixture-set.mjs';
+import { validateApprovedLiveEconomics } from './live-economics.mjs';
+
+const sweepRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const LIVE_SWEEP_AUTHORIZATION = Symbol('live-sweep-authorization');
+
+function canonicalize(value) {
+  if (value === null || ['string', 'number', 'boolean'].includes(typeof value)) return value;
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalize(value[key])]));
+  }
+  throw new Error(`Unsupported sweep contract value: ${typeof value}`);
+}
+
+const canonicalJson = (value) => JSON.stringify(canonicalize(value));
+
+function deepFreeze(value) {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) deepFreeze(child);
+  }
+  return value;
+}
+
+function committedSweepInputs() {
+  const config = JSON.parse(fs.readFileSync(path.join(sweepRoot, 'fixtures/sweep-v1.json'), 'utf8'));
+  const fixtures = loadFixtureSet(sweepRoot, config.fixtureSet);
+  const v2Fixtures = JSON.parse(fs.readFileSync(path.join(sweepRoot, 'fixtures/v2-heldout.json'), 'utf8'));
+  return {
+    config,
+    fixtures,
+    v2Fixtures,
+    counts: {
+      trainCount: fixtures.train.length,
+      heldoutCount: fixtures.heldout.length,
+      v2Count: v2Fixtures.length,
+    },
+  };
+}
+
+function requireCommittedConfig(config, committed) {
+  if (canonicalJson(config) !== canonicalJson(committed)) {
+    throw new Error('Live sweep config must exactly match committed fixtures/sweep-v1.json');
+  }
+}
+
+function requireExactCommittedCounts(counts, expected) {
+  const keys = ['trainCount', 'heldoutCount', 'v2Count'];
+  if (!counts || canonicalJson(Object.keys(counts).sort()) !== canonicalJson([...keys].sort())
+      || keys.some((key) => !Number.isSafeInteger(counts[key]) || counts[key] < 0)
+      || keys.some((key) => counts[key] !== expected[key])) {
+    throw new Error('Caller counts must exactly match committed fixtures');
+  }
+}
 
 function mulberry32(seed) {
   return () => {
@@ -83,11 +142,45 @@ export function classifyHighNSeedValidity({ cells, adapterMode, standaloneBenchm
   const requested = highN.map((cell) => cell.requestedDistillationSeed);
   const independentlyHonored = new Set(requested).size === 3
     && highN.every((cell) =>
-      cell.distillationSeedStatus === 'honored'
+      cell.seedEvidenceReconciled === true
+      && cell.distillationSeedStatus === 'honored'
       && cell.appliedDistillationSeed === cell.requestedDistillationSeed);
   return independentlyHonored
     ? { valid: true, reason: null }
     : { valid: false, reason: 'DISTILLATION_SEEDS_UNCONTROLLED' };
+}
+
+export function reconcileCellSeedEvidence({ requestedSeed, reported, attempts }) {
+  const distillationAttempts = attempts.filter((attempt) => attempt.kind === 'distill');
+  if (distillationAttempts.length !== 1) {
+    return {
+      requestedDistillationSeed: requestedSeed,
+      appliedDistillationSeed: null,
+      distillationSeedStatus: 'unsupported',
+      distillationSeedMechanism: 'distillation_attempt_evidence_missing_or_ambiguous',
+      reportMatchesAttempt: false,
+    };
+  }
+  const attempt = distillationAttempts[0];
+  if (attempt.requestedSeed !== requestedSeed) {
+    return {
+      requestedDistillationSeed: requestedSeed,
+      appliedDistillationSeed: null,
+      distillationSeedStatus: 'unsupported',
+      distillationSeedMechanism: 'distillation_attempt_requested_seed_mismatch',
+      reportMatchesAttempt: false,
+    };
+  }
+  const reportMatchesAttempt = reported.appliedDistillationSeed === attempt.appliedSeed
+    && reported.distillationSeedStatus === attempt.status
+    && reported.distillationSeedMechanism === attempt.mechanism;
+  return {
+    requestedDistillationSeed: requestedSeed,
+    appliedDistillationSeed: attempt.appliedSeed ?? null,
+    distillationSeedStatus: attempt.status,
+    distillationSeedMechanism: attempt.mechanism,
+    reportMatchesAttempt,
+  };
 }
 
 export const compliantHeldoutOutput = (fixture) => [
@@ -153,6 +246,7 @@ export async function writeSweepEvidenceBundle({
   modelProvider = null,
   model = null,
   liveBudget = null,
+  liveEconomics = null,
   reproduction = null,
 }) {
   const { verifyEvidenceBundle, writeEvidenceBundle } = await import('./evidence.mjs');
@@ -185,6 +279,7 @@ export async function writeSweepEvidenceBundle({
           publishableHighN: result.publishableHighN ?? false,
           suppressionReason: result.suppressionReason ?? result.benchmark?.verdict ?? null,
         },
+        ...(liveEconomics === null ? {} : { liveEconomics }),
       },
     },
     samples,
@@ -225,36 +320,63 @@ export async function startLiveSweep({
   config,
   counts,
   snapshot,
+  economics,
   fetchFactory,
   adapterFactory,
-  runSweep: runSweepImplementation = runSweep,
   sweepOptions = {},
 }) {
-  validateSweepConfig(config, counts);
-  validateApprovedBudgetSnapshot(snapshot, config);
-  const authorizationHash = liveAuthorizationHash({ config, snapshot });
-  const capMicroUsd = validateLiveApproval(env, { config, snapshot });
-  const requestCount = conservativeSweepRequestCount(config, counts);
-  const perCallMicroUsd = calculateProviderCostMicroUsd({
-    inputTokens: snapshot.tokenCaps.maxInputTokens,
-    outputTokens: snapshot.tokenCaps.maxOutputTokens,
-    snapshot,
+  const committed = committedSweepInputs();
+  requireCommittedConfig(config, committed.config);
+  requireExactCommittedCounts(counts, committed.counts);
+  const authorizedConfig = deepFreeze(structuredClone(committed.config));
+  const authorizedSnapshot = deepFreeze(structuredClone(snapshot));
+  const authorizedEconomics = deepFreeze(structuredClone(economics));
+  validateSweepConfig(authorizedConfig, committed.counts);
+  validateApprovedBudgetSnapshot(authorizedSnapshot, authorizedConfig);
+  validateApprovedLiveEconomics(authorizedEconomics, authorizedConfig);
+  const authorizationHash = liveAuthorizationHash({
+    config: authorizedConfig,
+    snapshot: authorizedSnapshot,
+    economics: authorizedEconomics,
   });
-  const estimateMicroUsd = estimateLiveSweepMicroUsd({ config, counts, snapshot });
+  const capMicroUsd = validateLiveApproval(env, {
+    config: authorizedConfig,
+    snapshot: authorizedSnapshot,
+    economics: authorizedEconomics,
+  });
+  const requestCount = conservativeSweepRequestCount(authorizedConfig, committed.counts);
+  const perCallMicroUsd = calculateProviderCostMicroUsd({
+    inputTokens: authorizedSnapshot.tokenCaps.maxInputTokens,
+    outputTokens: authorizedSnapshot.tokenCaps.maxOutputTokens,
+    snapshot: authorizedSnapshot,
+  });
+  const estimateMicroUsd = estimateLiveSweepMicroUsd({
+    config: authorizedConfig,
+    counts: committed.counts,
+    snapshot: authorizedSnapshot,
+  });
   if (estimateMicroUsd > capMicroUsd) {
     throw new Error(`Conservative live estimate $${formatMicroUsd(estimateMicroUsd)} exceeds human cap $${formatMicroUsd(capMicroUsd)}`);
   }
   if (env.ALLOW_LIVE_LLM !== '1') throw new Error('ALLOW_LIVE_LLM=1 is required for a live sweep');
+  const liveAuthorizationCapability = LIVE_SWEEP_AUTHORIZATION;
   const budget = createAttemptBudget({ capMicroUsd, worstCaseCallMicroUsd: perCallMicroUsd });
   const fetchImpl = fetchFactory();
-  const adapter = adapterFactory({ fetchImpl, budget, snapshot });
-  const result = await runSweepImplementation({
+  const adapter = adapterFactory({
+    fetchImpl,
+    budget,
+    snapshot: authorizedSnapshot,
+    economics: authorizedEconomics,
+  });
+  const result = await runSweep({
     ...sweepOptions,
     mode: 'live',
-    config,
+    config: authorizedConfig,
     adapter,
     budget,
-    counts,
+    counts: committed.counts,
+    economics: authorizedEconomics,
+    liveAuthorizationCapability,
   });
   return {
     authorizationHash,
@@ -268,6 +390,10 @@ export async function startLiveSweep({
 }
 
 export async function runSweep(options) {
+  const requestedMode = options?.mode ?? 'mock';
+  if (requestedMode === 'live' && options.liveAuthorizationCapability !== LIVE_SWEEP_AUTHORIZATION) {
+    throw new Error('Live runSweep requires the module-private startLiveSweep authorization capability');
+  }
   const fs = await import('node:fs');
   const path = await import('node:path');
   const { fileURLToPath } = await import('node:url');
@@ -288,6 +414,14 @@ export async function runSweep(options) {
   validateSweepConfig(config, counts);
   const mode = options.mode ?? 'mock';
   if (!['mock', 'live'].includes(mode)) throw new Error('Sweep mode must be mock or live');
+  const economicInputs = mode === 'live'
+    ? validateApprovedLiveEconomics(options.economics, config)
+    : {
+        invocationPriceUsd: options.invocationPriceUsd ?? 0.25,
+        cloneServingCostUsd: options.cloneServingCostUsd ?? 0.05,
+        deployCostUsd: options.deployCostUsd ?? 0.05,
+        laborCostUsd: options.laborCostUsd ?? 0,
+      };
 
   const trainById = new Map(fixtures.train.map((fixture) => [fixture.id, fixture]));
   const heldoutById = new Map(fixtures.heldout.map((fixture) => [fixture.id, fixture]));
@@ -306,20 +440,7 @@ export async function runSweep(options) {
     outputFor,
   });
   const adapterMode = mode;
-  const { benchmark, targetScore } = await runTargetBenchmark({
-    adapter,
-    heldoutFixtures: fixtures.heldout,
-    threshold: config.targetThreshold ?? 0.8,
-  });
-  const standaloneScores = { target: scoreMap(targetScore) };
-  const samples = adapter.attempts.map((attempt) => annotateAttempt(attempt, {
-    n: null,
-    replicateId: null,
-    pairOrderSeed: null,
-    requestedDistillationSeed: null,
-    invocationPriceUsd: 0,
-  }, standaloneScores));
-  const reconcile = () => {
+  const reconcileSamples = (samples) => {
     if (samples.length !== adapter.attempts.length) {
       throw new Error('Sweep sample count does not reconcile with adapter attempts');
     }
@@ -328,8 +449,51 @@ export async function runSweep(options) {
       throw new Error('Sweep sample count does not reconcile with budget attemptedCalls');
     }
   };
+  let benchmark;
+  let targetScore;
+  try {
+    ({ benchmark, targetScore } = await runTargetBenchmark({
+      adapter,
+      heldoutFixtures: fixtures.heldout,
+      threshold: config.targetThreshold ?? 0.8,
+    }));
+  } catch (error) {
+    const samples = adapter.attempts.map((attempt) => annotateAttempt(attempt, {
+      n: null,
+      replicateId: null,
+      pairOrderSeed: null,
+      requestedDistillationSeed: null,
+      invocationPriceUsd: 0,
+    }));
+    reconcileSamples(samples);
+    return {
+      experimentFamily: config.experimentFamily,
+      benchmark: {
+        valid: false,
+        verdict: 'STANDALONE_TARGET_EXECUTION_FAILED',
+        cloneConclusionAllowed: false,
+        economicsConclusionAllowed: false,
+        reason: `Standalone target execution failed (${error instanceof Error ? error.name : 'UnknownError'}).`,
+      },
+      targetScore: null,
+      cells: [],
+      samples,
+      highNComplete: false,
+      publishableHighN: false,
+      suppressionReason: 'STANDALONE_TARGET_EXECUTION_FAILED',
+      budgetState: options.budget?.state() ?? null,
+    };
+  }
+  const standaloneScores = { target: scoreMap(targetScore) };
+  const samples = adapter.attempts.map((attempt) => annotateAttempt(attempt, {
+    n: null,
+    replicateId: null,
+    pairOrderSeed: null,
+    requestedDistillationSeed: null,
+    invocationPriceUsd: 0,
+  }, standaloneScores));
   if (!benchmark.valid) {
-    reconcile();
+    reconcileSamples(samples);
     return {
       experimentFamily: config.experimentFamily,
       benchmark,
@@ -337,6 +501,9 @@ export async function runSweep(options) {
       cells: [],
       samples,
       highNComplete: false,
+      publishableHighN: false,
+      suppressionReason: benchmark.verdict,
+      budgetState: options.budget?.state() ?? null,
     };
   }
 
@@ -363,20 +530,25 @@ export async function runSweep(options) {
           pairOrderSeed: replicate.pairOrderSeed,
           requestedDistillationSeed: replicate.distillationSeed,
           replicateId: replicate.replicateId,
-          invocationPriceUsd: options.invocationPriceUsd ?? 0.25,
-          cloneServingCostUsd: options.cloneServingCostUsd ?? 0.05,
-          deployCostUsd: options.deployCostUsd ?? 0.05,
-          laborCostUsd: options.laborCostUsd ?? 0,
+          invocationPriceUsd: economicInputs.invocationPriceUsd,
+          cloneServingCostUsd: economicInputs.cloneServingCostUsd,
+          deployCostUsd: economicInputs.deployCostUsd,
+          laborCostUsd: economicInputs.laborCostUsd,
         });
-        const seed = result.report.seedContract;
+        const seed = reconcileCellSeedEvidence({
+          requestedSeed: replicate.distillationSeed,
+          reported: result.report.seedContract,
+          attempts: adapter.attempts.slice(attemptStart),
+        });
         cells.push({
           n,
           replicateId: replicate.replicateId,
           pairOrderSeed: replicate.pairOrderSeed,
-          requestedDistillationSeed: replicate.distillationSeed,
+          requestedDistillationSeed: seed.requestedDistillationSeed,
           appliedDistillationSeed: seed.appliedDistillationSeed,
           distillationSeedStatus: seed.distillationSeedStatus,
           distillationSeedMechanism: seed.distillationSeedMechanism,
+          seedEvidenceReconciled: seed.reportMatchesAttempt,
           status: 'complete',
           benchmark: result.report.benchmark,
           targetAbsoluteScore: result.report.fidelity.target.absoluteScore,
@@ -410,7 +582,7 @@ export async function runSweep(options) {
             replicateId: replicate.replicateId,
             pairOrderSeed: replicate.pairOrderSeed,
             requestedDistillationSeed: replicate.distillationSeed,
-            invocationPriceUsd: options.invocationPriceUsd ?? 0.25,
+            invocationPriceUsd: economicInputs.invocationPriceUsd,
           }, scores));
         }
       }
@@ -418,7 +590,7 @@ export async function runSweep(options) {
     }
     if (stop) break;
   }
-  reconcile();
+  reconcileSamples(samples);
   const highNComplete = cells.filter((cell) => cell.n === 100 && cell.status === 'complete').length === 3;
   const highNGate = classifyHighNSeedValidity({ cells, adapterMode, standaloneBenchmark: benchmark });
   return {
@@ -430,5 +602,6 @@ export async function runSweep(options) {
     highNComplete,
     publishableHighN: highNGate.valid,
     suppressionReason: highNGate.reason,
+    budgetState: options.budget?.state() ?? null,
   };
 }

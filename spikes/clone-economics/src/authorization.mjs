@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { parseUsdToMicroUsd } from './budget.mjs';
+import { validateApprovedLiveEconomics } from './live-economics.mjs';
 
 function canonicalize(value) {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
@@ -14,11 +15,13 @@ function canonicalize(value) {
   throw new Error(`Unsupported authorization value type: ${typeof value}`);
 }
 
-export function liveAuthorizationHash({ config, snapshot }) {
+export function liveAuthorizationHash({ config, snapshot, economics }) {
+  validateApprovedLiveEconomics(economics, config);
   const canonical = JSON.stringify(canonicalize({
     authorizationSchemaVersion: 1,
     sweepConfig: config,
     liveBudgetSnapshot: snapshot,
+    liveEconomics: economics,
   }));
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }

@@ -10,7 +10,7 @@ import {
 } from '../src/budget.mjs';
 import { liveAuthorizationHash } from '../src/authorization.mjs';
 import { startLiveSweep } from '../src/sweep.mjs';
-import { approved, config } from './fixtures/live-contract.mjs';
+import { approved, config, economics } from './fixtures/live-contract.mjs';
 
 const counts = { trainCount: 100, heldoutCount: 30, v2Count: 2 };
 
@@ -44,12 +44,13 @@ test('an under-cap live request constructs neither adapter nor fetch', async () 
   let fetchConstructions = 0;
   await assert.rejects(startLiveSweep({
     env: {
-      APPROVE_LIVE_SWEEP_SHA256: liveAuthorizationHash({ config, snapshot: approved }),
+      APPROVE_LIVE_SWEEP_SHA256: liveAuthorizationHash({ config, snapshot: approved, economics }),
       MAX_SWEEP_COST_USD: '47.00',
     },
     config,
     counts,
     snapshot: approved,
+    economics,
     fetchFactory() {
       fetchConstructions += 1;
       throw new Error('fetch must not be constructed');
@@ -61,6 +62,64 @@ test('an under-cap live request constructs neither adapter nor fetch', async () 
   }), /47\.361024.*47\.000000/);
   assert.equal(adapterConstructions, 0);
   assert.equal(fetchConstructions, 0);
+});
+
+test('negative or understated caller counts fail before adapter or fetch construction', async () => {
+  let constructions = 0;
+  for (const invalidCounts of [
+    { trainCount: -1, heldoutCount: 30, v2Count: 2 },
+    { trainCount: 99, heldoutCount: 30, v2Count: 2 },
+    { trainCount: 100, heldoutCount: 29, v2Count: 2 },
+    { trainCount: 100, heldoutCount: 30, v2Count: 1 },
+  ]) {
+    await assert.rejects(startLiveSweep({
+      env: {
+        APPROVE_LIVE_SWEEP_SHA256: liveAuthorizationHash({ config, snapshot: approved, economics }),
+        MAX_SWEEP_COST_USD: '100',
+      },
+      config,
+      counts: invalidCounts,
+      snapshot: approved,
+      economics,
+      fetchFactory() { constructions += 1; },
+      adapterFactory() { constructions += 1; },
+    }), /counts must exactly match committed fixtures/i);
+  }
+  assert.equal(constructions, 0);
+});
+
+test('missing live economics fails before construction', async () => {
+  let constructions = 0;
+  await assert.rejects(startLiveSweep({
+    env: {
+      APPROVE_LIVE_SWEEP_SHA256: 'sha256:'.concat('0'.repeat(64)),
+      MAX_SWEEP_COST_USD: '100',
+    },
+    config,
+    counts,
+    snapshot: approved,
+    economics: null,
+    fetchFactory() { constructions += 1; },
+    adapterFactory() { constructions += 1; },
+  }), /live economics/i);
+  assert.equal(constructions, 0);
+});
+
+test('stale economics authorization fails before construction', async () => {
+  let constructions = 0;
+  await assert.rejects(startLiveSweep({
+    env: {
+      APPROVE_LIVE_SWEEP_SHA256: liveAuthorizationHash({ config, snapshot: approved, economics }),
+      MAX_SWEEP_COST_USD: '100',
+    },
+    config,
+    counts,
+    snapshot: approved,
+    economics: { ...economics, laborCostUsd: 1 },
+    fetchFactory() { constructions += 1; },
+    adapterFactory() { constructions += 1; },
+  }), /stale or does not match/i);
+  assert.equal(constructions, 0);
 });
 
 test('every attempted call is reserved and the next over-cap call is refused', () => {

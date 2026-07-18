@@ -12,6 +12,7 @@ import {
 } from './src/budget.mjs';
 import { liveAuthorizationHash } from './src/authorization.mjs';
 import { loadFixtureSet } from './src/fixture-set.mjs';
+import { validateLiveEconomicsShape } from './src/live-economics.mjs';
 import {
   runSweep,
   startLiveSweep,
@@ -23,6 +24,7 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const readJson = (name) => JSON.parse(fs.readFileSync(path.join(root, 'fixtures', name), 'utf8'));
 const config = readJson('sweep-v1.json');
 const snapshot = readJson('live-budget-v1.json');
+const economics = readJson('live-economics-v1.json');
 const fixtures = loadFixtureSet(root, config.fixtureSet);
 const v2Count = readJson('v2-heldout.json').length;
 const counts = {
@@ -48,12 +50,14 @@ async function main() {
 
   if (mode === '--preflight') {
     validateBudgetSnapshotShape(snapshot, config);
+    validateLiveEconomicsShape(economics, config);
     printDimensions();
-    if (snapshot.approvalStatus === 'not_approved') {
-      console.log('live budget: not approved');
+    console.log(`live budget: ${snapshot.approvalStatus === 'approved' ? 'approved' : 'not approved'}`);
+    console.log(`live economics: ${economics.approvalStatus === 'approved' ? 'approved' : 'not approved'}`);
+    if (snapshot.approvalStatus !== 'approved' || economics.approvalStatus !== 'approved') {
       return;
     }
-    const authorizationHash = liveAuthorizationHash({ config, snapshot });
+    const authorizationHash = liveAuthorizationHash({ config, snapshot, economics });
     const estimate = estimateLiveSweepMicroUsd({ config, counts, snapshot });
     console.log(`live authorization: ${authorizationHash}`);
     console.log(`conservative live estimate USD: ${formatMicroUsd(estimate)}`);
@@ -96,6 +100,7 @@ async function main() {
     config,
     counts,
     snapshot,
+    economics,
     fetchFactory: () => globalThis.fetch,
     adapterFactory: ({ fetchImpl, budget, snapshot: committedSnapshot }) => new LiveAnthropicAdapter({
       mode: 'live',
@@ -110,6 +115,7 @@ async function main() {
   const experimentId = `live-high-n-${recordedAtUtc.replaceAll(/[-:.]/g, '')}`;
   const evidenceRelative = path.join('evidence', experimentId);
   const snapshotBytes = fs.readFileSync(path.join(root, 'fixtures/live-budget-v1.json'));
+  const economicsBytes = fs.readFileSync(path.join(root, 'fixtures/live-economics-v1.json'));
   await writeSweepEvidenceBundle({
     result: live.result,
     config,
@@ -122,9 +128,12 @@ async function main() {
     recordedAtUtc,
     modelProvider: 'Anthropic',
     model: snapshot.model,
+    liveEconomics: economics,
     liveBudget: {
       snapshotPath: 'fixtures/live-budget-v1.json',
       snapshotSha256: createHash('sha256').update(snapshotBytes).digest('hex'),
+      economicsSnapshotPath: 'fixtures/live-economics-v1.json',
+      economicsSnapshotSha256: createHash('sha256').update(economicsBytes).digest('hex'),
       authorizationHash: live.authorizationHash,
       humanCapMicroUsd: live.capMicroUsd.toString(),
       conservativeEstimateMicroUsd: live.estimateMicroUsd.toString(),
@@ -141,6 +150,9 @@ async function main() {
   console.log(`publishable high-N: ${live.result.publishableHighN}`);
   console.log(`suppression: ${live.result.suppressionReason}`);
   console.log(`verified evidence: ${evidenceRelative}`);
+  if (live.result.suppressionReason === 'STANDALONE_TARGET_EXECUTION_FAILED') {
+    throw new Error(`Standalone target execution failed; sanitized evidence retained at ${evidenceRelative}`);
+  }
 }
 
 main().catch((error) => {

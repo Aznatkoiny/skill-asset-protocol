@@ -7,6 +7,8 @@ import { createHash } from 'node:crypto';
 
 import { recomputeSummary, verifyEvidenceBundle, writeEvidenceBundle } from '../src/evidence.mjs';
 import { normalizeSweepSamples, writeSweepEvidenceBundle } from '../src/sweep.mjs';
+import { liveAuthorizationHash } from '../src/authorization.mjs';
+import { approved, config, economics } from './fixtures/live-contract.mjs';
 
 const samples = [
   { sampleId: 'run:target-heldout:a', phase: 'evaluation', profile: 'target', caseId: 'a', success: true, latencyMs: 10, inputTokens: 3, outputTokens: 2, providerCostUsd: 0.01, score: 0.9, criticalGatePass: true },
@@ -177,4 +179,58 @@ test('completed sweep output writes and verifies through the public bundle seam'
   });
   assert.equal(written.verified.valid, true);
   assert.equal(written.verified.samples.length, 1);
+});
+
+test('live bundle authorization recomputes from hash-verified budget and economics snapshots', (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'clone-live-evidence-'));
+  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+  const fixturesDir = path.join(tempRoot, 'fixtures');
+  const outputDir = path.join(tempRoot, 'evidence', 'live-fixture');
+  fs.mkdirSync(fixturesDir, { recursive: true });
+  const snapshotBytes = Buffer.from(`${JSON.stringify(approved, null, 2)}\n`);
+  const economicsBytes = Buffer.from(`${JSON.stringify(economics, null, 2)}\n`);
+  fs.writeFileSync(path.join(fixturesDir, 'live-budget-v1.json'), snapshotBytes);
+  fs.writeFileSync(path.join(fixturesDir, 'live-economics-v1.json'), economicsBytes);
+  const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
+  const authorizationHash = liveAuthorizationHash({ config, snapshot: approved, economics });
+  writeEvidenceBundle({
+    outputDir,
+    manifest: {
+      experimentId: 'live-fixture',
+      evidenceLabel: 'LIVE CANDIDATE',
+      command: 'synthetic live verifier fixture',
+      liveBudget: {
+        snapshotPath: 'fixtures/live-budget-v1.json',
+        snapshotSha256: digest(snapshotBytes),
+        economicsSnapshotPath: 'fixtures/live-economics-v1.json',
+        economicsSnapshotSha256: digest(economicsBytes),
+        authorizationHash,
+        humanCapMicroUsd: '1000000',
+        conservativeEstimateMicroUsd: '1000000',
+        worstCasePerCallMicroUsd: '1000000',
+        attemptedCalls: 1,
+        knownAccruedMicroUsd: '39',
+        outstandingReservedMicroUsd: '0',
+        lock: null,
+      },
+      configuration: { sweepConfig: config, liveEconomics: economics },
+    },
+    samples: [{
+      sampleId: 'live:target-heldout:a',
+      phase: 'evaluation',
+      profile: 'target',
+      caseId: 'a',
+      success: true,
+      latencyMs: 1,
+      inputTokens: 3,
+      outputTokens: 2,
+      providerCostMicroUsd: '39',
+      providerCostUsd: 0.000039,
+      score: 1,
+      criticalGatePass: true,
+    }],
+    interpretation: 'Synthetic live verifier fixture.',
+    reproduction: 'verify live fixture',
+  });
+  assert.equal(verifyEvidenceBundle(outputDir).valid, true);
 });
