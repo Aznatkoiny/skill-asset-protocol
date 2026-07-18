@@ -15,6 +15,14 @@ import {
 } from '../src/x402-seller.mjs';
 
 const payTo = `0x${'d'.repeat(40)}`;
+const executionQuote = Object.freeze({
+  schemaVersion: 2,
+  quoteId: `sha256:${'7'.repeat(64)}`,
+  grossAtomic: '250000',
+  model: 'claude-sonnet-4-6',
+  maxInputTokens: 16384,
+  maxOutputTokens: 2048,
+});
 
 const payingFetch = (account, url, init, options = {}) => policyPayingFetch(account, url, init, {
   paymentPolicy: paymentPolicyFor(url, payTo),
@@ -41,10 +49,11 @@ async function withheldAttempt(account, url, init, options = {}) {
   };
 }
 
-function resourceApp({ facilitatorTransport, lifecycle = {}, price = '0.25', handler } = {}) {
+function resourceApp({ facilitatorTransport, lifecycle = {}, price = '0.25', quote = null, handler } = {}) {
   const app = new Hono();
   app.post('/resource', x402Paywall({
     price,
+    quote,
     payTo,
     facilitatorTransport,
     lifecycle,
@@ -59,7 +68,17 @@ test('challenge and retry emit one ordered lifecycle under one idempotency key',
   const lifecycle = Object.fromEntries([
     'onOffered', 'onSigned', 'onSettled', 'onUnresolved', 'onRejected',
   ].map((name) => [name, async (payload) => calls.push([name, payload])]));
-  const app = resourceApp({ facilitatorTransport: transport, lifecycle });
+  let quoteCalls = 0;
+  let handlerQuote = null;
+  const app = resourceApp({
+    facilitatorTransport: transport,
+    lifecycle,
+    quote: async () => { quoteCalls += 1; return structuredClone(executionQuote); },
+    handler: (c) => {
+      handlerQuote = structuredClone(c.get('x402').executionQuote);
+      return c.json({ ok: true });
+    },
+  });
   const result = await payingFetch(throwawayAccount(), 'http://seller.test/resource', {
     method: 'POST', body: '{}',
   }, {
@@ -70,6 +89,13 @@ test('challenge and retry emit one ordered lifecycle under one idempotency key',
   assert.deepEqual(calls.map(([name]) => name), ['onOffered', 'onSigned', 'onSettled']);
   assert.ok(calls.every(([, payload]) => payload.idempotencyKey === 'idem-lifecycle'));
   assert.deepEqual(calls[0][1].requirements, calls[1][1].requirements);
+  assert.equal(calls[0][1].requirements.extra.quoteId, executionQuote.quoteId);
+  assert.deepEqual(calls[0][1].executionQuote, executionQuote);
+  assert.deepEqual(calls[1][1].executionQuote, executionQuote);
+  assert.deepEqual(calls[2][1].executionQuote, executionQuote);
+  assert.deepEqual(handlerQuote, executionQuote);
+  assert.equal(quoteCalls, 1);
+  assert.equal(result.quoteId, executionQuote.quoteId);
   assert.match(calls[0][1].requirements.extra.requestHash, /^sha256:[0-9a-f]{64}$/);
   assert.equal(calls[2][1].settlementReference, result.settlementReference);
   assert.equal(calls[2][1].txHash, result.txHash);
@@ -80,20 +106,30 @@ test('challenge and retry emit one ordered lifecycle under one idempotency key',
 test('a restarted paywall accepts only the complete persisted frozen offer', async () => {
   const facilitator = createMockFacilitator();
   const transport = createMockFacilitatorTransport((url, init) => facilitator.request(url, init));
-  let persistedRequirements = null;
+  let persistedOffer = null;
+  let quoteCalls = 0;
   let fetchCount = 0;
   const beforeRestart = resourceApp({
     facilitatorTransport: transport,
+    quote: async () => { quoteCalls += 1; return structuredClone(executionQuote); },
     lifecycle: {
-      async onOffered({ requirements }) { persistedRequirements = structuredClone(requirements); },
+      async onOffered({ requirements, executionQuote: offeredQuote }) {
+        persistedOffer = structuredClone({ requirements, executionQuote: offeredQuote });
+        offeredQuote.model = 'mutated-by-untrusted-hook';
+      },
     },
     handler: (c) => c.json({ shouldNotExecute: true }),
   });
   const afterRestart = resourceApp({
     facilitatorTransport: transport,
     price: '9.99',
+    quote: async () => { quoteCalls += 1; throw new Error('must not recompute after restart'); },
     lifecycle: {
-      async loadFrozenOffer() { return structuredClone(persistedRequirements); },
+      async loadFrozenOffer() { return structuredClone(persistedOffer); },
+    },
+    handler: (c) => {
+      assert.deepEqual(c.get('x402').executionQuote, executionQuote);
+      return c.json({ ok: true });
     },
   });
   const result = await payingFetch(throwawayAccount(), 'http://seller.test/resource', {
@@ -104,8 +140,10 @@ test('a restarted paywall accepts only the complete persisted frozen offer', asy
   });
   assert.equal(result.res.status, 200);
   assert.equal(fetchCount, 2);
-  assert.equal(persistedRequirements.maxAmountRequired, '250000');
-  assert.equal(persistedRequirements.payTo, payTo);
+  assert.equal(persistedOffer.requirements.maxAmountRequired, '250000');
+  assert.equal(persistedOffer.requirements.payTo, payTo);
+  assert.deepEqual(persistedOffer.executionQuote, executionQuote);
+  assert.equal(quoteCalls, 1);
 });
 
 test('restart rejects different request bytes under the frozen idempotency key before facilitator or execution', async () => {
@@ -141,7 +179,9 @@ test('restart rejects different request bytes under the frozen idempotency key b
   const afterRestart = resourceApp({
     facilitatorTransport: transport,
     lifecycle: {
-      async loadFrozenOffer() { return structuredClone(persistedRequirements); },
+      async loadFrozenOffer() {
+        return { requirements: structuredClone(persistedRequirements), executionQuote: null };
+      },
     },
     handler: (c) => { executions += 1; return c.json({ ok: true }); },
   });

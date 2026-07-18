@@ -15,6 +15,12 @@ import {
   receiptKeyId,
   verifySignedReceipt,
 } from '../src/invocation-journal.mjs';
+import {
+  artifactDigest,
+  createPendingExecutionAccounting,
+  createExecutionQuote,
+  finalizeExecutionAccounting,
+} from '../src/execution-economics.mjs';
 
 const payer = `0x${'1'.repeat(40)}`;
 const payTo = `0x${'d'.repeat(40)}`;
@@ -31,6 +37,31 @@ const declaration = Object.freeze({
   beneficiaryId: null,
 });
 
+const royaltyGraph = Object.freeze({
+  'skill-a': Object.freeze({
+    parentIds: Object.freeze([]),
+    inheritBps: 0,
+    holders: Object.freeze([{ recipientId: 'creator-a', bps: 10_000 }]),
+  }),
+});
+const executionQuote = createExecutionQuote({
+  schemaVersion: 2,
+  grossAtomic: '250000',
+  model: 'claude-sonnet-4-6',
+  maxInputTokens: 16384,
+  maxOutputTokens: 2048,
+  promptBytes: 100,
+  estimatedInputTokens: 356,
+  settlementCostAtomic: '1000',
+  refundReserveAtomic: '5000',
+  protocolFeeBps: 250,
+  leafSkillId: 'skill-a',
+  skillId: 'skill-a',
+  skillVersion: 'skill-a/2026-07-17-v1',
+  artifactHash: artifactDigest('test Skill artifact'),
+  skills: royaltyGraph,
+});
+
 const requirements = Object.freeze({
   scheme: 'exact',
   network: 'base-sepolia',
@@ -45,13 +76,14 @@ const requirements = Object.freeze({
     name: 'USDC',
     version: '2',
     requestHash: declaration.requestHash,
-    quoteId: `sha256:${'c'.repeat(64)}`,
+    quoteId: executionQuote.quoteId,
     issuedAt: '2026-07-17T12:00:00.000Z',
     expiresAt: '2026-07-17T12:01:00.000Z',
   },
 });
 
 const quote = Object.freeze({
+  schemaVersion: 2,
   quoteId: requirements.extra.quoteId,
   amountAtomic: requirements.maxAmountRequired,
   currency: 'USDC',
@@ -63,7 +95,12 @@ const quote = Object.freeze({
   requirementsHash: `sha256:${'e'.repeat(64)}`,
   expiresAt: requirements.extra.expiresAt,
   requirements,
+  executionQuote,
 });
+
+const legacyQuote = Object.freeze(Object.fromEntries(
+  Object.entries(quote).filter(([key]) => !['schemaVersion', 'executionQuote'].includes(key)),
+));
 
 function fixture(overrides = {}) {
   let tick = 0;
@@ -107,7 +144,16 @@ function settle(journal, input = declaration) {
   });
 }
 
-function pendingFailureAccounting() {
+function pendingFailureAccounting(failureClass = 'UPSTREAM_PROVIDER_ERROR') {
+  return structuredClone(createPendingExecutionAccounting({
+    quote: executionQuote,
+    usage: null,
+    failureClass,
+    reason: 'provider execution failed',
+  }));
+}
+
+function legacyPendingFailureAccounting() {
   return {
     grossAtomic: '250000',
     allocationState: 'pending_cogs_reconciliation',
@@ -120,6 +166,20 @@ function pendingFailureAccounting() {
       amountAtomic: '250000',
     }],
   };
+}
+
+function finalizedAccounting() {
+  return structuredClone(finalizeExecutionAccounting({
+    quote: executionQuote,
+    usage: {
+      schemaVersion: 2,
+      model: executionQuote.model,
+      inputTokens: 42,
+      outputTokens: 42,
+    },
+    leafSkillId: 'skill-a',
+    skills: royaltyGraph,
+  }));
 }
 
 test('exact retries are no-ops and conflicting idempotency reuse fails closed', () => {
@@ -156,15 +216,135 @@ test('a settled execution failure keeps its transaction, full-gross hold, and HT
     message: 'provider returned HTTP 500',
     outcomeHash: null,
     httpStatus: 500,
-    accounting: pendingFailureAccounting(),
+    accounting: pendingFailureAccounting('UPSTREAM_500'),
   });
   const bundle = journal.issueReceipt(declaration.idempotencyKey);
+  assert.equal(bundle.receipt.schemaVersion, 2);
+  assert.equal(bundle.receipt.quote.executionQuote.quoteId, requirements.extra.quoteId);
   assert.equal(bundle.receipt.payment.state, 'settled');
   assert.equal(bundle.receipt.payment.txHash, txHash);
   assert.equal(bundle.receipt.execution.state, 'failed');
   assert.equal(bundle.receipt.execution.httpStatus, 500);
-  assert.deepEqual(bundle.receipt.accounting, pendingFailureAccounting());
+  assert.deepEqual(bundle.receipt.accounting, pendingFailureAccounting('UPSTREAM_500'));
   assert.equal(verifySignedReceipt(bundle, trustFor(journal)), true);
+});
+
+test('v2 terminal accounting rejects nonconservation, false unknown zero, and quote mismatch before append', () => {
+  const invalidAccounting = [
+    (value) => { value.royaltyPoolAtomic = '1'; },
+    (value) => { value.executionCogs.actualAtomic = '0'; },
+    (value) => { value.quoteId = `sha256:${'9'.repeat(64)}`; },
+    (value) => { value.journalEntries[0].amountAtomic = '249999'; },
+    (value) => { value.holderCredits.push({
+      recipientId: 'attacker', viaSkillId: 'skill-a', depth: 0, kind: 'holder', amountAtomic: '1',
+    }); },
+  ];
+  for (const mutate of invalidAccounting) {
+    const journal = fixture();
+    settle(journal);
+    const claim = journal.startExecution(declaration.idempotencyKey);
+    const accounting = pendingFailureAccounting();
+    mutate(accounting);
+    const before = journal.events.length;
+    assert.throws(() => journal.finishExecution(declaration.idempotencyKey, {
+      executionAttemptId: claim.record.execution.executionAttemptId,
+      outcome: 'failed',
+      failureClass: 'UPSTREAM_PROVIDER_ERROR',
+      message: 'safe provider failure',
+      outcomeHash: null,
+      httpStatus: 500,
+      accounting,
+    }), /accounting|COGS|Royalty|quote|hold|conserve/i);
+    assert.equal(journal.events.length, before);
+    assert.equal(journal.getByIdempotencyKey(declaration.idempotencyKey).execution.state, 'executing');
+  }
+});
+
+test('v2 success requires known finalized accounting and exact terminal hash/status semantics', () => {
+  for (const mutation of [
+    { accounting: pendingFailureAccounting() },
+    { outcomeHash: null },
+    { failureClass: 'FALSE_SUCCESS' },
+    { message: 'false success' },
+    { httpStatus: 500 },
+  ]) {
+    const journal = fixture();
+    settle(journal);
+    const claim = journal.startExecution(declaration.idempotencyKey);
+    assert.throws(() => journal.finishExecution(declaration.idempotencyKey, {
+      executionAttemptId: claim.record.execution.executionAttemptId,
+      outcome: 'succeeded',
+      failureClass: null,
+      message: null,
+      outcomeHash: `sha256:${'7'.repeat(64)}`,
+      httpStatus: 200,
+      accounting: finalizedAccounting(),
+      ...mutation,
+    }), /success|finalized|hash|status|failure|message/i);
+    assert.equal(journal.getByIdempotencyKey(declaration.idempotencyKey).execution.state, 'executing');
+  }
+});
+
+test('v2 finalized accounting binds quote-fixed costs, quoted usage, and exact credit destinations', () => {
+  const invalidAccounting = [
+    (value) => {
+      value.settlementCostAtomic = '999';
+      value.royaltyPoolAtomic = '236995';
+      value.journalEntries.find((entry) => entry.category === 'settlement-cogs').amountAtomic = '999';
+      value.holderCredits[0].amountAtomic = '236995';
+      value.journalEntries.find((entry) => entry.category === 'royalty-holder').amountAtomic = '236995';
+    },
+    (value) => {
+      value.executionCogs.actualAtomic = '79873';
+      value.executionCogs.chargedAtomic = '79873';
+      value.executionCostAtomic = '79873';
+      value.royaltyPoolAtomic = '157877';
+      value.journalEntries.find((entry) => entry.category === 'execution-cogs').amountAtomic = '79873';
+      value.holderCredits[0].amountAtomic = '157877';
+      value.journalEntries.find((entry) => entry.category === 'royalty-holder').amountAtomic = '157877';
+    },
+    (value) => { value.executionCogs.usage.model = 'unquoted-model'; },
+    (value) => {
+      value.journalEntries.find((entry) => entry.category === 'protocol-fee').creditAccountId = 'attacker:fee';
+    },
+    (value) => {
+      value.journalEntries.find((entry) => entry.category === 'royalty-holder').creditAccountId = 'royalty:attacker';
+    },
+  ];
+  for (const mutate of invalidAccounting) {
+    const journal = fixture();
+    settle(journal);
+    const claim = journal.startExecution(declaration.idempotencyKey);
+    const accounting = finalizedAccounting();
+    mutate(accounting);
+    const before = journal.events.length;
+    assert.throws(() => journal.finishExecution(declaration.idempotencyKey, {
+      executionAttemptId: claim.record.execution.executionAttemptId,
+      outcome: 'succeeded',
+      failureClass: null,
+      message: null,
+      outcomeHash: `sha256:${'7'.repeat(64)}`,
+      httpStatus: 200,
+      accounting,
+    }), /accounting|COGS|quote|usage|journal|credit|category/i);
+    assert.equal(journal.events.length, before);
+  }
+});
+
+test('v2 failure class matches its pending COGS hold before signing a receipt', () => {
+  const journal = fixture();
+  settle(journal);
+  const claim = journal.startExecution(declaration.idempotencyKey);
+  assert.throws(() => journal.finishExecution(declaration.idempotencyKey, {
+    executionAttemptId: claim.record.execution.executionAttemptId,
+    outcome: 'failed',
+    failureClass: 'COGS_UNKNOWN',
+    message: 'provider usage unavailable',
+    outcomeHash: null,
+    httpStatus: 500,
+    accounting: pendingFailureAccounting('UPSTREAM_PROVIDER_ERROR'),
+  }), /failure class/i);
+  assert.equal(journal.getByIdempotencyKey(declaration.idempotencyKey).execution.state, 'executing');
 });
 
 test('an unresolved settlement reconciles once by its payment reference', () => {
@@ -216,6 +396,84 @@ function temporaryAuthority(prefix = 'collar-journal-') {
   };
 }
 
+function writeLegacyV1Journal({ terminal }) {
+  const authority = temporaryAuthority('collar-legacy-v1-');
+  const keys = crypto.generateKeyPairSync('ed25519');
+  fs.writeFileSync(
+    authority.signingKeyPath,
+    keys.privateKey.export({ type: 'pkcs8', format: 'pem' }),
+    { mode: 0o600 },
+  );
+  const signer = createReceiptSigner(keys, { persistent: true });
+  const events = [];
+  let previousHash = null;
+  const append = (type, data) => {
+    const sequence = events.length + 1;
+    const unsigned = {
+      schemaVersion: 1,
+      eventId: `event-${String(sequence).padStart(8, '0')}`,
+      sequence,
+      previousHash,
+      type,
+      idempotencyKey: declaration.idempotencyKey,
+      at: new Date(Date.UTC(2026, 6, 16, 12, 0, sequence)).toISOString(),
+      data,
+      keyId: signer.keyId,
+    };
+    const eventHash = crypto.createHash('sha256').update(canonicalJson(unsigned)).digest('hex');
+    const event = { ...unsigned, eventHash, eventSignature: signer.signHash(eventHash) };
+    events.push(event);
+    previousHash = eventHash;
+  };
+  append('invocation.requested', {
+    invocationId: 'inv-legacy-v1',
+    mode: declaration.mode,
+    skill: { id: declaration.skillId, versionHash: declaration.skillVersionHash },
+    requestHash: declaration.requestHash,
+    creatorId: declaration.creatorId,
+    beneficiaryId: declaration.beneficiaryId,
+  });
+  append('payment.offered', { quote: legacyQuote });
+  if (terminal) {
+    append('payment.signed', { settlementReference, payer });
+    append('payment.settled', { settlementReference, txHash, payer });
+    append('execution.started', { executionAttemptId: 'attempt:legacy-v1' });
+    append('execution.finished', {
+      executionAttemptId: 'attempt:legacy-v1',
+      outcome: 'failed',
+      outcomeHash: null,
+      failureClass: 'LEGACY_FAILURE',
+      message: 'legacy terminal failure',
+      httpStatus: 500,
+      accounting: legacyPendingFailureAccounting(),
+    });
+  }
+  fs.writeFileSync(
+    authority.filePath,
+    `${events.map((event) => JSON.stringify(event)).join('\n')}\n`,
+    { mode: 0o600 },
+  );
+  return { ...authority, signer };
+}
+
+test('legacy v1 terminal history replays without relabeling while nonterminal v1 cannot upgrade', () => {
+  const terminalAuthority = writeLegacyV1Journal({ terminal: true });
+  const terminal = createInvocationJournal(terminalAuthority);
+  const receipt = terminal.issueReceipt(declaration.idempotencyKey);
+  assert.equal(receipt.receipt.schemaVersion, 1);
+  assert.equal(receipt.receipt.quote.executionQuote, undefined);
+  assert.ok(terminal.events.every((event) => event.schemaVersion === 1));
+  assert.equal(verifySignedReceipt(receipt, trustFor(terminal)), true);
+
+  const outstandingAuthority = writeLegacyV1Journal({ terminal: false });
+  const outstanding = createInvocationJournal(outstandingAuthority);
+  assert.throws(
+    () => outstanding.offerExternalPayment(declaration.idempotencyKey, quote),
+    /legacy nonterminal Invocation cannot be upgraded/,
+  );
+  assert.equal(outstanding.events.length, 2);
+});
+
 test('JSONL replay reconstructs a terminal record and refuses rewritten signed history', () => {
   const { filePath, signingKeyPath } = temporaryAuthority();
   const journal = createInvocationJournal({ filePath, signingKeyPath, createId: () => 'inv-persistent' });
@@ -228,9 +486,10 @@ test('JSONL replay reconstructs a terminal record and refuses rewritten signed h
     message: null,
     outcomeHash: `sha256:${'7'.repeat(64)}`,
     httpStatus: 200,
-    accounting: { grossAtomic: '250000', allocationState: 'finalized', holderCredits: [], ancestorCredits: [], journalEntries: [] },
+    accounting: finalizedAccounting(),
   });
   const original = journal.issueReceipt(declaration.idempotencyKey);
+  assert.ok(journal.events.every((event) => event.schemaVersion === 2));
   const reopened = createInvocationJournal({ filePath, signingKeyPath });
   assert.deepEqual(reopened.getByIdempotencyKey(declaration.idempotencyKey), journal.getByIdempotencyKey(declaration.idempotencyKey));
   assert.deepEqual(reopened.issueReceipt(declaration.idempotencyKey), original);
@@ -320,7 +579,7 @@ test('a receipt cannot authenticate itself and tampering invalidates it', () => 
   journal.finishExecution(declaration.idempotencyKey, {
     executionAttemptId: claim.record.execution.executionAttemptId,
     outcome: 'failed', failureClass: 'FAULT', message: 'fault', outcomeHash: null,
-    httpStatus: 500, accounting: pendingFailureAccounting(),
+    httpStatus: 500, accounting: pendingFailureAccounting('FAULT'),
   });
   const bundle = journal.issueReceipt(declaration.idempotencyKey);
   const tampered = structuredClone(bundle);
@@ -332,7 +591,7 @@ test('a receipt cannot authenticate itself and tampering invalidates it', () => 
   attacker.finishExecution(declaration.idempotencyKey, {
     executionAttemptId: attackerClaim.record.execution.executionAttemptId,
     outcome: 'failed', failureClass: 'FAULT', message: 'fault', outcomeHash: null,
-    httpStatus: 500, accounting: pendingFailureAccounting(),
+    httpStatus: 500, accounting: pendingFailureAccounting('FAULT'),
   });
   assert.equal(verifySignedReceipt(attacker.issueReceipt(declaration.idempotencyKey), trustFor(journal)), false);
 });
@@ -344,7 +603,7 @@ test('refund reverses only a terminal failed full-gross hold and issues a signed
   journal.finishExecution(declaration.idempotencyKey, {
     executionAttemptId: claim.record.execution.executionAttemptId,
     outcome: 'failed', failureClass: 'COGS_UNKNOWN', message: 'fault', outcomeHash: null,
-    httpStatus: 500, accounting: pendingFailureAccounting(),
+    httpStatus: 500, accounting: pendingFailureAccounting('COGS_UNKNOWN'),
   });
   const original = journal.issueReceipt(declaration.idempotencyKey);
   const request = {
@@ -377,7 +636,7 @@ test('refund execution is durably claimed once and ambiguous outcomes remain unr
   journal.finishExecution(declaration.idempotencyKey, {
     executionAttemptId: execution.record.execution.executionAttemptId,
     outcome: 'failed', failureClass: 'COGS_UNKNOWN', message: 'safe failure', outcomeHash: null,
-    httpStatus: 500, accounting: pendingFailureAccounting(),
+    httpStatus: 500, accounting: pendingFailureAccounting('COGS_UNKNOWN'),
   });
   journal.issueReceipt(declaration.idempotencyKey);
 
@@ -425,7 +684,7 @@ test('separate journal instances observe one durable refund claim', () => {
   first.finishExecution(declaration.idempotencyKey, {
     executionAttemptId: execution.record.execution.executionAttemptId,
     outcome: 'failed', failureClass: 'COGS_UNKNOWN', message: 'safe failure', outcomeHash: null,
-    httpStatus: 500, accounting: pendingFailureAccounting(),
+    httpStatus: 500, accounting: pendingFailureAccounting('COGS_UNKNOWN'),
   });
   first.issueReceipt(declaration.idempotencyKey);
   const second = createInvocationJournal({ filePath, signingKeyPath });

@@ -163,9 +163,13 @@ export function x402Paywall({
   facilitatorTransport,
   description = '',
   lifecycle = {},
+  quote = null,
 }) {
   const transport = requireFacilitatorTransport(facilitatorTransport);
   const canonicalPayTo = canonicalAddress(payTo);
+  if (quote !== null && typeof quote !== 'function') {
+    throw new TypeError('quote must be an injected function or null');
+  }
   const frozenOffers = new Map();
   const locallyUnresolvedSettlements = new Set();
 
@@ -187,27 +191,66 @@ export function x402Paywall({
       .update(`${c.req.method}\n${c.req.url}\n${requestBody}`)
       .digest('hex')}`;
 
-    let requirements = frozenOffers.get(idempotencyKey) ?? null;
-    if (!requirements) {
-      const recovered = await lifecycle.loadFrozenOffer?.({ idempotencyKey });
+    let frozen = frozenOffers.get(idempotencyKey) ?? null;
+    if (!frozen) {
+      let recovered = null;
+      try {
+        recovered = await lifecycle.loadFrozenOffer?.({
+          idempotencyKey,
+          paymentHeaderPresent: Boolean(paymentHeader),
+        });
+      } catch {
+        return c.json({ error: 'frozen offer recovery conflicts with authoritative state' }, 409);
+      }
       if (recovered) {
-        requirements = structuredClone(recovered);
-        frozenOffers.set(idempotencyKey, requirements);
+        if (!exactPlainObject(recovered, ['requirements', 'executionQuote'])) {
+          return c.json({ error: 'persisted frozen offer has an unsupported schema' }, 409);
+        }
+        frozen = structuredClone(recovered);
+        frozenOffers.set(idempotencyKey, frozen);
       }
     }
+    let requirements = frozen?.requirements ?? null;
+    let executionQuote = frozen?.executionQuote ?? null;
     if (requirements) {
       if (requirements.extra?.requestHash !== requestHash) {
         return c.json({ error: 'Idempotency-Key already binds a different request' }, 409);
       }
     } else {
       if (paymentHeader) return c.json({ error: 'paid retry has no prior frozen x402 offer' }, 409);
-      const priceUsdc = typeof price === 'function' ? await price(c) : price;
+      try {
+        executionQuote = quote ? structuredClone(await quote(c)) : null;
+      } catch (error) {
+        const code = typeof error?.code === 'string' && /^[A-Z][A-Z0-9_]{1,63}$/.test(error.code)
+          ? error.code
+          : 'QUOTE_REJECTED';
+        const status = code === 'REQUEST_BODY_TOO_LARGE' ? 413 : 400;
+        const message = error?.name === 'ExecutionEconomicsError'
+          ? error.message
+          : 'execution quote rejected';
+        return c.json({ error: message, code }, status);
+      }
+      if (executionQuote !== null
+          && (!exactPlainObject(executionQuote, Object.keys(executionQuote))
+            || executionQuote.schemaVersion !== 2
+            || typeof executionQuote.quoteId !== 'string'
+            || !/^sha256:[0-9a-f]{64}$/.test(executionQuote.quoteId)
+            || typeof executionQuote.grossAtomic !== 'string'
+            || !/^[1-9]\d*$/.test(executionQuote.grossAtomic))) {
+        return c.json({ error: 'execution quote rejected', code: 'QUOTE_SCHEMA' }, 400);
+      }
+      const priceUsdc = executionQuote == null
+        ? (typeof price === 'function' ? await price(c) : price)
+        : null;
+      const amountAtomic = executionQuote == null
+        ? usdcToAtomic(priceUsdc)
+        : executionQuote.grossAtomic;
       const issuedAt = new Date().toISOString();
       const expiresAt = new Date(Date.now() + 60_000).toISOString();
       const base = {
         scheme: 'exact',
         network: NETWORK,
-        maxAmountRequired: usdcToAtomic(priceUsdc),
+        maxAmountRequired: amountAtomic,
         resource: c.req.url,
         description,
         mimeType: 'application/json',
@@ -215,7 +258,7 @@ export function x402Paywall({
         maxTimeoutSeconds: 60,
         asset: USDC_ADDRESS,
       };
-      const quoteId = `sha256:${crypto.createHash('sha256')
+      const quoteId = executionQuote?.quoteId ?? `sha256:${crypto.createHash('sha256')
         .update(JSON.stringify({ ...base, requestHash, issuedAt, expiresAt }))
         .digest('hex')}`;
       requirements = {
@@ -229,7 +272,8 @@ export function x402Paywall({
           expiresAt,
         },
       };
-      frozenOffers.set(idempotencyKey, requirements);
+      frozen = { requirements, executionQuote };
+      frozenOffers.set(idempotencyKey, structuredClone(frozen));
     }
 
     if (!paymentHeader) {
@@ -238,6 +282,7 @@ export function x402Paywall({
           idempotencyKey,
           requirements: structuredClone(requirements),
           expiresAt: requirements.extra.expiresAt,
+          executionQuote: structuredClone(executionQuote),
         });
       } catch {
         return c.json({ error: 'Invocation offer conflicts with authoritative state' }, 409);
@@ -280,6 +325,7 @@ export function x402Paywall({
         settlementReference,
         payer,
         requirements: structuredClone(requirements),
+        executionQuote: structuredClone(executionQuote),
       });
     } catch {
       return c.json({ error: 'paid retry conflicts with authoritative Invocation state' }, 409);
@@ -416,6 +462,7 @@ export function x402Paywall({
           payer: settledPayer,
           amountAtomic: requirements.maxAmountRequired,
           requirements: structuredClone(requirements),
+          executionQuote: structuredClone(executionQuote),
         });
       } catch {
         locallyUnresolvedSettlements.add(idempotencyKey);
@@ -438,7 +485,9 @@ export function x402Paywall({
       txHash: settledTxHash,
       payer: settledPayer,
       amountAtomic: requirements.maxAmountRequired,
-      requirements,
+      requirements: structuredClone(requirements),
+      executionQuote: structuredClone(executionQuote),
+      legacySchemaVersion: priorDecision?.legacySchemaVersion ?? null,
     });
     await next();
     c.res.headers.set('X-PAYMENT-RESPONSE', jsonToB64(paymentResponseEvidence({

@@ -494,8 +494,18 @@ export function assertReceiptMatchesPayment(bundle, expected) {
   const statusSemanticsMatch = executionState === 'succeeded'
     ? httpStatus >= 200 && httpStatus < 400
     : Number.isSafeInteger(httpStatus) && httpStatus >= 400 && httpStatus <= 599;
+  const legacyReceipt = receipt?.schemaVersion === 1
+    && receipt.quote?.schemaVersion === undefined
+    && receipt.quote?.executionQuote === undefined;
+  const cogsAwareReceipt = receipt?.schemaVersion === 2
+    && receipt.quote?.schemaVersion === 2
+    && receipt.quote?.executionQuote?.schemaVersion === 2
+    && receipt.quote.executionQuote.quoteId === expected.quoteId
+    && receipt.quote.executionQuote.grossAtomic === expected.amountAtomic
+    && receipt.accounting?.schemaVersion === 2
+    && receipt.accounting?.quoteId === expected.quoteId;
   if (!receipt
-      || receipt.schemaVersion !== 1
+      || !(legacyReceipt || cogsAwareReceipt)
       || receipt.mode !== 'external'
       || receipt.idempotencyKey !== expected.idempotencyKey
       || receipt.requestHash !== expected.requestHash

@@ -43,7 +43,7 @@ const expected = Object.freeze({
 
 function receiptFor(overrides = {}) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     revision: 1,
     supersedesReceiptHash: null,
     invocationId: 'inv-current',
@@ -53,12 +53,14 @@ function receiptFor(overrides = {}) {
     requestHash: expected.requestHash,
     wielderId: expected.payer,
     quote: {
+      schemaVersion: 2,
       requestHash: expected.requestHash,
       quoteId: expected.quoteId,
       amountAtomic: expected.amountAtomic,
       currency: 'USDC',
       network: 'base-sepolia',
       resource: expected.resource,
+      executionQuote: { schemaVersion: 2, quoteId: expected.quoteId, grossAtomic: expected.amountAtomic },
     },
     payment: {
       state: 'settled',
@@ -68,7 +70,12 @@ function receiptFor(overrides = {}) {
       refundAmountAtomic: null,
     },
     execution: { state: 'succeeded', httpStatus: expected.httpStatus },
-    accounting: { grossAtomic: expected.amountAtomic, allocationState: 'finalized' },
+    accounting: {
+      schemaVersion: 2,
+      quoteId: expected.quoteId,
+      grossAtomic: expected.amountAtomic,
+      allocationState: 'finalized',
+    },
     ...overrides,
   };
 }
@@ -116,6 +123,14 @@ test('a valid signature is insufficient when receipt semantics do not match the 
   }), true);
   assert.equal(assertReceiptMatchesPayment(valid, expected).invocationId, 'inv-current');
 
+  const legacyReceipt = receiptFor({
+    schemaVersion: 1,
+    quote: Object.fromEntries(Object.entries(receiptFor().quote)
+      .filter(([key]) => !['schemaVersion', 'executionQuote'].includes(key))),
+    accounting: { grossAtomic: expected.amountAtomic, allocationState: 'finalized' },
+  });
+  assert.equal(assertReceiptMatchesPayment(signReceipt(signer, legacyReceipt), expected).schemaVersion, 1);
+
   const stale = signReceipt(signer, receiptFor({ idempotencyKey: 'idem-previous' }));
   assert.equal(verifySignedReceipt(stale, {
     publicKeyPem: signer.publicKeyPem,
@@ -129,6 +144,8 @@ test('a valid signature is insufficient when receipt semantics do not match the 
     { execution: { state: 'succeeded', httpStatus: 500 } },
     { accounting: { grossAtomic: '249999', allocationState: 'finalized' } },
     { quote: { ...receiptFor().quote, resource: 'http://evil.test/invoke/skill-current' } },
+    { quote: { ...receiptFor().quote, executionQuote: { ...receiptFor().quote.executionQuote, quoteId: `sha256:${'9'.repeat(64)}` } } },
+    { quote: { ...receiptFor().quote, executionQuote: undefined } },
   ]) {
     const bundle = signReceipt(signer, receiptFor(mutation));
     assert.throws(() => assertReceiptMatchesPayment(bundle, expected), /does not semantically match/);

@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { assertExecutionQuote } from './execution-economics.mjs';
+
 const TERMINAL_EXECUTION = new Set(['succeeded', 'failed', 'cancelled']);
 const CHECKOUT_ROOT = fs.realpathSync(fileURLToPath(new URL('../../../', import.meta.url)));
 const LEASE_ID = /^[0-9a-f]{32}$/;
@@ -418,7 +420,7 @@ function receiptPayload(record) {
   const payment = copy(record.payment);
   delete payment.refundExecution;
   return {
-    schemaVersion: 1,
+    schemaVersion: record.schemaVersion,
     revision: record.receiptHistory.length + 1,
     supersedesReceiptHash: record.receiptHistory.at(-1)?.receiptHash ?? null,
     sequence: record.lastSequence,
@@ -491,11 +493,24 @@ export function createInvocationJournal({
   let nextSequence = 1;
   let headHash = null;
 
-  function validateQuote(quote) {
-    exactKeys(quote, [
+  function validateQuote(quote, schemaVersion) {
+    const legacyFields = [
       'quoteId', 'amountAtomic', 'currency', 'network', 'asset', 'payTo', 'resource',
       'requestHash', 'requirementsHash', 'expiresAt', 'requirements',
-    ], 'payment quote');
+    ];
+    if (schemaVersion === 1) {
+      exactKeys(quote, legacyFields, 'legacy payment quote');
+    } else if (schemaVersion === 2) {
+      exactKeys(quote, ['schemaVersion', ...legacyFields, 'executionQuote'], 'payment quote');
+      if (quote.schemaVersion !== 2) throw new Error('payment quote must use schema version 2');
+      assertExecutionQuote(quote.executionQuote);
+      if (quote.executionQuote.quoteId !== quote.quoteId
+          || quote.executionQuote.grossAtomic !== quote.amountAtomic) {
+        throw new Error('execution quote does not match x402 quote identity and amount');
+      }
+    } else {
+      throw new Error('payment quote schema version is unsupported');
+    }
     requireText(quote.quoteId, 'quoteId');
     requireAtomicString(quote.amountAtomic, 'amountAtomic');
     if (quote.currency !== 'USDC') throw new Error("currency must be 'USDC'");
@@ -525,12 +540,266 @@ export function createInvocationJournal({
     }
   }
 
+  const V2_ACCOUNTING_FIELDS = [
+    'schemaVersion', 'quoteId', 'allocationPolicy', 'grossAtomic', 'executionCostAtomic',
+    'settlementCostAtomic', 'protocolFeeAtomic', 'royaltyPoolAtomic', 'refundReserveAtomic',
+    'contributionMarginAtomic', 'allocationState', 'holderCredits', 'ancestorCredits',
+    'journalEntries', 'executionCogs',
+  ];
+
+  function validateV2Usage(usage) {
+    exactKeys(usage, ['schemaVersion', 'model', 'inputTokens', 'outputTokens'], 'provider usage');
+    if (usage.schemaVersion !== 2 || typeof usage.model !== 'string' || !usage.model
+        || !Number.isSafeInteger(usage.inputTokens) || usage.inputTokens < 0
+        || !Number.isSafeInteger(usage.outputTokens) || usage.outputTokens < 0) {
+      throw new Error('provider usage must use strict schema version 2');
+    }
+  }
+
+  function validateV2Credits(credits, kind) {
+    if (!Array.isArray(credits)) throw new Error(`${kind} Royalty credits must be an array`);
+    for (const credit of credits) {
+      exactKeys(credit, ['recipientId', 'viaSkillId', 'depth', 'kind', 'amountAtomic'], `${kind} Royalty credit`);
+      requireText(credit.recipientId, 'Royalty recipientId');
+      requireText(credit.viaSkillId, 'Royalty viaSkillId');
+      if (!Number.isSafeInteger(credit.depth) || credit.depth < 0 || credit.kind !== kind) {
+        throw new Error(`${kind} Royalty credit identity is invalid`);
+      }
+      requireAtomicString(credit.amountAtomic, 'Royalty credit amountAtomic');
+    }
+  }
+
+  function validateV2JournalEntries(entries) {
+    if (!Array.isArray(entries)) throw new Error('accounting journalEntries must be an array');
+    for (const entry of entries) {
+      exactKeys(entry, ['category', 'debitAccountId', 'creditAccountId', 'amountAtomic'], 'accounting journal entry');
+      requireText(entry.category, 'accounting category');
+      requireText(entry.debitAccountId, 'accounting debitAccountId');
+      requireText(entry.creditAccountId, 'accounting creditAccountId');
+      requireAtomicString(entry.amountAtomic, 'accounting amountAtomic');
+    }
+  }
+
+  function validateV2Accounting(record, accounting) {
+    exactKeys(accounting, V2_ACCOUNTING_FIELDS, 'v2 execution accounting');
+    if (accounting.schemaVersion !== 2
+        || accounting.quoteId !== record.quote.quoteId
+        || accounting.grossAtomic !== record.quote.amountAtomic) {
+      throw new Error('v2 accounting does not match the frozen quote and gross');
+    }
+    for (const field of [
+      'grossAtomic', 'executionCostAtomic', 'settlementCostAtomic', 'protocolFeeAtomic',
+      'royaltyPoolAtomic', 'refundReserveAtomic', 'contributionMarginAtomic',
+    ]) requireAtomicString(accounting[field], `accounting.${field}`);
+    validateV2Credits(accounting.holderCredits, 'holder');
+    validateV2Credits(accounting.ancestorCredits, 'ancestor');
+    validateV2JournalEntries(accounting.journalEntries);
+
+    const cogs = accounting.executionCogs;
+    exactKeys(cogs, [
+      'schemaVersion', 'status', 'actualAtomic', 'chargedAtomic', 'quotedWorstCaseAtomic',
+      'accruedOverrunAtomic', 'catalogVersion', 'catalogDigest', 'usage', 'failureClass', 'reason',
+    ], 'execution COGS');
+    const executionQuote = record.quote.executionQuote;
+    if (cogs.schemaVersion !== 2
+        || cogs.quotedWorstCaseAtomic !== executionQuote.worstCaseExecutionCostAtomic
+        || cogs.catalogVersion !== executionQuote.catalogVersion
+        || cogs.catalogDigest !== executionQuote.catalogDigest) {
+      throw new Error('execution COGS does not match the frozen quote catalog');
+    }
+    requireAtomicString(cogs.quotedWorstCaseAtomic, 'executionCogs.quotedWorstCaseAtomic');
+    requireAtomicString(cogs.accruedOverrunAtomic, 'executionCogs.accruedOverrunAtomic');
+
+    const gross = BigInt(accounting.grossAtomic);
+    if (accounting.allocationState === 'finalized') {
+      if (accounting.allocationPolicy !== 'lrp-per-hop-v1'
+          || cogs.status !== 'known' || cogs.actualAtomic === null
+          || cogs.chargedAtomic !== cogs.actualAtomic || cogs.usage === null
+          || cogs.failureClass !== null || cogs.reason !== null
+          || cogs.accruedOverrunAtomic !== '0') {
+        throw new Error('finalized accounting requires known charged COGS and no failure');
+      }
+      requireAtomicString(cogs.actualAtomic, 'executionCogs.actualAtomic');
+      validateV2Usage(cogs.usage);
+      if (cogs.usage.model !== executionQuote.model
+          || cogs.usage.inputTokens > executionQuote.maxInputTokens
+          || cogs.usage.outputTokens > executionQuote.maxOutputTokens) {
+        throw new Error('finalized accounting usage exceeds the frozen execution quote');
+      }
+      if (BigInt(cogs.actualAtomic) > BigInt(cogs.quotedWorstCaseAtomic)) {
+        throw new Error('finalized accounting COGS exceeds the frozen quote reserve');
+      }
+      if (accounting.executionCostAtomic !== cogs.actualAtomic
+          || accounting.settlementCostAtomic !== executionQuote.settlementCostAtomic
+          || accounting.protocolFeeAtomic !== executionQuote.protocolFeeAtomic
+          || accounting.refundReserveAtomic !== executionQuote.refundReserveAtomic
+          || accounting.contributionMarginAtomic !== accounting.protocolFeeAtomic) {
+        throw new Error('finalized accounting costs or contribution margin do not match the frozen quote');
+      }
+      const components = [
+        'executionCostAtomic', 'settlementCostAtomic', 'protocolFeeAtomic',
+        'royaltyPoolAtomic', 'refundReserveAtomic',
+      ].reduce((sum, field) => sum + BigInt(accounting[field]), 0n);
+      const journalTotal = accounting.journalEntries
+        .reduce((sum, entry) => sum + BigInt(entry.amountAtomic), 0n);
+      const holderTotal = accounting.holderCredits
+        .reduce((sum, credit) => sum + BigInt(credit.amountAtomic), 0n);
+      const ancestorTotal = accounting.ancestorCredits
+        .reduce((sum, credit) => sum + BigInt(credit.amountAtomic), 0n);
+      if (components !== gross || journalTotal !== gross
+          || holderTotal + ancestorTotal !== BigInt(accounting.royaltyPoolAtomic)) {
+        throw new Error('finalized accounting must conserve gross and the Royalty pool exactly');
+      }
+      const categoryRows = new Map();
+      for (const entry of accounting.journalEntries) {
+        if (entry.debitAccountId !== 'wielder:external-gross') {
+          throw new Error('finalized accounting journal must debit external gross');
+        }
+        const rows = categoryRows.get(entry.category) ?? [];
+        rows.push(entry);
+        categoryRows.set(entry.category, rows);
+      }
+      const expectedCategories = new Map([
+        ['execution-cogs', {
+          amountAtomic: accounting.executionCostAtomic,
+          creditAccountId: 'provider:execution',
+        }],
+        ['settlement-cogs', {
+          amountAtomic: accounting.settlementCostAtomic,
+          creditAccountId: 'provider:settlement',
+        }],
+        ['protocol-fee', {
+          amountAtomic: accounting.protocolFeeAtomic,
+          creditAccountId: 'protocol:treasury',
+        }],
+        ['refund-reserve', {
+          amountAtomic: accounting.refundReserveAtomic,
+          creditAccountId: 'reserve:refund',
+        }],
+      ]);
+      for (const [category, expected] of expectedCategories) {
+        const rows = categoryRows.get(category) ?? [];
+        if (rows.length !== 1
+            || rows[0].amountAtomic !== expected.amountAtomic
+            || rows[0].creditAccountId !== expected.creditAccountId) {
+          throw new Error(`finalized accounting category '${category}' does not match its quoted destination`);
+        }
+      }
+      if ([...categoryRows.keys()].some((category) => (
+            !expectedCategories.has(category)
+            && !['royalty-holder', 'royalty-ancestor'].includes(category)
+          ))) {
+        throw new Error('finalized accounting journal has invalid Royalty categories');
+      }
+      const expectedRoyaltyRows = [
+        ...accounting.holderCredits.map((credit) => ({
+          category: 'royalty-holder',
+          creditAccountId: `royalty:${credit.recipientId}`,
+          amountAtomic: credit.amountAtomic,
+        })),
+        ...accounting.ancestorCredits.map((credit) => ({
+          category: 'royalty-ancestor',
+          creditAccountId: `royalty:${credit.recipientId}`,
+          amountAtomic: credit.amountAtomic,
+        })),
+      ];
+      const actualRoyaltyRows = [
+        ...(categoryRows.get('royalty-holder') ?? []),
+        ...(categoryRows.get('royalty-ancestor') ?? []),
+      ];
+      const rowKey = (row) => JSON.stringify([
+        row.category, row.creditAccountId, row.amountAtomic,
+      ]);
+      const rowCounts = (rows) => rows.reduce((counts, row) => {
+        const key = rowKey(row);
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+        return counts;
+      }, new Map());
+      const expectedRows = rowCounts(expectedRoyaltyRows);
+      const actualRows = rowCounts(actualRoyaltyRows);
+      if (expectedRoyaltyRows.length !== actualRoyaltyRows.length
+          || expectedRows.size !== actualRows.size
+          || [...expectedRows].some(([key, count]) => actualRows.get(key) !== count)) {
+        throw new Error('finalized accounting Royalty journal does not match signed credits');
+      }
+      return;
+    }
+
+    if (accounting.allocationState !== 'pending_cogs_reconciliation'
+        || accounting.allocationPolicy !== null
+        || ['executionCostAtomic', 'settlementCostAtomic', 'protocolFeeAtomic',
+          'royaltyPoolAtomic', 'refundReserveAtomic', 'contributionMarginAtomic']
+          .some((field) => accounting[field] !== '0')
+        || accounting.holderCredits.length !== 0 || accounting.ancestorCredits.length !== 0
+        || accounting.journalEntries.length !== 1) {
+      throw new Error('pending accounting must hold full gross with no finalized Royalty claims');
+    }
+    const [hold] = accounting.journalEntries;
+    if (hold.category !== 'unresolved-execution-accounting'
+        || hold.debitAccountId !== 'wielder:external-gross'
+        || hold.creditAccountId !== 'hold:execution-accounting-reconciliation'
+        || hold.amountAtomic !== accounting.grossAtomic) {
+      throw new Error('pending accounting requires one exact full-gross hold');
+    }
+    if (typeof cogs.failureClass !== 'string'
+        || !/^[A-Z][A-Z0-9_]{1,63}$/.test(cogs.failureClass)
+        || typeof cogs.reason !== 'string' || !cogs.reason) {
+      throw new Error('pending execution COGS requires a stable failure class and reason');
+    }
+    if (cogs.status === 'unknown') {
+      if (cogs.actualAtomic !== null || cogs.chargedAtomic !== null
+          || cogs.usage !== null || cogs.accruedOverrunAtomic !== '0') {
+        throw new Error('unknown COGS must remain null rather than zero');
+      }
+      return;
+    }
+    if (cogs.status !== 'known' || cogs.actualAtomic === null
+        || cogs.chargedAtomic !== null || cogs.usage === null) {
+      throw new Error('pending known COGS has invalid charged or usage fields');
+    }
+    requireAtomicString(cogs.actualAtomic, 'executionCogs.actualAtomic');
+    validateV2Usage(cogs.usage);
+    const expectedOverrun = BigInt(cogs.actualAtomic) > BigInt(cogs.quotedWorstCaseAtomic)
+      ? BigInt(cogs.actualAtomic) - BigInt(cogs.quotedWorstCaseAtomic)
+      : 0n;
+    if (cogs.accruedOverrunAtomic !== expectedOverrun.toString()) {
+      throw new Error('pending known COGS accrued overrun is inconsistent');
+    }
+  }
+
+  function validateV2ExecutionFinished(record, data) {
+    if (data.outcome === 'succeeded') {
+      if (!/^sha256:[0-9a-f]{64}$/.test(String(data.outcomeHash ?? ''))
+          || data.failureClass !== null || data.message !== null
+          || data.httpStatus < 200 || data.httpStatus >= 400
+          || data.accounting?.allocationState !== 'finalized') {
+        throw new Error('v2 success requires a hash, success status, finalized accounting, and no failure message');
+      }
+    } else if (data.outcome === 'failed') {
+      if (data.outcomeHash !== null
+          || typeof data.failureClass !== 'string' || !/^[A-Z][A-Z0-9_]{1,63}$/.test(data.failureClass)
+          || typeof data.message !== 'string' || !data.message
+          || data.httpStatus < 400 || data.httpStatus > 599
+          || data.accounting?.allocationState !== 'pending_cogs_reconciliation') {
+        throw new Error('v2 failure requires a stable failure, failure status, and pending accounting');
+      }
+    } else {
+      throw new Error('v2 execution.finished supports succeeded or failed outcomes only');
+    }
+    if (data.outcome === 'failed'
+        && data.accounting?.executionCogs?.failureClass !== data.failureClass) {
+      throw new Error('v2 failure class must match its pending COGS accounting');
+    }
+    validateV2Accounting(record, data.accounting);
+  }
+
   function validateEventForApply(event) {
     exactKeys(event, [
       'schemaVersion', 'eventId', 'sequence', 'previousHash', 'type', 'idempotencyKey',
       'at', 'data', 'keyId', 'eventHash', 'eventSignature',
     ], 'journal event');
-    if (event.schemaVersion !== 1 || event.eventId !== `event-${String(event.sequence).padStart(8, '0')}`) {
+    if (![1, 2].includes(event.schemaVersion)
+        || event.eventId !== `event-${String(event.sequence).padStart(8, '0')}`) {
       throw new Error('journal event schema or identifier is invalid');
     }
     if (!Number.isSafeInteger(event.sequence) || event.sequence < 1
@@ -541,6 +810,10 @@ export function createInvocationJournal({
     if (!dataKeys) throw new Error(`unknown journal event '${event.type}'`);
     exactKeys(event.data, dataKeys, `${event.type}.data`);
     const record = records.get(event.idempotencyKey);
+    if (event.type !== 'invocation.requested' && record
+        && event.schemaVersion !== record.schemaVersion) {
+      throw new Error('journal event schema version cannot change within one Invocation');
+    }
     switch (event.type) {
       case 'invocation.requested':
         if (record) throw new Error(`duplicate request event for '${event.idempotencyKey}'`);
@@ -551,7 +824,7 @@ export function createInvocationJournal({
         if (!record || record.execution.state !== 'requested' || record.payment.state !== null) {
           throw new Error('payment.offered requires one unquoted requested Invocation');
         }
-        validateQuote(event.data.quote);
+        validateQuote(event.data.quote, event.schemaVersion);
         break;
       case 'payment.signed':
         if (!record || record.payment.state !== 'offered') throw new Error('payment.signed requires offered payment');
@@ -612,6 +885,7 @@ export function createInvocationJournal({
             || event.data.httpStatus < 100 || event.data.httpStatus > 599) {
           throw new Error('execution HTTP status is invalid');
         }
+        if (event.schemaVersion === 2) validateV2ExecutionFinished(record, event.data);
         break;
       case 'receipt.issued':
         if (!record || !TERMINAL_EXECUTION.has(record.execution.state) || record.receipt) {
@@ -636,7 +910,7 @@ export function createInvocationJournal({
     switch (event.type) {
       case 'invocation.requested':
         record = {
-          schemaVersion: 1,
+          schemaVersion: event.schemaVersion,
           invocationId: event.data.invocationId,
           idempotencyKey: event.idempotencyKey,
           mode: event.data.mode,
@@ -811,7 +1085,9 @@ export function createInvocationJournal({
         throw error;
       }
       const unsigned = {
-        schemaVersion: 1,
+        schemaVersion: type === 'invocation.requested'
+          ? 2
+          : (records.get(idempotencyKey)?.schemaVersion ?? 2),
         eventId: `event-${String(nextSequence).padStart(8, '0')}`,
         sequence: nextSequence,
         previousHash: headHash,
@@ -896,6 +1172,7 @@ export function createInvocationJournal({
     const record = requireRecord(records, key);
     const requirements = copy(input.requirements);
     const frozenQuote = {
+      schemaVersion: 2,
       quoteId: requireText(input.quoteId, 'quoteId'),
       amountAtomic: requireAtomicString(input.amountAtomic, 'amountAtomic'),
       currency: input.currency === 'USDC' ? 'USDC' : (() => { throw new Error("currency must be 'USDC'"); })(),
@@ -907,8 +1184,12 @@ export function createInvocationJournal({
       requirementsHash: requireText(input.requirementsHash, 'requirementsHash'),
       expiresAt: requireText(input.expiresAt, 'expiresAt'),
       requirements,
+      executionQuote: copy(input.executionQuote),
     };
-    validateQuote(frozenQuote);
+    if (record.schemaVersion !== 2) {
+      throw new Error('legacy nonterminal Invocation cannot be upgraded to execution quote schema v2');
+    }
+    validateQuote(frozenQuote, record.schemaVersion);
     if (record.quote) {
       if (!same(record.quote, frozenQuote)) throw new Error('idempotency key already binds a different quote');
       return copy(record);
@@ -1126,16 +1407,17 @@ export function createInvocationJournal({
   function finishExecution(key, input) {
     refreshFromAuthority();
     const record = requireRecord(records, key);
-    const outcome = requireText(input.outcome, 'outcome');
+    const captured = copy(input);
+    const outcome = requireText(captured.outcome, 'outcome');
     if (!TERMINAL_EXECUTION.has(outcome)) throw new Error(`unsupported execution outcome '${outcome}'`);
     const data = {
-      executionAttemptId: requireText(input.executionAttemptId ?? record.execution.executionAttemptId, 'executionAttemptId'),
+      executionAttemptId: requireText(captured.executionAttemptId ?? record.execution.executionAttemptId, 'executionAttemptId'),
       outcome,
-      outcomeHash: input.outcomeHash ?? null,
-      failureClass: input.failureClass ?? null,
-      message: input.message ?? null,
-      httpStatus: input.httpStatus,
-      accounting: input.accounting ?? null,
+      outcomeHash: captured.outcomeHash ?? null,
+      failureClass: captured.failureClass ?? null,
+      message: captured.message ?? null,
+      httpStatus: captured.httpStatus,
+      accounting: captured.accounting ?? null,
     };
     if (TERMINAL_EXECUTION.has(record.execution.state)) {
       const terminal = { ...record.execution, accounting: record.accounting };
