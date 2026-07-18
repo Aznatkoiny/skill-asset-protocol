@@ -108,6 +108,7 @@ try {
   eq(report.fidelity.rubricVersion, 'contract-v1', 'versioned deterministic rubric recorded');
   eq(report.fidelity.target.absoluteScore, 1, 'known literal target score');
   eq(report.fidelity.clone.absoluteScore, 0.9, 'known literal good-clone score');
+  eq(report.benchmark.verdict, 'VALID_BENCHMARK', 'passing target admits interpretation');
   ok(report.fidelity.clone.passedThreshold && report.fidelity.clone.criticalGatePass, 'good clone clears 0.80 and critical gates');
   eq(report.fidelity.retention, 0.9, 'clone/target retention secondary metric');
   eq(report.fidelity.badClone.absoluteScore, 0.2, 'known literal bad-clone score');
@@ -168,7 +169,10 @@ try {
   eq(unknown.report.economics.buildToAcquisition, null, 'unknown B propagates to B/A');
   eq(unknown.report.usage.normalized.inputTokens, null, 'missing raw input usage keeps normalized input total unknown');
   eq(unknown.report.usage.normalized.providerCostUsd, null, 'missing request cost keeps normalized provider total unknown');
-  eq(unknown.report.fidelity.retention, null, 'zero target score makes retention undefined');
+  eq(unknown.report.benchmark.verdict, 'INVALID_BENCHMARK_TARGET_FAILED', 'failed target invalidates benchmark');
+  eq(unknown.report.fidelity.retention, null, 'invalid target suppresses retention');
+  eq(unknown.report.economics.breakEvenInvocations, null, 'invalid target suppresses break-even');
+  ok(unknown.markdownReport.includes('Clone quality, fidelity defense, moat, and break-even conclusions are suppressed'), 'invalid report states suppression');
   ok(unknown.markdownReport.includes('unknown'), 'Markdown renders unknown values without crashing');
 
   const replayTranscript = JSON.parse(fs.readFileSync(path.join(here, 'fixtures/mock-transcript.json'), 'utf8'));

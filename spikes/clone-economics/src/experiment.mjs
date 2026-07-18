@@ -7,6 +7,7 @@ import { MockLlmAdapter, LiveAnthropicAdapter } from './adapters.mjs';
 import { computeEconomics } from './economics.mjs';
 import { renderJson, renderMarkdown } from './reports.mjs';
 import { FIDELITY_THRESHOLD, RUBRIC_VERSION, scoreEvaluation } from './scoring.mjs';
+import { assessBenchmark } from './validity.mjs';
 
 const srcDir = path.dirname(fileURLToPath(import.meta.url));
 const spikeRoot = path.resolve(srcDir, '..');
@@ -158,6 +159,10 @@ export async function runExperiment(options = {}) {
 
   const targetScore = scoreEvaluation(targetOutputs, heldoutFixtures);
   const cloneScore = scoreEvaluation(cloneOutputs, heldoutFixtures);
+  const benchmark = assessBenchmark({
+    threshold: FIDELITY_THRESHOLD,
+    target: targetScore,
+  });
   const badCloneScore = scoreEvaluation(badOutputs, heldoutFixtures);
   const updatedTargetScore = scoreEvaluation(targetV2Outputs, v2Fixtures);
   const frozenCloneScore = scoreEvaluation(cloneV2Outputs, v2Fixtures);
@@ -198,7 +203,12 @@ export async function runExperiment(options = {}) {
     : `MIXED — provider execution measured; usage/cost ${providerUsageEvidence}; paid-pair acquisition MODELED; fixtures SYNTHETIC`;
   const claimStatus = mode === 'mock'
     ? 'LIVE RUN NOT EXECUTED — no key/explicit opt-in; no measured clone-economics result.'
-    : `LIVE RUN EXECUTED — provider calls executed; usage/cost ${providerUsageEvidence}; paid-pair acquisition remains MODELED unless separately settled.`;
+    : benchmark.valid
+      ? `LIVE RUN EXECUTED — provider calls executed; usage/cost ${providerUsageEvidence}; paid-pair acquisition remains MODELED unless separately settled.`
+      : benchmark.verdict;
+  const economicsEvidenceLabel = mode === 'mock'
+    ? 'SYNTHETIC + MODELED'
+    : `Provider cost ${providerUsageEvidence}; acquisition MODELED`;
 
   const report = {
     schemaVersion: 1,
@@ -218,13 +228,16 @@ export async function runExperiment(options = {}) {
       targetAndCloneSharedContextHash: sha256(JSON.stringify(sharedExecutor)),
     },
     generatedClone: { sha256: sha256(cloneSkillMd), validSkillMd: true },
+    benchmark,
     fidelity: {
       evidenceLabel: mode === 'mock' ? 'SYNTHETIC' : 'MEASURED AGAINST DETERMINISTIC RUBRIC',
       rubricVersion: RUBRIC_VERSION,
       threshold: FIDELITY_THRESHOLD,
       target: targetScore,
       clone: cloneScore,
-      retention: targetScore.absoluteScore > 0 ? rounded(cloneScore.absoluteScore / targetScore.absoluteScore) : null,
+      retention: benchmark.cloneConclusionAllowed && targetScore.absoluteScore > 0
+        ? rounded(cloneScore.absoluteScore / targetScore.absoluteScore)
+        : null,
       badClone: badCloneScore,
       scoreDeterminism: { byteIdentical: scoringA === scoringB },
     },
@@ -238,7 +251,30 @@ export async function runExperiment(options = {}) {
       staleFidelityDelta: rounded(updatedTargetScore.absoluteScore - frozenCloneScore.absoluteScore),
       statement: evolutionOverlay.statement,
     },
-    economics: { evidenceLabel: mode === 'mock' ? 'SYNTHETIC + MODELED' : `Provider cost ${providerUsageEvidence}; acquisition MODELED`, ...economics },
+    economics: {
+      evidenceLabel: economicsEvidenceLabel,
+      acquisitionFormula: economics.acquisitionFormula,
+      acquisitionModeledUsd: economics.acquisitionModeledUsd,
+      distillationProviderUsd: economics.distillationProviderUsd,
+      tuningEvaluationUsd: economics.tuningEvaluationUsd,
+      tuningNote: economics.tuningNote,
+      deployCostUsd: economics.deployCostUsd,
+      laborCostUsd: economics.laborCostUsd,
+      laborCostTreatment: economics.laborCostTreatment,
+      attackerBuildUsd: economics.attackerBuildUsd,
+      measurementEvaluationUsd: economics.measurementEvaluationUsd,
+      evaluationExcludedFromBuild: economics.evaluationExcludedFromBuild,
+      distillationToAcquisition: economics.distillationToAcquisition,
+      buildToAcquisition: economics.buildToAcquisition,
+      breakEvenInvocations: benchmark.economicsConclusionAllowed
+        ? economics.breakEvenInvocations
+        : null,
+      cloneServingCostUsd: economics.cloneServingCostUsd,
+      providerCostsNotAddedToAcquisition: economics.providerCostsNotAddedToAcquisition,
+      providerCostBreakdown: economics.providerCostBreakdown,
+      zeroPriceProbe: economics.zeroPriceProbe,
+      conclusionSuppressed: !benchmark.economicsConclusionAllowed,
+    },
     usage: { evidenceLabel: mode === 'mock' ? 'SYNTHETIC' : `Provider usage ${providerUsageEvidence}`, raw: adapter.records, normalized: normalizedUsage(adapter.records) },
     pricing: { evidenceLabel: mode === 'mock' ? 'SYNTHETIC' : 'OPERATOR-SUPPLIED', ...adapter.pricing },
     timing: {
