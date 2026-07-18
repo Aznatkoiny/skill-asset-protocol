@@ -9,6 +9,7 @@ import {
   parseSettlementMetricEvent,
   rankEligibleSkills,
 } from '../src/metrics.mjs';
+import { renderRegistryReport } from '../src/report.mjs';
 
 const fixtureUrl = new URL('../fixtures/settlements.json', import.meta.url);
 const registryUrl = new URL('../fixtures/verified-billing-registry.json', import.meta.url);
@@ -190,4 +191,32 @@ test('ranker is deterministic and leaves caller arrays untouched', () => {
   assert.deepEqual(ranked.map((metric) => metric.skillId), ['alpha-skill', 'ledger-recon']);
   assert.deepEqual(input.map((metric) => metric.skillId), ['ledger-recon', 'alpha-skill']);
   assert.ok(Object.isFrozen(ranked));
+});
+
+test('report separates settlement-verifiable metrics from unsupported inferences', () => {
+  const metrics = computeSkillMetrics(events, { classifier });
+  const report = renderRegistryReport([metrics]);
+  for (const heading of [
+    'Total settlements',
+    'Successful Invocations',
+    'Settled failures',
+    'Unresolved settlements',
+    'Refunded settlements',
+    'Unique independent Beneficiaries',
+    'Refund-adjusted net',
+    'Independent net',
+    'Independence confidence',
+    'Registry eligibility',
+    'Exclusions',
+  ]) {
+    assert.match(report, new RegExp(heading));
+  }
+  assert.match(report, /settlement-verifiable/);
+  const forbiddenClaims = new RegExp([
+    `un${'fakeable'}`,
+    `proof of ${'demand'}`,
+    `proves ${'quality'}`,
+    `supply-chain ${'safety'}`,
+  ].join('|'), 'i');
+  assert.doesNotMatch(report, forbiddenClaims);
 });
