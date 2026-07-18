@@ -1,4 +1,5 @@
-import { lstat, readFile, realpath, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { open, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 
 import { normalizeRepositoryUrl } from "./attestations";
@@ -15,21 +16,33 @@ interface FileMetadata {
   isSymbolicLink(): boolean;
   mode: number;
   uid: number;
+  dev?: number;
+  ino?: number;
+}
+
+interface SecureReadHandle {
+  stat(): Promise<FileMetadata>;
+  readFile(): Promise<string>;
+  close(): Promise<void>;
 }
 
 export interface AttestationConfigFileSystem {
-  lstat(path: string): Promise<FileMetadata>;
-  stat(path: string): Promise<FileMetadata>;
   realpath(path: string): Promise<string>;
-  readFile(path: string): Promise<string>;
+  openNoFollow(path: string, kind: "file" | "directory"): Promise<SecureReadHandle>;
   currentUid(): number;
 }
 
 const NODE_FS: AttestationConfigFileSystem = {
-  lstat,
-  stat,
   realpath,
-  readFile: (path) => readFile(path, "utf8"),
+  openNoFollow: async (path, kind) => {
+    const directoryFlag = kind === "directory" ? constants.O_DIRECTORY : 0;
+    const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | directoryFlag);
+    return {
+      stat: () => handle.stat(),
+      readFile: () => handle.readFile("utf8"),
+      close: () => handle.close(),
+    };
+  },
   currentUid: () => {
     const uid = process.getuid?.();
     if (uid === undefined) throw new Error("repository snapshot mapping requires an operating-system owner identity");
@@ -87,20 +100,29 @@ export async function loadLocalCheckoutMap(input: {
     throw new Error("an in-repository checkout mapping override must equal the exact ignored default path");
   }
 
-  let metadata: FileMetadata;
-  try { metadata = await fs.lstat(configPath); } catch (error) {
+  let configHandle: SecureReadHandle;
+  try { configHandle = await fs.openNoFollow(configPath, "file"); } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       throw new Error(`repository snapshot mapping unavailable: ${configPath}`, { cause: error });
     }
-    throw error;
+    throw new Error("repository snapshot mapping must be a non-symlink regular file", { cause: error });
   }
-  if (metadata.isSymbolicLink() || !metadata.isFile()) throw new Error("repository snapshot mapping must be a non-symlink regular file");
-  if ((metadata.mode & 0o777) !== 0o600) throw new Error("repository snapshot mapping must have mode 0600");
-  if (metadata.uid !== fs.currentUid()) throw new Error("repository snapshot mapping must be owned by the current user");
-
   let parsed: unknown;
-  try { parsed = JSON.parse(await fs.readFile(configPath)); } catch (error) {
-    throw new Error("repository snapshot mapping contains malformed JSON", { cause: error });
+  try {
+    const metadata = await configHandle.stat();
+    if (metadata.isSymbolicLink() || !metadata.isFile()) throw new Error("repository snapshot mapping must be a non-symlink regular file");
+    if ((metadata.mode & 0o777) !== 0o600) throw new Error("repository snapshot mapping must have mode 0600");
+    if (metadata.uid !== fs.currentUid()) throw new Error("repository snapshot mapping must be owned by the current user");
+    try { parsed = JSON.parse(await configHandle.readFile()); } catch (error) {
+      throw new Error("repository snapshot mapping contains malformed JSON", { cause: error });
+    }
+    const afterRead = await configHandle.stat();
+    if ((metadata.dev !== undefined && afterRead.dev !== metadata.dev)
+        || (metadata.ino !== undefined && afterRead.ino !== metadata.ino)) {
+      throw new Error("repository snapshot mapping changed while it was being read");
+    }
+  } finally {
+    await configHandle.close();
   }
   const config = object(parsed, "repository snapshot mapping");
   exactKeys(config, ["schemaVersion", "checkouts"], "repository snapshot mapping");
@@ -125,10 +147,19 @@ export async function loadLocalCheckoutMap(input: {
       throw new Error(`checkout ${key} does not exist`, { cause: error });
     }
     if (canonical !== checkoutPath) throw new Error(`checkout ${key} must use its real canonical path`);
-    const checkoutMetadata = await fs.stat(checkoutPath);
-    if (!checkoutMetadata.isDirectory()) throw new Error(`checkout ${key} must be a directory`);
-    if (checkoutMetadata.uid !== fs.currentUid()) throw new Error(`checkout ${key} must be owned by the current user`);
-    if ((checkoutMetadata.mode & 0o022) !== 0) throw new Error(`checkout ${key} must not be group- or world-writable`);
+    let checkoutHandle: SecureReadHandle;
+    try { checkoutHandle = await fs.openNoFollow(checkoutPath, "directory"); } catch (error) {
+      throw new Error(`checkout ${key} must be a non-symlink directory`, { cause: error });
+    }
+    try {
+      const checkoutMetadata = await checkoutHandle.stat();
+      if (checkoutMetadata.isSymbolicLink() || !checkoutMetadata.isDirectory()) throw new Error(`checkout ${key} must be a directory`);
+      if (checkoutMetadata.uid !== fs.currentUid()) throw new Error(`checkout ${key} must be owned by the current user`);
+      if ((checkoutMetadata.mode & 0o022) !== 0) throw new Error(`checkout ${key} must not be group- or world-writable`);
+      if (await fs.realpath(checkoutPath) !== checkoutPath) throw new Error(`checkout ${key} changed during validation`);
+    } finally {
+      await checkoutHandle.close();
+    }
     result[key] = checkoutPath;
   }
   return deepFreeze(result);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, sign as signBytes } from "node:crypto";
-import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -196,4 +196,13 @@ test("missing checkout mapping fails with an explicit unavailable error", async 
   const phase0Root = await mkdtemp(join(tmpdir(), "phase0-attestation-missing-"));
   t.after(() => rm(phase0Root, { recursive: true, force: true }));
   await assert.rejects(loadLocalCheckoutMap({ env: {}, phase0Root: await realpath(phase0Root), referencedCheckoutKeys: [] }), /repository snapshot mapping unavailable/);
+});
+
+test("checkout mapping rejects a symlink instead of following a swapped path", async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "phase0-attestation-symlink-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const target = join(root, "target.json");
+  await writeFile(target, '{"schemaVersion":1,"checkouts":{}}\n', { mode: 0o600 });
+  await symlink(target, join(root, ".attestation-checkouts.local.json"));
+  await assert.rejects(loadLocalCheckoutMap({ env: {}, phase0Root: root, referencedCheckoutKeys: [] }), /non-symlink regular file/);
 });
