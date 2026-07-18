@@ -295,6 +295,7 @@ function assertGatewayProviderOptions(body, provider) {
         && body.tool_choice !== 'none'
         && !(body.tools?.length > 0))
       || (provider === 'anthropic' && !anthropicToolArgumentsAreObjects(body))
+      || (provider === 'anthropic' && toAnthropicMessages(body.messages).length === 0)
       || (Object.hasOwn(body, 'presence_penalty')
         && (provider !== 'openai' || !finiteNumberInRange(body.presence_penalty, -2, 2)))
       || (Object.hasOwn(body, 'frequency_penalty')

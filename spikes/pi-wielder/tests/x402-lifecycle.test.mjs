@@ -173,7 +173,7 @@ test('a non-authoritative paywall consumes one exact paid authorization only onc
 });
 
 test('one payment authorization cannot execute again under a different idempotency key', async () => {
-  const fixedNow = Date.now();
+  let clockMs = Date.now();
   const facilitator = createMockFacilitator();
   let verifyCalls = 0;
   let settleCalls = 0;
@@ -186,7 +186,7 @@ test('one payment authorization cannot execute again under a different idempoten
   });
   const app = resourceApp({
     facilitatorTransport: transport,
-    now: () => fixedNow,
+    now: () => clockMs,
     handler: (c) => {
       executions += 1;
       return c.json({ ok: true });
@@ -259,6 +259,23 @@ test('one payment authorization cannot execute again under a different idempoten
     error: 'payment authorization is already claimed by a different Idempotency-Key',
     code: 'PAYMENT_AUTHORIZATION_CLAIMED',
   });
+
+  clockMs += DEFAULT_PENDING_OFFER_TTL_MS + 1;
+  const expiredOffer = await app.request('http://seller.test/resource', {
+    method: 'POST',
+    headers: { 'Idempotency-Key': 'authorization-after-validity' },
+    body: '{}',
+  });
+  assert.equal(expiredOffer.status, 402);
+  const expiredReplay = await app.request('http://seller.test/resource', {
+    method: 'POST',
+    headers: {
+      'Idempotency-Key': 'authorization-after-validity',
+      'X-PAYMENT': first.xPayment,
+    },
+    body: '{}',
+  });
+  assert.equal(expiredReplay.status, 402);
   assert.equal(verifyCalls, 1);
   assert.equal(settleCalls, 1);
   assert.equal(executions, 1);
@@ -370,11 +387,8 @@ test('concurrent cross-key replay loses the authorization claim before facilitat
     error: 'payment authorization is already claimed by a different Idempotency-Key',
     code: 'PAYMENT_AUTHORIZATION_CLAIMED',
   });
-  assert.equal(replayAfterTtl.status, 409);
-  assert.deepEqual(await replayAfterTtl.json(), {
-    error: 'payment authorization is already claimed by a different Idempotency-Key',
-    code: 'PAYMENT_AUTHORIZATION_CLAIMED',
-  });
+  assert.equal(replayAfterTtl.status, 402);
+  assert.match((await replayAfterTtl.json()).error, /validity.*frozen x402 offer/);
   assert.equal(verifyCalls, 1);
   assert.equal(settleCalls, 1);
   assert.equal(executions, 1);
@@ -858,6 +872,7 @@ test('seller rejects numeric and unknown authorization fields before facilitator
   for (const mutate of [
     (authorization) => { authorization.value = 250000; },
     (authorization) => { authorization.injected = true; },
+    (authorization) => { authorization.validBefore = '999999999999999999999999'; },
   ]) {
     let facilitatorCalls = 0;
     const facilitator = createMockFacilitator();

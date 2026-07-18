@@ -125,9 +125,10 @@ The standalone gateway has no durable response authority. Before verification it
 the fixed network, asset, payer, and nonce for exactly one Idempotency-Key and binds the
 exact verified payment-header hash to that owner. Cross-key, concurrent, and alternate-
 encoding reuse fails before a second verification, settlement, or provider execution;
-a successful claim stays in bounded TTL-scoped admission state. Do not treat this as
-response replay. The authoritative Collar journal remains the only terminal replay path.
-Facilitator verification accepts only the exact boolean `true`.
+a successful claim stays through its exact frozen-offer validity window in bounded
+TTL-scoped admission state. Do not treat this as response replay. The authoritative Collar
+journal remains the only terminal replay path. Facilitator verification accepts only the
+exact boolean `true`.
 
 A restart after `402` but before successful verification intentionally loses that
 non-authoritative offer. A paid retry carrying the old key then gets `409` before any
@@ -226,7 +227,8 @@ most one provider token and reserves another 1,024 tokens for provider-side chat
 framing. The pre-offer schema is closed: messages, text parts, function tools/calls/results,
 and provider-specific options must match the documented Pi/OpenAI shapes. Unknown or
 malformed fields fail with `400` before facilitator or provider activity. Anthropic
-options are translated explicitly; unsupported `strict` tool semantics are rejected.
+options are translated explicitly; unsupported `strict` tool semantics and requests that
+would translate to no non-system provider message are rejected.
 Provider requests refuse redirects, use one absolute fetch-plus-body deadline,
 whose configurable value cannot exceed 30 seconds, and stream responses through a hard
 1 MiB cap. Automated verification stays on the mock facilitator and mock model and uses

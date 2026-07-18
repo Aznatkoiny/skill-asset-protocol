@@ -479,6 +479,13 @@ test('gateway rejects unknown and malformed provider options before offering pay
     { ...anthropicBase, user: 'wielder-1' },
     {
       ...anthropicBase,
+      messages: [
+        { role: 'system', content: 'system only' },
+        { role: 'developer', content: 'still no provider message' },
+      ],
+    },
+    {
+      ...anthropicBase,
       tools: [{
         type: 'function',
         function: { name: 'lookup', parameters: {}, strict: true },

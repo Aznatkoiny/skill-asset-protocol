@@ -169,7 +169,9 @@ function paymentResponseEvidence({
   };
 }
 
-function validateAuthorizationEnvelope(paymentPayload, requirements) {
+function validateAuthorizationEnvelope(paymentPayload, requirements, requestNowMs, {
+  allowExpired = false,
+} = {}) {
   if (!exactPlainObject(paymentPayload, ['x402Version', 'scheme', 'network', 'payload'])
       || !exactPlainObject(paymentPayload.payload, ['signature', 'authorization'])
       || paymentPayload?.x402Version !== X402_VERSION
@@ -198,6 +200,29 @@ function validateAuthorizationEnvelope(paymentPayload, requirements) {
   }
   if (!/^0x[0-9a-f]{64}$/.test(authorization.nonce)) {
     throw new Error('payment authorization lacks a valid nonce or payer');
+  }
+  const issuedAtMs = Date.parse(requirements.extra?.issuedAt);
+  const expiresAtMs = Date.parse(requirements.extra?.expiresAt);
+  if (!Number.isSafeInteger(issuedAtMs) || !Number.isSafeInteger(expiresAtMs)
+      || expiresAtMs <= issuedAtMs
+      || !Number.isSafeInteger(requirements.maxTimeoutSeconds)
+      || requirements.maxTimeoutSeconds <= 0) {
+    throw new Error('frozen x402 offer has an invalid authorization window');
+  }
+  const issuedSeconds = BigInt(Math.floor(issuedAtMs / 1_000));
+  const expiresSeconds = BigInt(Math.floor(expiresAtMs / 1_000));
+  const requestSeconds = BigInt(Math.floor(requestNowMs / 1_000));
+  const validAfter = BigInt(authorization.validAfter);
+  const validBefore = BigInt(authorization.validBefore);
+  const maximumWindowSeconds = BigInt(requirements.maxTimeoutSeconds) + 60n;
+  const earliestValidAfter = issuedSeconds > 60n ? issuedSeconds - 60n : 0n;
+  if (validBefore !== expiresSeconds
+      || validAfter < earliestValidAfter
+      || validBefore <= validAfter
+      || validBefore - validAfter > maximumWindowSeconds
+      || expiresSeconds - issuedSeconds > BigInt(requirements.maxTimeoutSeconds)
+      || (!allowExpired && (requestSeconds <= validAfter || requestSeconds >= validBefore))) {
+    throw new Error('payment authorization validity must match the frozen x402 offer');
   }
   return authorization;
 }
@@ -498,10 +523,20 @@ export function x402Paywall({
         accepts: [requirements],
       }, 402);
     }
+    const paymentHash = `sha256:${crypto.createHash('sha256').update(paymentHeader).digest('hex')}`;
+    const existingOwnerClaim = claimForIdempotencyKey(idempotencyKey)?.claim ?? null;
 
     let authorization;
     try {
-      authorization = validateAuthorizationEnvelope(paymentPayload, requirements);
+      authorization = validateAuthorizationEnvelope(paymentPayload, requirements, requestNowMs, {
+        // Only a trusted recovered offer with the exact already-verified
+        // payment digest may reach durable terminal reconciliation after the
+        // original authorization window has elapsed.
+        allowExpired: !pendingOffers.has(idempotencyKey)
+          && (frozen.verifiedPaymentHash === paymentHash
+            || (existingOwnerClaim?.paymentHash === paymentHash
+              && typeof lifecycle.onSigned === 'function')),
+      });
     } catch (error) {
       return c.json({
         x402Version: X402_VERSION,
@@ -511,7 +546,7 @@ export function x402Paywall({
     }
     const settlementReference = authorization.nonce.toLowerCase();
     const payer = authorization.from.toLowerCase();
-    const paymentHash = `sha256:${crypto.createHash('sha256').update(paymentHeader).digest('hex')}`;
+    const authorizationValidBeforeMs = Number(BigInt(authorization.validBefore) * 1_000n);
     const facilitatorBody = {
       x402Version: X402_VERSION,
       paymentPayload,
@@ -603,10 +638,11 @@ export function x402Paywall({
       }
       authorizationClaim.state = 'consumed';
       authorizationClaim.phase = 'consumed';
-      authorizationClaim.expiresAtMs = completionNowMs
+      const ttlExpiryMs = completionNowMs
         <= Number.MAX_SAFE_INTEGER - pendingOfferTtlMs
         ? completionNowMs + pendingOfferTtlMs
         : Number.MAX_SAFE_INTEGER;
+      authorizationClaim.expiresAtMs = Math.max(ttlExpiryMs, authorizationValidBeforeMs);
     };
     const rejectAndReleaseAuthorization = async (reason) => {
       try {

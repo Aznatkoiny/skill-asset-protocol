@@ -63,9 +63,10 @@ The standalone, non-authoritative paywall can consume an authorization only once
 verification it atomically claims the fixed network, asset, payer, and nonce for one
 Idempotency-Key, with the exact payment-header hash bound to that owner. Cross-key and
 alternate-encoding replays fail before another facilitator or handler call; a successful
-claim remains in the same bounded TTL-scoped admission state. It cannot replay lost
-output; durable terminal replay belongs to the Collar journal. Facilitator verification
-succeeds only for the exact boolean `true`.
+claim remains through its frozen offer validity window in the same bounded TTL-scoped
+admission state. Authorization times must match that frozen offer exactly. It cannot
+replay lost output; durable terminal replay belongs to the Collar journal. Facilitator
+verification succeeds only for the exact boolean `true`.
 
 The caller's method, body bytes, and headers are captured once before the unpaid
 request. Method and body bytes bind the policy hash and signed recovery; captured
@@ -243,7 +244,8 @@ request contract: allowed model, non-empty canonical message roles and text part
 function tools/calls/results, output-token bound, and provider-specific option types and
 ranges. Malformed JSON, unknown fields, and unsupported shapes receive a stable `400`
 without facilitator settlement or provider work. Anthropic options are either translated
-explicitly or rejected; unsupported tool `strict` semantics are never silently dropped.
+explicitly or rejected; unsupported tool `strict` semantics are never silently dropped,
+and system/developer-only input is rejected before it can translate to no provider message.
 
 Timeout state follows the durable money boundary: an unpaid timeout creates no
 reservation; a signed retry or facilitator ambiguity stays `unresolved` with budget
