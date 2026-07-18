@@ -31,7 +31,8 @@ above is satisfied and a human approves revised copy.
 
 > https://neverhandedover.com is a manifesto that is literally a paid endpoint. POST to it
 > without payment and you get HTTP 402. Pay $0.25 in testnet USDC (play money, Base Sepolia)
-> and the hosted skill runs and streams you output. You never get the skill itself.
+> and the hosted Skill runs and streams you output. The artifact file is not directly
+> returned; model-output extraction remains an adversarial runtime risk.
 >
 > The thesis: authored AI skills (Claude Code skills, plugins, agent definitions) are work
 > artifacts, and work-for-hire's default split is 100/0 — employer gets everything, author
@@ -116,7 +117,8 @@ Post these as replies, verbatim or trimmed. Never argue tone; concede fast and l
 **Q3. "A skill is a markdown file. Prompts are worthless; the model does the work."**
 
 > A skill is plaintext and trivially copyable — that's the first ADR in the repo, not a
-> gotcha. We don't sell secrecy: the wielder gets output only, but the host sees the skill in
+> gotcha. We don't sell secrecy: the artifact file is not directly returned and
+> model-output extraction remains an adversarial runtime risk; the host sees the Skill in
 > plaintext, and in the intra-org mode the employer already possesses it. What's for sale is
 > attribution and metered compensation, the way Carta doesn't make cap tables secret. On
 > "worthless": some skills are — each frontier model release absorbs packaged prompting, so a
@@ -163,10 +165,10 @@ Target total: **57s**.
 | 1 | 0–6 (6s) | Slow scroll of neverhandedover.com — the manifesto text, ending on the URL bar | `This manifesto is a paid API endpoint.` |
 | 2 | 6–13 (7s) | Terminal: `curl -X POST https://neverhandedover.com/...` → response renders, `HTTP/1.1 402 Payment Required` highlighted | `POST without payment → HTTP 402.` |
 | 3 | 13–21 (8s) | Same terminal: client retries with x402 payment; a `$0.25` testnet USDC payment line and settle confirmation appear | `Pay $0.25 — testnet USDC. Play money.` |
-| 4 | 21–31 (10s) | Skill output streams into the terminal, token by token (real speed; ~2.5s pause to first token left in — it is honest and reads as live) | `You get the output. Never the skill.` |
+| 4 | 21–31 (10s) | Skill output streams into the terminal, token by token (real speed; ~2.5s pause to first token left in — it is honest and reads as live) | `The artifact file is not directly returned. Extraction risk remains.` |
 | 5 | 31–40 (9s) | Browser: the transaction on sepolia.basescan.org — highlight the transfer to the payTo address, cursor circles the amount | `Every invocation is an on-chain receipt.` |
 | 6 | 40–49 (9s) | BaseScan, zoomed on the aggregate testnet USDC transfer to the seller `payTo` address; then the off-chain reference-ledger Creator/treasury credits | `Seller payment on-chain. Split credits off-chain.` |
-| 7 | 49–57 (8s) | Cut to black. Two lines of text, then URLs fade in: `neverhandedover.com` / `github.com/Aznatkoiny/skill-asset-protocol` | `The artifact was never handed over.` (line 2, smaller: `Testnet demo. Open source, Apache-2.0.`) |
+| 7 | 49–57 (8s) | Cut to black. Two lines of text, then URLs fade in: `neverhandedover.com` / `github.com/Aznatkoiny/skill-asset-protocol` | `The artifact file is not directly returned. Extraction risk remains.` (line 2, smaller: `Testnet demo. Open source, Apache-2.0.`) |
 
 Production notes:
 - No music required; if any, something metronomic and quiet.

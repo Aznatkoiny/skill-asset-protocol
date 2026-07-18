@@ -22,7 +22,9 @@ We published a manifesto that is also a paid API.
 
 POST to it without paying and you get HTTP 402.
 
-Pay $0.25 in testnet USDC (play money) and it runs the skill and sends back the output. You never get the skill.
+Pay $0.25 in testnet USDC (play money) and it runs the Skill and sends back the
+output. The artifact file is not directly returned; model-output extraction
+remains an adversarial runtime risk.
 
 https://neverhandedover.com
 
@@ -151,11 +153,13 @@ receipt. The artifact file is not directly returned. Model-output extraction
 remains an adversarial runtime risk, so this is not a secrecy guarantee.
 
 **6/**
-Step 5 — output only.
+Step 5 — the hosted-output boundary.
 
-The server runs the hosted skill and sends back the result. The skill artifact never crosses the wire.
+The server runs the hosted Skill and sends back the result. The artifact file is
+not directly returned; model-output extraction remains an adversarial runtime risk.
 
-That's the design constraint the whole protocol hangs on: metered use, never handover.
+That's the bounded design constraint: metered hosted use without directly
+returning the artifact file, while extraction remains an adversarial risk.
 
 **7/**
 The Wielder is the wallet plus paying client proxy. The Collar is seller-side: it
@@ -311,9 +315,9 @@ failed the benchmark, so clone quality, fidelity defense, and break-even are
 unknown. Publication remains blocked pending a valid preregistered N=100 run.
 
 **D.**
-Output crosses the wire. The skill never does.
+The artifact file is not directly returned. Extraction risk remains.
 
-That single constraint is the whole protocol.
+That bounded claim is the protocol's hosted-delivery constraint.
 
 **E.**
 The most useful page we published is the list of things we haven't proven. It's shorter than the manifesto and it was harder to write.

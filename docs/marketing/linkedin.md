@@ -28,7 +28,10 @@ Five posts for the launch of the Skill Asset Protocol / neverhandedover.com.
 >
 > I've spent the last months building the alternative: infrastructure that meters each use of a skill and splits the revenue to a claim the author holds jointly with the employer. Think Carta, but for AI work artifacts.
 >
-> It's live at neverhandedover.com, and the site is the demo. Reading is free. Running the hosted skill costs a quarter in play money on a public test network — and you get the output, never the skill. That one sentence is the whole architecture.
+> It's live at neverhandedover.com, and the site is the demo. Reading is free.
+> Running the hosted Skill costs a quarter in play money on a public test network
+> — the artifact file is not directly returned; model-output extraction remains
+> an adversarial runtime risk. That boundary is the architecture.
 >
 > What I have not proven: that employers will buy this. That's written on the site too, because a launch post that only lists what works is an ad, not evidence.
 >
@@ -174,13 +177,19 @@ Week 2–3, mid-week; resonates with founders and diligence-minded operators, so
 
 > How we went from research question to a live paid endpoint — in three phases.
 >
-> The question: if authored AI skills are assets, can you meter their use and split compensation per invocation, without ever shipping the skill file to the caller?
+> The question: if authored AI Skills are assets, can you meter their use and split
+> compensation per Invocation while not directly returning the artifact file and
+> treating model-output extraction as an adversarial runtime risk?
 >
 > Phase 1 — research. Before product code, a findings document: what's real, what's vapor, what's unmeasured. x402, the HTTP 402 payment standard now under the Linux Foundation, turned out to be very real — ~75M transactions in the last 30 days. Story Protocol handles provenance. Several things we assumed were solved were not, and we wrote that down too.
 >
 > Phase 2 — adversarial review. We red-teamed our own PRD. This is where the Education mode died (free re-authoring beats every royalty rate — one page of arithmetic) and where the kill-criteria were written. The red-team output ships in the repo as a first-class artifact, not a postmortem.
 >
-> Phase 3 — the live endpoint. The manifesto site IS the system. POST without payment and you get an actual HTTP 402. Pay $0.25 in testnet USDC — play money, deliberately — and the hosted skill runs and streams you the output. Never the skill.
+> Phase 3 — the live endpoint. The manifesto site IS the system. POST without
+> payment and you get an actual HTTP 402. Pay $0.25 in testnet USDC — play money,
+> deliberately — and the hosted Skill runs and streams you the output. The
+> artifact file is not directly returned; model-output extraction remains an
+> adversarial runtime risk.
 >
 > Numbers from the first working demo on Base Sepolia (2026-07-12; testnet,
 > play money), one wallet paying per model call AND per Skill Invocation:
