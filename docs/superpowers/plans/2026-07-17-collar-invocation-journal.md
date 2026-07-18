@@ -3096,7 +3096,7 @@ and after the receipt lookup.
 Run:
 
 ```bash
-if git grep -I -q -E -e '-----BEGIN (PRIVATE|ENCRYPTED PRIVATE) KEY-----|PRIVATE_KEY[[:space:]]*=[[:space:]]*(0x)?[0-9a-fA-F]{64}' -- .; then
+if git grep -I -q -E -e '-----END ([A-Z]+ )*PRIVATE KEY-----|PRIVATE_KEY[[:space:]]*=[[:space:]]*(0x)?[0-9a-fA-F]{64}' -- .; then
   false
 else
   secret_scan_status=$?
@@ -3104,9 +3104,11 @@ else
 fi
 ```
 
-Expected: exit 0 and no output. Exit 1 from `git grep` means no match; a match or scan
-error fails the gate without printing possible secret material. The existing ignored
-local `.env` remains untouched.
+Expected: exit 0 and no output. A complete PEM private key has an end marker; this
+deliberately ignores header-only negative-test sentinels. Exit 1 from `git grep` means
+no match; a complete PEM marker, a full private-key assignment, or a scan error fails
+the gate without printing possible secret material. The existing ignored local `.env`
+remains untouched.
 
 - [ ] **Step 6: Commit the authority documentation**
 
