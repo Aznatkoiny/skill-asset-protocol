@@ -12,6 +12,7 @@ import {
   createInvocationJournal,
   createReceiptSigner,
   loadOrCreateReceiptSigner,
+  receiptKeyId,
   verifySignedReceipt,
 } from '../src/invocation-journal.mjs';
 
@@ -77,6 +78,18 @@ function fixture(overrides = {}) {
 const trustFor = (journal) => ({
   publicKeyPem: journal.signingPublicKeyPem,
   keyId: journal.signingKeyId,
+});
+
+test('receipt key IDs are exactly one SHA-256 digest of SPKI DER', () => {
+  const signer = createReceiptSigner();
+  const publicKey = crypto.createPublicKey(signer.publicKeyPem);
+  const der = publicKey.export({ type: 'spki', format: 'der' });
+  const expected = `sha256:${crypto.createHash('sha256').update(der).digest('hex')}`;
+  const doubleHashed = `sha256:${crypto.createHash('sha256')
+    .update(Buffer.from(expected.slice('sha256:'.length), 'hex')).digest('hex')}`;
+  assert.equal(receiptKeyId(signer.publicKeyPem), expected);
+  assert.equal(signer.keyId, expected);
+  assert.notEqual(signer.keyId, doubleHashed);
 });
 
 function offer(journal, input = declaration) {
@@ -398,6 +411,18 @@ test('separate journal instances observe one durable refund claim', () => {
     first.getByIdempotencyKey(declaration.idempotencyKey).payment.refundExecution.refundAttemptId,
     second.getByIdempotencyKey(declaration.idempotencyKey).payment.refundExecution.refundAttemptId,
   );
+});
+
+test('separate journal instances observe one durable execution claim', () => {
+  const { filePath, signingKeyPath } = temporaryAuthority('collar-execution-claim-');
+  const first = createInvocationJournal({ filePath, signingKeyPath });
+  settle(first);
+  const second = createInvocationJournal({ filePath, signingKeyPath });
+  assert.equal(first.startExecution(declaration.idempotencyKey).started, true);
+  const losingClaim = second.startExecution(declaration.idempotencyKey);
+  assert.equal(losingClaim.started, false);
+  assert.equal(losingClaim.record.execution.state, 'executing');
+  assert.equal(second.events.filter((event) => event.type === 'execution.started').length, 1);
 });
 
 const waitForExit = (child) => new Promise((resolve, reject) => {

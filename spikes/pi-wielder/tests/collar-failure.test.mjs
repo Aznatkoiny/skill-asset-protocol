@@ -82,6 +82,7 @@ async function invokeSettledFailure({
   resolveRefund = null,
   lifecycleFaults = {},
   executeSkill = async () => { throw new Error('refund-target provider fault'); },
+  onCollarCreated = null,
 } = {}) {
   const collar = createCollar({
     facilitatorTransport: mockTransport(),
@@ -90,6 +91,7 @@ async function invokeSettledFailure({
     resolveRefund,
     lifecycleFaults,
   });
+  onCollarCreated?.(collar);
   const result = await payingFetch(throwawayAccount(), invokeUrl, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: requestBody,
   }, {
@@ -600,6 +602,47 @@ test('overlapping refund requests durably claim one external execution', async (
   assert.deepEqual((await replay.json()).receipt, receipt);
   assert.equal(calls, 1);
   assert.equal(collar.journal.events.filter((event) => event.type === 'refund.started').length, 1);
+});
+
+test('a concurrently confirmed refund wins over an unresolved executor return path', async () => {
+  let collarAuthority;
+  let trustedResolution;
+  const { collar, result } = await invokeSettledFailure({
+    onCollarCreated: (created) => { collarAuthority = created; },
+    executeRefund: async (request) => {
+      trustedResolution = {
+        refunded: true,
+        settlementReference: request.settlementReference,
+        originalTxHash: request.originalTxHash,
+        payer: request.payer,
+        amountAtomic: request.amountAtomic,
+        refundReference: 'concurrent-winner-refund',
+      };
+      return trustedResolution;
+    },
+    lifecycleFaults: {
+      afterRefundExecutorReturned: async ({ idempotencyKey, refundAttemptId }) => {
+        collarAuthority.journal.refundExternalPayment(idempotencyKey, {
+          refundAttemptId,
+          reason: 'trusted full-gross refund confirmed',
+          refundReference: trustedResolution.refundReference,
+          refundAmountAtomic: trustedResolution.amountAtomic,
+        });
+        collarAuthority.journal.issueReceipt(idempotencyKey);
+        throw new Error('stale worker lost the completion race');
+      },
+    },
+  });
+  const endpoint = `http://collar.test/refund/by-settlement/${result.settlementReference}`;
+  const response = await collar.app.request(endpoint, { method: 'POST' });
+  assert.equal(response.status, 200);
+  const receipt = (await response.json()).receipt;
+  assert.equal(receipt.receipt.payment.state, 'refunded');
+  assert.equal(receipt.receipt.payment.refundReference, 'concurrent-winner-refund');
+  assert.equal(verifySignedReceipt(receipt, trustFor(collar)), true);
+  const replay = await collar.app.request(endpoint, { method: 'POST' });
+  assert.equal(replay.status, 200);
+  assert.deepEqual((await replay.json()).receipt, receipt);
 });
 
 test('refund crash boundary stays unresolved and provider secrets never reach clients', async () => {

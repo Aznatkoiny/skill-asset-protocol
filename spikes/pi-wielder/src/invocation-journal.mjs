@@ -251,14 +251,19 @@ function withLease(lockPath, operation, hooks = {}) {
   }
 }
 
+export function receiptKeyId(publicKey) {
+  const keyObject = publicKey?.type === 'public' ? publicKey : crypto.createPublicKey(publicKey);
+  return `sha256:${crypto.createHash('sha256')
+    .update(keyObject.export({ type: 'spki', format: 'der' }))
+    .digest('hex')}`;
+}
+
 export function createReceiptSigner(keys = {}, { persistent = false } = {}) {
   const pair = keys.privateKey && keys.publicKey
     ? { privateKey: keys.privateKey, publicKey: keys.publicKey }
     : crypto.generateKeyPairSync('ed25519');
   const publicKeyPem = pair.publicKey.export({ type: 'spki', format: 'pem' }).toString();
-  const keyId = `sha256:${crypto.createHash('sha256')
-    .update(pair.publicKey.export({ type: 'spki', format: 'der' }))
-    .digest('hex')}`;
+  const keyId = receiptKeyId(pair.publicKey);
   return Object.freeze({
     algorithm: 'Ed25519',
     publicKeyPem,
@@ -1063,8 +1068,15 @@ export function createInvocationJournal({
     assertState(record, ['authorized'], 'startExecution');
     const attempt = executionAttemptId ?? `attempt:${crypto.createHash('sha256')
       .update(`${record.invocationId}\n${record.requestHash}`).digest('hex')}`;
-    append('execution.started', key, { executionAttemptId: requireText(attempt, 'executionAttemptId') });
-    return { started: true, record: copy(records.get(key)) };
+    try {
+      append('execution.started', key, { executionAttemptId: requireText(attempt, 'executionAttemptId') });
+      return { started: true, record: copy(records.get(key)) };
+    } catch (error) {
+      if (error.code !== 'JOURNAL_CONFLICT') throw error;
+      const winner = requireRecord(records, key);
+      if (winner.execution.state === 'authorized') throw error;
+      return { started: false, record: copy(winner) };
+    }
   }
 
   function finishExecution(key, input) {

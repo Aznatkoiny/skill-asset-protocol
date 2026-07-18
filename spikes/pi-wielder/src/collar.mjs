@@ -343,13 +343,18 @@ export function createCollar({
     && Boolean(resolution.refundReference.trim());
 
   const markRefundOutcomeUnresolved = (record) => {
-    if (record.payment.state === 'refunded'
-        || record.payment.refundExecution?.state === 'unresolved') return;
-    journal.markRefundUnresolved(record.idempotencyKey, {
+    const current = journal.getByIdempotencyKey(record.idempotencyKey);
+    if (current.payment.state === 'refunded'
+        || current.payment.refundExecution?.state === 'unresolved') return current;
+    return journal.markRefundUnresolved(record.idempotencyKey, {
       refundAttemptId: record.payment.refundExecution.refundAttemptId,
       reason: 'trusted refund outcome unresolved',
     });
   };
+
+  const refundTerminalResponse = (c, record) => c.json({
+    receipt: record.receipt ?? journal.issueReceipt(record.idempotencyKey),
+  });
 
   const finalizeRefund = (record, resolution) => {
     journal.refundExternalPayment(record.idempotencyKey, {
@@ -379,6 +384,9 @@ export function createCollar({
     if (!refundExecutor) return c.json({ error: 'trusted refund executor is not configured' }, 501);
     const claim = journal.startRefund(record.idempotencyKey);
     if (!claim.started) {
+      if (claim.record.payment.state === 'refunded') {
+        return refundTerminalResponse(c, claim.record);
+      }
       return c.json({
         error: 'refund outcome unresolved; trusted reconciliation is required',
         refundAttemptId: claim.record.payment.refundExecution?.refundAttemptId ?? null,
@@ -394,11 +402,13 @@ export function createCollar({
         refundAttemptId: request.refundAttemptId,
       });
     } catch {
-      markRefundOutcomeUnresolved(record);
+      const current = markRefundOutcomeUnresolved(record);
+      if (current.payment.state === 'refunded') return refundTerminalResponse(c, current);
       return c.json({ error: 'refund outcome unresolved; trusted reconciliation is required' }, 503);
     }
     if (!refundEvidenceMatches(resolution, request)) {
-      markRefundOutcomeUnresolved(record);
+      const current = markRefundOutcomeUnresolved(record);
+      if (current.payment.state === 'refunded') return refundTerminalResponse(c, current);
       return c.json({ error: 'refund outcome unresolved; trusted reconciliation is required' }, 503);
     }
     return c.json({ receipt: finalizeRefund(record, resolution) });
@@ -423,15 +433,18 @@ export function createCollar({
     try {
       resolution = await refundResolver(request);
     } catch {
-      markRefundOutcomeUnresolved(record);
+      const current = markRefundOutcomeUnresolved(record);
+      if (current.payment.state === 'refunded') return refundTerminalResponse(c, current);
       return c.json({ error: 'trusted refund resolution failed' }, 502);
     }
     if (!resolution?.refunded) {
-      markRefundOutcomeUnresolved(record);
+      const current = markRefundOutcomeUnresolved(record);
+      if (current.payment.state === 'refunded') return refundTerminalResponse(c, current);
       return c.json({ refundState: 'unresolved', refundAttemptId: request.refundAttemptId }, 202);
     }
     if (!refundEvidenceMatches(resolution, request)) {
-      markRefundOutcomeUnresolved(record);
+      const current = markRefundOutcomeUnresolved(record);
+      if (current.payment.state === 'refunded') return refundTerminalResponse(c, current);
       return c.json({ error: 'trusted refund resolver returned mismatched evidence' }, 502);
     }
     return c.json({ receipt: finalizeRefund(record, resolution) });
