@@ -98,6 +98,128 @@ export const compliantHeldoutOutput = (fixture) => [
   'Show the diff',
 ].join('\n');
 
+function attemptPhase(kind) {
+  if (kind === 'target-train') return 'acquisition';
+  if (kind === 'distill') return 'distillation';
+  return 'evaluation';
+}
+
+function attemptProfile(kind) {
+  if (kind.startsWith('target-')) return 'target';
+  if (kind.startsWith('bad-clone-')) return 'bad-clone';
+  return 'clone';
+}
+
+export function normalizeSweepSamples({ experimentId, attempts }) {
+  return attempts.map((attempt) => {
+    const normalized = {
+      sampleId: `${experimentId}:${attempt.attemptId}`,
+      phase: attemptPhase(attempt.kind),
+      profile: attemptProfile(attempt.kind),
+      caseId: attempt.caseId ?? null,
+      n: attempt.n ?? null,
+      replicateId: attempt.replicateId ?? null,
+      pairOrderSeed: attempt.pairOrderSeed ?? null,
+      requestedDistillationSeed: attempt.requestedDistillationSeed ?? attempt.requestedSeed ?? null,
+      appliedDistillationSeed: attempt.appliedDistillationSeed ?? attempt.appliedSeed ?? null,
+      distillationSeedStatus: attempt.distillationSeedStatus ?? attempt.status ?? 'not_requested',
+      distillationSeedMechanism: attempt.distillationSeedMechanism ?? attempt.mechanism ?? 'no_seed_requested',
+      success: attempt.success,
+      latencyMs: attempt.latencyMs,
+      inputTokens: attempt.inputTokens ?? null,
+      outputTokens: attempt.outputTokens ?? null,
+      providerCostMicroUsd: attempt.providerCostMicroUsd ?? null,
+      providerCostUsd: attempt.providerCostUsd ?? null,
+      acquisitionCostUsd: attempt.acquisitionCostUsd ?? 0,
+      acquisitionEvidence: attempt.acquisitionEvidence ?? null,
+      score: attempt.score ?? null,
+      criticalGatePass: attempt.criticalGatePass ?? null,
+      failureClass: attempt.failureClass ?? null,
+      providerRequestId: attempt.providerRequestId ?? null,
+    };
+    return normalized;
+  });
+}
+
+export async function writeSweepEvidenceBundle({
+  result,
+  config,
+  outputDir,
+  experimentId,
+  evidenceLabel,
+  command,
+  recordedAtUtc,
+  gitCommit,
+  modelProvider = null,
+  model = null,
+  liveBudget = null,
+  reproduction = null,
+}) {
+  const { verifyEvidenceBundle, writeEvidenceBundle } = await import('./evidence.mjs');
+  const samples = normalizeSweepSamples({ experimentId, attempts: result.samples });
+  const incompleteCosts = samples.some((sample) => sample.providerCostUsd === null);
+  const interpretation = [
+    result.publishableHighN
+      ? 'The preregistered high-N publication gate passed.'
+      : `Aggregate clone and economics conclusions are suppressed: ${result.suppressionReason ?? result.benchmark?.verdict ?? 'INCOMPLETE'}.`,
+    incompleteCosts
+      ? 'Limitations: at least one attempted provider call has unknown cost, so aggregate provider cost is incomplete.'
+      : 'All normalized attempted-call costs are present.',
+  ].join(' ');
+  const manifest = writeEvidenceBundle({
+    outputDir,
+    manifest: {
+      experimentId,
+      recordedAtUtc,
+      gitCommit,
+      command,
+      modelProvider,
+      model,
+      evidenceLabel,
+      liveBudget,
+      configuration: {
+        sweepConfig: config,
+        fixtureSet: config.fixtureSet,
+        acquisitionTreatment: config.acquisitionTreatment,
+        publicationGate: {
+          publishableHighN: result.publishableHighN ?? false,
+          suppressionReason: result.suppressionReason ?? result.benchmark?.verdict ?? null,
+        },
+      },
+    },
+    samples,
+    interpretation,
+    reproduction: reproduction ?? `node scripts/verify-bundle.mjs ${outputDir}`,
+  });
+  return { manifest, verified: verifyEvidenceBundle(outputDir) };
+}
+
+function scoreMap(score) {
+  return new Map((score?.cases ?? []).map((item) => [item.id, item]));
+}
+
+function annotateAttempt(attempt, metadata, scores = {}) {
+  const score = attempt.kind === 'target-heldout'
+    ? scores.target?.get(attempt.caseId)
+    : attempt.kind === 'clone-heldout'
+      ? scores.clone?.get(attempt.caseId)
+      : attempt.kind === 'bad-clone-heldout'
+        ? scores.bad?.get(attempt.caseId)
+        : null;
+  return {
+    ...structuredClone(attempt),
+    ...metadata,
+    requestedDistillationSeed: metadata.requestedDistillationSeed ?? attempt.requestedSeed ?? null,
+    appliedDistillationSeed: attempt.appliedSeed ?? null,
+    distillationSeedStatus: attempt.status ?? 'not_requested',
+    distillationSeedMechanism: attempt.mechanism ?? 'no_seed_requested',
+    acquisitionCostUsd: attempt.kind === 'target-train' ? metadata.invocationPriceUsd : 0,
+    acquisitionEvidence: attempt.kind === 'target-train' ? 'MODELED' : null,
+    score: score?.score ?? null,
+    criticalGatePass: score?.criticalGatePass ?? null,
+  };
+}
+
 export async function startLiveSweep({
   env,
   config,
@@ -189,7 +311,14 @@ export async function runSweep(options) {
     heldoutFixtures: fixtures.heldout,
     threshold: config.targetThreshold ?? 0.8,
   });
-  const samples = adapter.attempts.map((attempt) => structuredClone(attempt));
+  const standaloneScores = { target: scoreMap(targetScore) };
+  const samples = adapter.attempts.map((attempt) => annotateAttempt(attempt, {
+    n: null,
+    replicateId: null,
+    pairOrderSeed: null,
+    requestedDistillationSeed: null,
+    invocationPriceUsd: 0,
+  }, standaloneScores));
   const reconcile = () => {
     if (samples.length !== adapter.attempts.length) {
       throw new Error('Sweep sample count does not reconcile with adapter attempts');
@@ -220,8 +349,9 @@ export async function runSweep(options) {
         options.outputDir ?? path.join(root, 'runs', `${mode}-sweep`),
         `n${n}-${replicate.replicateId}`,
       );
+      let result = null;
       try {
-        const result = await runExperiment({
+        result = await runExperiment({
           mode,
           adapter,
           outputDir: cellOutputDir,
@@ -269,7 +399,20 @@ export async function runSweep(options) {
         });
         stop = true;
       } finally {
-        for (const attempt of adapter.attempts.slice(attemptStart)) samples.push(structuredClone(attempt));
+        const scores = result ? {
+          target: scoreMap(result.report.fidelity.target),
+          clone: scoreMap(result.report.fidelity.clone),
+          bad: scoreMap(result.report.fidelity.badClone),
+        } : {};
+        for (const attempt of adapter.attempts.slice(attemptStart)) {
+          samples.push(annotateAttempt(attempt, {
+            n,
+            replicateId: replicate.replicateId,
+            pairOrderSeed: replicate.pairOrderSeed,
+            requestedDistillationSeed: replicate.distillationSeed,
+            invocationPriceUsd: options.invocationPriceUsd ?? 0.25,
+          }, scores));
+        }
       }
       if (stop) break;
     }

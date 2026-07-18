@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -11,7 +12,12 @@ import {
 } from './src/budget.mjs';
 import { liveAuthorizationHash } from './src/authorization.mjs';
 import { loadFixtureSet } from './src/fixture-set.mjs';
-import { runSweep, startLiveSweep, validateSweepConfig } from './src/sweep.mjs';
+import {
+  runSweep,
+  startLiveSweep,
+  validateSweepConfig,
+  writeSweepEvidenceBundle,
+} from './src/sweep.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const readJson = (name) => JSON.parse(fs.readFileSync(path.join(root, 'fixtures', name), 'utf8'));
@@ -63,10 +69,22 @@ async function main() {
     };
     try {
       const result = await runSweep({ mode: 'mock' });
+      const experimentId = `mock-high-n-${new Date().toISOString().replaceAll(/[-:.]/g, '')}-${process.pid}`;
+      const evidenceRelative = path.join('runs', 'mock-sweep', 'evidence', experimentId);
+      await writeSweepEvidenceBundle({
+        result,
+        config,
+        outputDir: path.join(root, evidenceRelative),
+        experimentId,
+        evidenceLabel: 'SYNTHETIC',
+        command: 'npm run sweep:mock',
+        reproduction: `node scripts/verify-bundle.mjs ${evidenceRelative}`,
+      });
       console.log(`cells complete: ${result.cells.filter((cell) => cell.status === 'complete').length}/${result.cells.length}`);
       console.log(`publishable high-N: ${result.publishableHighN}`);
       console.log(`suppression: ${result.suppressionReason}`);
       console.log(`networkAttempts=${networkAttempts}`);
+      console.log(`verified evidence: ${evidenceRelative}`);
     } finally {
       globalThis.fetch = priorFetch;
     }
@@ -88,10 +106,41 @@ async function main() {
     }),
     sweepOptions: { outputDir: path.join(root, 'runs', 'live-sweep') },
   });
+  const recordedAtUtc = new Date().toISOString();
+  const experimentId = `live-high-n-${recordedAtUtc.replaceAll(/[-:.]/g, '')}`;
+  const evidenceRelative = path.join('evidence', experimentId);
+  const snapshotBytes = fs.readFileSync(path.join(root, 'fixtures/live-budget-v1.json'));
+  await writeSweepEvidenceBundle({
+    result: live.result,
+    config,
+    outputDir: path.join(root, evidenceRelative),
+    experimentId,
+    evidenceLabel: live.result.publishableHighN
+      ? 'LIVE CANDIDATE — PUBLICATION GATE PASSED'
+      : 'LIVE CANDIDATE — CONCLUSIONS SUPPRESSED',
+    command: 'npm run sweep:live',
+    recordedAtUtc,
+    modelProvider: 'Anthropic',
+    model: snapshot.model,
+    liveBudget: {
+      snapshotPath: 'fixtures/live-budget-v1.json',
+      snapshotSha256: createHash('sha256').update(snapshotBytes).digest('hex'),
+      authorizationHash: live.authorizationHash,
+      humanCapMicroUsd: live.capMicroUsd.toString(),
+      conservativeEstimateMicroUsd: live.estimateMicroUsd.toString(),
+      worstCasePerCallMicroUsd: live.perCallMicroUsd.toString(),
+      attemptedCalls: live.budgetState.attemptedCalls,
+      knownAccruedMicroUsd: live.budgetState.knownAccruedMicroUsd.toString(),
+      outstandingReservedMicroUsd: live.budgetState.outstandingReservedMicroUsd.toString(),
+      lock: live.budgetState.lock,
+    },
+    reproduction: `node scripts/verify-bundle.mjs ${evidenceRelative}`,
+  });
   console.log(`live authorization: ${live.authorizationHash}`);
   console.log(`attempted calls: ${live.budgetState.attemptedCalls}`);
   console.log(`publishable high-N: ${live.result.publishableHighN}`);
   console.log(`suppression: ${live.result.suppressionReason}`);
+  console.log(`verified evidence: ${evidenceRelative}`);
 }
 
 main().catch((error) => {
