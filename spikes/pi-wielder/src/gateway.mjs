@@ -14,18 +14,22 @@
 import { pathToFileURL } from 'node:url';
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
-import { x402Paywall } from './x402-seller.mjs';
+import {
+  createLiveFacilitatorTransport,
+  createMockFacilitatorTransport,
+  x402Paywall,
+} from './x402-seller.mjs';
 
 // Flat per-call testnet prices by model family (real resellers price per
 // token; per-call keeps the 402 requirements computable before inference).
-export const MODEL_PRICES_USDC = { claude: 0.041, gpt: 0.087, default: 0.05 };
+export const MODEL_PRICES_USDC = Object.freeze({ claude: '0.041', gpt: '0.087', default: '0.05' });
 const priceFor = (model = '') =>
   model.startsWith('claude') ? MODEL_PRICES_USDC.claude
   : model.startsWith('gpt') ? MODEL_PRICES_USDC.gpt
   : MODEL_PRICES_USDC.default;
 
 export function createGateway({
-  facilitatorUrl,
+  facilitatorTransport,
   payTo = process.env.PAY_TO_ADDRESS || '0x000000000000000000000000000000000000dEaD',
   mockLlm = process.env.MOCK_LLM === '1',
 } = {}) {
@@ -39,7 +43,7 @@ export function createGateway({
       // and again in the handler is safe.
       price: async (c) => priceFor((await c.req.json().catch(() => ({}))).model),
       payTo,
-      facilitatorUrl,
+      facilitatorTransport,
       description: 'per-call model inference (x402 reseller, testnet)',
     }),
     async (c) => {
@@ -196,12 +200,22 @@ export function startGateway({ port = 0, ...opts } = {}) {
 
 // Standalone: `npm run gateway`
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const { startMockFacilitator } = await import('./facilitator-mock.mjs');
-  const facilitatorUrl = process.env.MOCK_FACILITATOR === '1'
-    ? (await startMockFacilitator()).url
-    : (process.env.FACILITATOR_URL || 'https://x402.org/facilitator');
-  const { url } = await startGateway({ port: Number(process.env.GATEWAY_PORT || 8403), facilitatorUrl });
-  console.log(`[gateway] x402-gated /v1/chat/completions at ${url} (facilitator: ${facilitatorUrl})`);
+  let facilitatorTransport;
+  let facilitatorMode;
+  if (process.env.ALLOW_LIVE_X402 === '1') {
+    facilitatorTransport = createLiveFacilitatorTransport(process.env.FACILITATOR_URL);
+    facilitatorMode = 'approved-base-sepolia';
+  } else {
+    const { createMockFacilitator } = await import('./facilitator-mock.mjs');
+    const facilitator = createMockFacilitator();
+    facilitatorTransport = createMockFacilitatorTransport((url, init) => facilitator.request(url, init));
+    facilitatorMode = 'in-process-mock';
+  }
+  const { url } = await startGateway({
+    port: Number(process.env.GATEWAY_PORT || 8403),
+    facilitatorTransport,
+  });
+  console.log(`[gateway] x402-gated /v1/chat/completions at ${url} (facilitator: ${facilitatorMode})`);
 }
 
 // Wrap a completed chat.completion as OpenAI SSE chunks. Not true streaming —

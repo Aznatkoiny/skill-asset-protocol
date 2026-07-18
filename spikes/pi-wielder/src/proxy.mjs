@@ -17,6 +17,7 @@ import crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
+import { formatUsdc } from '../../../prototype/atomic-money.mjs';
 import { loadAccount } from './wallet.mjs';
 import { createLedger, renderLedger } from './ledger.mjs';
 
@@ -35,12 +36,16 @@ const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64');
 const unb64 = (s) => JSON.parse(Buffer.from(s, 'base64').toString('utf8'));
 
 // The whole buyer protocol: request -> 402 -> sign EIP-3009 -> retry once.
-// Returns { res, paid, xPayment, timings } — timings are the spike's
+// Returns the accepted quote/authorization identity with the response. Timings are the spike's
 // payment-overhead measurement (402 roundtrip + sign + facilitator).
-async function payingFetch(account, url, init) {
+export async function payingFetch(account, url, init, {
+  fetchImpl = fetch,
+  idempotencyKey = crypto.randomUUID(),
+} = {}) {
+  const requestHeaders = { ...init.headers, 'Idempotency-Key': idempotencyKey };
   const t0 = performance.now();
-  const first = await fetch(url, init);
-  if (first.status !== 402) return { res: first, paid: false };
+  const first = await fetchImpl(url, { ...init, headers: requestHeaders });
+  if (first.status !== 402) return { res: first, paid: false, idempotencyKey };
   const ms402 = performance.now() - t0;
 
   // The 402 body carries PaymentRequirements; we accept the first offer.
@@ -71,12 +76,26 @@ async function payingFetch(account, url, init) {
   // Retry with X-PAYMENT. The seller verifies + settles via its facilitator.
   const xPayment = b64({ x402Version: 1, scheme: 'exact', network: req.network, payload: { signature, authorization } });
   const tRetry = performance.now();
-  const res = await fetch(url, { ...init, headers: { ...init.headers, 'X-PAYMENT': xPayment } });
+  const res = await fetchImpl(url, {
+    ...init,
+    headers: { ...requestHeaders, 'X-PAYMENT': xPayment },
+  });
   const msPaidRoundtrip = performance.now() - tRetry;
   const msFacilitator = Number(res.headers.get('X-402-FACILITATOR-MS') ?? NaN); // seller-reported verify+settle
+  const paymentResponse = res.headers.get('X-PAYMENT-RESPONSE');
+  const settlement = paymentResponse ? unb64(paymentResponse) : null;
   return {
-    res, paid: true, xPayment,
-    amountUSDC: Number(req.maxAmountRequired) / 1e6,
+    res,
+    paid: true,
+    xPayment,
+    idempotencyKey,
+    settlementReference: authorization.nonce.toLowerCase(),
+    txHash: settlement?.transaction ?? null,
+    payer: account.address.toLowerCase(),
+    requestHash: req.extra.requestHash,
+    quoteId: req.extra.quoteId,
+    amountAtomic: String(req.maxAmountRequired),
+    amountDisplay: formatUsdc(BigInt(req.maxAmountRequired)),
     timings: { ms402, msSign, msFacilitator, msPaidRoundtrip, msOverhead: ms402 + msSign + (msFacilitator || 0) },
   };
 }

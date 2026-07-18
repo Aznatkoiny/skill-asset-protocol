@@ -1,152 +1,354 @@
-// x402-seller.mjs — the SELLER half of the x402 protocol, written out by hand.
+// Seller-side x402 v1 boundary for the offline/testnet spike.
 //
-// Both paid services in this spike (collar.mjs, gateway.mjs) gate their routes
-// with the `x402Paywall` Hono middleware below. We deliberately implement the
-// x402 v1 "exact" scheme manually instead of pulling in `@x402/hono`:
-// the published 2.x packages implement protocol v2 (class-based scheme
-// registries, facilitator sync-on-start) while the free no-auth testnet
-// facilitator at https://x402.org/facilitator speaks v1 — and, for a spike,
-// spelling the handshake out is the argument. The whole protocol is ~100
-// commented lines.
-//
-// The seller flow (this file), per the x402 v1 spec:
-//   1. Request arrives without an X-PAYMENT header
-//        -> respond 402 with { x402Version: 1, accepts: [PaymentRequirements] }.
-//   2. Client retries with X-PAYMENT: base64(JSON payment payload)
-//        -> POST facilitator /verify  (checks the EIP-3009 signature + funds)
-//        -> POST facilitator /settle  (broadcasts transferWithAuthorization;
-//                                      the settled txHash is the receipt)
-//   3. The settled txHash is treated as a SINGLE-USE EXECUTION CREDENTIAL:
-//      it goes into an in-memory consumed-set and any replay of the same
-//      payment is rejected. (On a real chain the EIP-3009 nonce makes the
-//      replayed /settle fail anyway; the consumed-set makes the same property
-//      hold under the mock facilitator, and models the protocol's
-//      "no credential, no run" rule explicitly.)
-//   4. Only then does the resource handler run. Success responses carry an
-//      X-PAYMENT-RESPONSE header (base64 settlement receipt) so the buyer
-//      learns the txHash.
-//
-// NOTE we settle BEFORE executing the resource. Production middleware usually
-// executes first and settles after (so a crashed handler doesn't charge the
-// buyer); the collar wants the opposite order because the txHash *is* the
-// execution credential — pay -> mint -> consume -> execute, exactly the
-// sequence in prototype/settlement-engine.mjs.
+// A client-generated Idempotency-Key binds method, resource URL, and exact body
+// bytes to one frozen PaymentRequirements envelope. The Collar persists that
+// envelope and owns payment/execution lifecycle state; this middleware never
+// rebuilds an offer after restart and never treats a quote as authorization.
 
-// --- x402 v1 / Base Sepolia constants -------------------------------------
+import crypto from 'node:crypto';
+
+import { formatUsdc, parseUsdc } from '../../../prototype/atomic-money.mjs';
+
 export const X402_VERSION = 1;
 export const NETWORK = 'base-sepolia';
 export const CHAIN_ID = 84532;
-// Circle's canonical USDC deployment on Base Sepolia (6 decimals).
-export const USDC_ADDRESS = '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
-// EIP-712 domain values USDC uses for EIP-3009 signatures.
-export const USDC_EIP712 = { name: 'USDC', version: '2' };
-export const USDC_DECIMALS = 6;
+export const USDC_ADDRESS = '0x036cbd53842c5426634e7929541ec2318f3dcf7e';
+export const USDC_EIP712 = Object.freeze({ name: 'USDC', version: '2' });
+export const APPROVED_LIVE_FACILITATOR_BASE = 'https://x402.org/facilitator';
 
-export const usdcToAtomic = (usdc) => String(Math.round(Number(usdc) * 10 ** USDC_DECIMALS));
-export const atomicToUsdc = (atomic) => Number(atomic) / 10 ** USDC_DECIMALS;
+export const usdcToAtomic = (display) => parseUsdc(display).toString();
+export const atomicToUsdc = (atomic) => formatUsdc(BigInt(atomic));
 
-const b64ToJson = (s) => JSON.parse(Buffer.from(s, 'base64').toString('utf8'));
-const jsonToB64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64');
+const b64ToJson = (value) => JSON.parse(Buffer.from(value, 'base64').toString('utf8'));
+const jsonToB64 = (value) => Buffer.from(JSON.stringify(value)).toString('base64');
+const authorizedTransports = new WeakSet();
 
-/**
- * Hono middleware that 402-gates a route.
- *
- * @param {object} opts
- * @param {number|function} opts.price   price in USDC (e.g. 0.25), or an async
- *                                       (honoContext) => number for per-request pricing
- * @param {string}  opts.payTo           address the USDC authorization must pay
- * @param {string}  opts.facilitatorUrl  x402 facilitator base URL (/verify, /settle)
- * @param {string}  opts.description     human-readable description in the 402 offer
- *
- * On success, the settlement receipt is exposed to the downstream handler as
- * c.get('x402') = { txHash, payer, amountUsdc, requirements }.
- */
-export function x402Paywall({ price, payTo, facilitatorUrl, description = '' }) {
-  const consumed = new Set(); // settled txHash -> already-used execution credentials
+function authorizeTransport(transport) {
+  const frozen = Object.freeze(transport);
+  authorizedTransports.add(frozen);
+  return frozen;
+}
+
+export function createMockFacilitatorTransport(fetchImpl) {
+  if (typeof fetchImpl !== 'function') throw new TypeError('mock facilitator requires an injected fetch/app');
+  return authorizeTransport({
+    mode: 'mock',
+    baseUrl: 'http://facilitator.invalid',
+    fetchImpl,
+  });
+}
+
+export function createLiveFacilitatorTransport(rawBaseUrl, fetchImpl = fetch) {
+  if (rawBaseUrl !== APPROVED_LIVE_FACILITATOR_BASE) {
+    const error = new Error('live facilitator is not the pinned approved endpoint');
+    error.code = 'FACILITATOR_NOT_APPROVED';
+    throw error;
+  }
+  const parsed = new URL(rawBaseUrl);
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password
+      || parsed.port || parsed.search || parsed.hash || parsed.pathname !== '/facilitator') {
+    const error = new Error('live facilitator endpoint violates the approved HTTPS contract');
+    error.code = 'FACILITATOR_NOT_APPROVED';
+    throw error;
+  }
+  if (typeof fetchImpl !== 'function') throw new TypeError('live facilitator requires fetch');
+  return authorizeTransport({ mode: 'live', baseUrl: rawBaseUrl, fetchImpl });
+}
+
+function requireFacilitatorTransport(transport) {
+  if (!transport || !authorizedTransports.has(transport)) {
+    throw new Error('facilitatorTransport must come from an approved live or injected-mock constructor');
+  }
+  return transport;
+}
+
+function canonicalAddress(value) {
+  const text = String(value ?? '');
+  if (!/^0x[0-9a-fA-F]{40}$/.test(text)) throw new Error('payTo must be a 20-byte hex address');
+  return text.toLowerCase();
+}
+
+function validTxHash(value) {
+  return /^0x[0-9a-fA-F]{64}$/.test(String(value ?? ''));
+}
+
+function terminalReplayIsTrusted(decision, payer) {
+  return decision?.kind === 'terminal'
+    && ['settled', 'refunded'].includes(decision.paymentState)
+    && validTxHash(decision.txHash)
+    && String(decision.payer ?? '').toLowerCase() === String(payer).toLowerCase()
+    && decision.receipt
+    && Number.isSafeInteger(decision.httpStatus)
+    && decision.httpStatus >= 100
+    && decision.httpStatus <= 599;
+}
+
+function validateAuthorizationEnvelope(paymentPayload, requirements) {
+  if (paymentPayload?.x402Version !== X402_VERSION
+      || paymentPayload?.scheme !== requirements.scheme
+      || paymentPayload?.network !== requirements.network) {
+    throw new Error('payment envelope does not exactly match the frozen x402 offer');
+  }
+  const authorization = paymentPayload?.payload?.authorization;
+  if (!authorization || !paymentPayload?.payload?.signature) {
+    throw new Error('payment authorization lacks authorization or signature');
+  }
+  if (String(authorization.to ?? '').toLowerCase() !== requirements.payTo.toLowerCase()
+      || String(authorization.value ?? '') !== requirements.maxAmountRequired) {
+    throw new Error('payment authorization must exactly match payee and quoted amount');
+  }
+  if (!/^0x[0-9a-fA-F]{64}$/.test(String(authorization.nonce ?? ''))
+      || !/^0x[0-9a-fA-F]{40}$/.test(String(authorization.from ?? ''))) {
+    throw new Error('payment authorization lacks a valid nonce or payer');
+  }
+  return authorization;
+}
+
+export function x402Paywall({
+  price,
+  payTo,
+  facilitatorTransport,
+  description = '',
+  lifecycle = {},
+}) {
+  const transport = requireFacilitatorTransport(facilitatorTransport);
+  const canonicalPayTo = canonicalAddress(payTo);
+  const frozenOffers = new Map();
 
   return async (c, next) => {
-    const priceUsdc = typeof price === 'function' ? await price(c) : price;
-    const requirements = {
-      scheme: 'exact',
-      network: NETWORK,
-      maxAmountRequired: usdcToAtomic(priceUsdc), // atomic USDC (6 decimals)
-      resource: c.req.url,
-      description,
-      mimeType: 'application/json',
-      payTo,
-      maxTimeoutSeconds: 60,
-      asset: USDC_ADDRESS,
-      // The buyer needs these to build the EIP-712 domain it signs against.
-      extra: { name: USDC_EIP712.name, version: USDC_EIP712.version },
-    };
-
-    // -- step 1: no payment attached -> challenge with 402 ------------------
+    const idempotencyKey = c.req.header('Idempotency-Key')?.trim();
+    if (!idempotencyKey) return c.json({ error: 'Idempotency-Key header is required' }, 400);
     const paymentHeader = c.req.header('X-PAYMENT');
-    if (!paymentHeader) {
-      return c.json(
-        { x402Version: X402_VERSION, error: 'X-PAYMENT header is required', accepts: [requirements] },
-        402,
-      );
+    const requestBody = await c.req.text();
+    const requestHash = `sha256:${crypto.createHash('sha256')
+      .update(`${c.req.method}\n${c.req.url}\n${requestBody}`)
+      .digest('hex')}`;
+
+    let requirements = frozenOffers.get(idempotencyKey) ?? null;
+    if (!requirements) {
+      const recovered = await lifecycle.loadFrozenOffer?.({ idempotencyKey });
+      if (recovered) {
+        requirements = structuredClone(recovered);
+        frozenOffers.set(idempotencyKey, requirements);
+      }
+    }
+    if (requirements) {
+      if (requirements.extra?.requestHash !== requestHash) {
+        return c.json({ error: 'Idempotency-Key already binds a different request' }, 409);
+      }
+    } else {
+      if (paymentHeader) return c.json({ error: 'paid retry has no prior frozen x402 offer' }, 409);
+      const priceUsdc = typeof price === 'function' ? await price(c) : price;
+      const issuedAt = new Date().toISOString();
+      const expiresAt = new Date(Date.now() + 60_000).toISOString();
+      const base = {
+        scheme: 'exact',
+        network: NETWORK,
+        maxAmountRequired: usdcToAtomic(priceUsdc),
+        resource: c.req.url,
+        description,
+        mimeType: 'application/json',
+        payTo: canonicalPayTo,
+        maxTimeoutSeconds: 60,
+        asset: USDC_ADDRESS,
+      };
+      const quoteId = `sha256:${crypto.createHash('sha256')
+        .update(JSON.stringify({ ...base, requestHash, issuedAt, expiresAt }))
+        .digest('hex')}`;
+      requirements = {
+        ...base,
+        extra: {
+          name: USDC_EIP712.name,
+          version: USDC_EIP712.version,
+          requestHash,
+          quoteId,
+          issuedAt,
+          expiresAt,
+        },
+      };
+      frozenOffers.set(idempotencyKey, requirements);
     }
 
-    // -- step 2: decode + verify + settle through the facilitator -----------
+    if (!paymentHeader) {
+      try {
+        await lifecycle.onOffered?.({
+          idempotencyKey,
+          requirements: structuredClone(requirements),
+          expiresAt: requirements.extra.expiresAt,
+        });
+      } catch (error) {
+        return c.json({ error: error.message }, error.code === 'JOURNAL_CONFLICT' ? 409 : 409);
+      }
+      return c.json({
+        x402Version: X402_VERSION,
+        error: 'X-PAYMENT header is required',
+        accepts: [requirements],
+      }, 402);
+    }
+
     let paymentPayload;
     try {
       paymentPayload = b64ToJson(paymentHeader);
     } catch {
-      return c.json({ x402Version: X402_VERSION, error: 'malformed X-PAYMENT header', accepts: [requirements] }, 402);
+      return c.json({
+        x402Version: X402_VERSION,
+        error: 'malformed X-PAYMENT header',
+        accepts: [requirements],
+      }, 402);
     }
 
-    const facilitatorBody = { x402Version: X402_VERSION, paymentPayload, paymentRequirements: requirements };
-    const tFacilitator = performance.now(); // measured so the buyer can report verify+settle overhead
-    const verify = await postJson(`${facilitatorUrl}/verify`, facilitatorBody);
-    if (!verify?.isValid) {
-      return c.json(
-        { x402Version: X402_VERSION, error: `payment verification failed: ${verify?.invalidReason ?? 'unknown'}`, accepts: [requirements] },
-        402,
-      );
+    let authorization;
+    try {
+      authorization = validateAuthorizationEnvelope(paymentPayload, requirements);
+    } catch (error) {
+      await lifecycle.onRejected?.({ idempotencyKey, reason: error.message });
+      return c.json({
+        x402Version: X402_VERSION,
+        error: error.message,
+        accepts: [requirements],
+      }, 402);
+    }
+    const settlementReference = authorization.nonce.toLowerCase();
+    const payer = authorization.from.toLowerCase();
+    let priorDecision = null;
+    try {
+      priorDecision = await lifecycle.onSigned?.({
+        idempotencyKey,
+        settlementReference,
+        payer,
+        requirements: structuredClone(requirements),
+      });
+    } catch (error) {
+      return c.json({ error: error.message }, 409);
     }
 
-    const settle = await postJson(`${facilitatorUrl}/settle`, facilitatorBody);
-    const facilitatorMs = performance.now() - tFacilitator;
+    if (priorDecision?.kind === 'terminal') {
+      if (!terminalReplayIsTrusted(priorDecision, payer)) {
+        return c.json({ error: 'terminal replay lacks a settled or refunded transaction' }, 503);
+      }
+      const body = {
+        replayed: true,
+        receipt: priorDecision.receipt,
+        ...(priorDecision.httpStatus >= 400
+          ? { error: priorDecision.receipt?.receipt?.execution?.message ?? 'terminal execution failed' }
+          : {}),
+      };
+      const replay = c.json(body, priorDecision.httpStatus);
+      replay.headers.set('X-PAYMENT-RESPONSE', jsonToB64({
+        success: true,
+        transaction: priorDecision.txHash,
+        network: NETWORK,
+        payer: priorDecision.payer,
+        settlementReference,
+      }));
+      return replay;
+    }
+    if (priorDecision?.kind === 'payment_unresolved') {
+      return c.json({
+        error: 'payment settlement unresolved; trusted reconciliation is required',
+        settlementReference,
+      }, 503);
+    }
+    if (priorDecision?.kind === 'execution_unresolved') {
+      return c.json({
+        error: 'execution outcome unresolved; trusted executor reconciliation is required',
+        executionAttemptId: priorDecision.executionAttemptId,
+      }, 503);
+    }
+
+    const facilitatorBody = {
+      x402Version: X402_VERSION,
+      paymentPayload,
+      paymentRequirements: requirements,
+    };
+    let settle;
+    let facilitatorMs = 0;
+    if (priorDecision?.kind === 'settled') {
+      if (!validTxHash(priorDecision.txHash)
+          || String(priorDecision.payer ?? '').toLowerCase() !== payer) {
+        return c.json({ error: 'persisted settlement proof does not match the signed payer' }, 503);
+      }
+      settle = {
+        success: true,
+        transaction: priorDecision.txHash,
+        payer: priorDecision.payer,
+        network: NETWORK,
+      };
+    } else {
+      const started = performance.now();
+      try {
+        const verify = await postJson(transport, 'verify', facilitatorBody);
+        if (!verify?.isValid) {
+          const reason = `payment verification failed: ${verify?.invalidReason ?? 'unknown'}`;
+          await lifecycle.onRejected?.({ idempotencyKey, reason, settlementReference, payer });
+          return c.json({
+            x402Version: X402_VERSION,
+            error: reason,
+            accepts: [requirements],
+          }, 402);
+        }
+        settle = await postJson(transport, 'settle', facilitatorBody);
+      } catch (error) {
+        await lifecycle.onUnresolved?.({
+          idempotencyKey,
+          settlementReference,
+          payer,
+          reason: `facilitator response unresolved: ${error.message}`,
+        });
+        return c.json({ error: 'payment settlement unresolved', settlementReference }, 503);
+      }
+      facilitatorMs = performance.now() - started;
+    }
     if (!settle?.success) {
-      return c.json(
-        { x402Version: X402_VERSION, error: `payment settlement failed: ${settle?.errorReason ?? 'unknown'}`, accepts: [requirements] },
-        402,
-      );
+      const reason = `payment settlement failed: ${settle?.errorReason ?? 'unknown'}`;
+      await lifecycle.onRejected?.({ idempotencyKey, reason, settlementReference, payer });
+      return c.json({
+        x402Version: X402_VERSION,
+        error: reason,
+        accepts: [requirements],
+      }, 402);
+    }
+    if (priorDecision?.kind !== 'settled') {
+      await lifecycle.onSettled?.({
+        idempotencyKey,
+        settlementReference,
+        txHash: settle.transaction,
+        payer: String(settle.payer ?? payer).toLowerCase(),
+        amountAtomic: requirements.maxAmountRequired,
+        requirements: structuredClone(requirements),
+      });
     }
 
-    // -- step 3: the settled txHash is a single-use credential --------------
-    if (consumed.has(settle.transaction)) {
-      // "NO CREDENTIAL, NO RUN" — a credential spends exactly once.
-      return c.json({ error: 'replayed payment: credential already consumed', txHash: settle.transaction }, 409);
-    }
-    consumed.add(settle.transaction);
-
-    // -- step 4: run the resource with the receipt in scope -----------------
     c.set('x402', {
+      idempotencyKey,
+      settlementReference,
       txHash: settle.transaction,
-      payer: settle.payer ?? paymentPayload?.payload?.authorization?.from,
-      amountUsdc: atomicToUsdc(requirements.maxAmountRequired),
+      payer: String(settle.payer ?? payer).toLowerCase(),
+      amountAtomic: requirements.maxAmountRequired,
       requirements,
     });
     await next();
-
-    // Buyer-visible settlement receipt (standard x402 response header) plus a
-    // spike-only timing header so the buyer can attribute verify+settle cost.
-    c.res.headers.set(
-      'X-PAYMENT-RESPONSE',
-      jsonToB64({ success: true, transaction: settle.transaction, network: NETWORK, payer: settle.payer }),
-    );
+    c.res.headers.set('X-PAYMENT-RESPONSE', jsonToB64({
+      success: true,
+      transaction: settle.transaction,
+      network: NETWORK,
+      payer: settle.payer ?? payer,
+      settlementReference,
+    }));
     c.res.headers.set('X-402-FACILITATOR-MS', facilitatorMs.toFixed(1));
   };
 }
 
-async function postJson(url, body) {
-  const res = await fetch(url, {
+async function postJson(transport, operation, body) {
+  if (!['verify', 'settle'].includes(operation)) throw new Error('invalid facilitator operation');
+  const response = await transport.fetchImpl(`${transport.baseUrl}/${operation}`, {
     method: 'POST',
+    redirect: 'error',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
-  return res.json().catch(() => null);
+  if (!response.ok) throw new Error(`facilitator HTTP ${response.status}`);
+  const json = await response.json().catch(() => null);
+  if (!json) throw new Error('facilitator returned no JSON result');
+  return json;
 }

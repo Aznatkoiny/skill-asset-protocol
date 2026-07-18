@@ -1,0 +1,287 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import { Hono } from 'hono';
+import { createMockFacilitator } from '../src/facilitator-mock.mjs';
+import { payingFetch } from '../src/proxy.mjs';
+import { throwawayAccount } from '../src/wallet.mjs';
+import {
+  APPROVED_LIVE_FACILITATOR_BASE,
+  createLiveFacilitatorTransport,
+  createMockFacilitatorTransport,
+  x402Paywall,
+} from '../src/x402-seller.mjs';
+
+const payTo = `0x${'d'.repeat(40)}`;
+
+function resourceApp({ facilitatorTransport, lifecycle = {}, price = '0.25', handler } = {}) {
+  const app = new Hono();
+  app.post('/resource', x402Paywall({
+    price,
+    payTo,
+    facilitatorTransport,
+    lifecycle,
+  }), handler ?? ((c) => c.json({ ok: true })));
+  return app;
+}
+
+test('challenge and retry emit one ordered lifecycle under one idempotency key', async () => {
+  const facilitator = createMockFacilitator();
+  const transport = createMockFacilitatorTransport((url, init) => facilitator.request(url, init));
+  const calls = [];
+  const lifecycle = Object.fromEntries([
+    'onOffered', 'onSigned', 'onSettled', 'onUnresolved', 'onRejected',
+  ].map((name) => [name, async (payload) => calls.push([name, payload])]));
+  const app = resourceApp({ facilitatorTransport: transport, lifecycle });
+  const result = await payingFetch(throwawayAccount(), 'http://seller.test/resource', {
+    method: 'POST', body: '{}',
+  }, {
+    fetchImpl: (url, init) => app.request(url, init),
+    idempotencyKey: 'idem-lifecycle',
+  });
+  assert.equal(result.res.status, 200);
+  assert.deepEqual(calls.map(([name]) => name), ['onOffered', 'onSigned', 'onSettled']);
+  assert.ok(calls.every(([, payload]) => payload.idempotencyKey === 'idem-lifecycle'));
+  assert.deepEqual(calls[0][1].requirements, calls[1][1].requirements);
+  assert.match(calls[0][1].requirements.extra.requestHash, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(calls[2][1].settlementReference, result.settlementReference);
+  assert.equal(calls[2][1].txHash, result.txHash);
+  assert.equal(result.amountAtomic, '250000');
+  assert.equal(result.amountDisplay, '0.250000');
+});
+
+test('a restarted paywall accepts only the complete persisted frozen offer', async () => {
+  const facilitator = createMockFacilitator();
+  const transport = createMockFacilitatorTransport((url, init) => facilitator.request(url, init));
+  let persistedRequirements = null;
+  let fetchCount = 0;
+  const beforeRestart = resourceApp({
+    facilitatorTransport: transport,
+    lifecycle: {
+      async onOffered({ requirements }) { persistedRequirements = structuredClone(requirements); },
+    },
+    handler: (c) => c.json({ shouldNotExecute: true }),
+  });
+  const afterRestart = resourceApp({
+    facilitatorTransport: transport,
+    price: '9.99',
+    lifecycle: {
+      async loadFrozenOffer() { return structuredClone(persistedRequirements); },
+    },
+  });
+  const result = await payingFetch(throwawayAccount(), 'http://seller.test/resource', {
+    method: 'POST', body: '{"input":"same bytes"}',
+  }, {
+    idempotencyKey: 'idem-restart',
+    fetchImpl: (url, init) => (++fetchCount === 1 ? beforeRestart : afterRestart).request(url, init),
+  });
+  assert.equal(result.res.status, 200);
+  assert.equal(fetchCount, 2);
+  assert.equal(persistedRequirements.maxAmountRequired, '250000');
+  assert.equal(persistedRequirements.payTo, payTo);
+});
+
+test('restart rejects different request bytes under the frozen idempotency key before facilitator or execution', async () => {
+  let persistedRequirements = null;
+  let paidHeaders = null;
+  let facilitatorCalls = 0;
+  let executions = 0;
+  const transport = createMockFacilitatorTransport(async () => {
+    facilitatorCalls += 1;
+    throw new Error('must not run');
+  });
+  const beforeRestart = resourceApp({
+    facilitatorTransport: transport,
+    lifecycle: {
+      async onOffered({ requirements }) { persistedRequirements = structuredClone(requirements); },
+    },
+  });
+  let fetchCount = 0;
+  const first = await payingFetch(throwawayAccount(), 'http://seller.test/resource', {
+    method: 'POST', body: '{"input":"original bytes"}',
+  }, {
+    idempotencyKey: 'idem-restart-conflict',
+    fetchImpl: async (url, init) => {
+      fetchCount += 1;
+      if (fetchCount === 1) return beforeRestart.request(url, init);
+      paidHeaders = init.headers;
+      return new Response(JSON.stringify({ injected: 'process stopped before retry' }), {
+        status: 503, headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+  assert.equal(first.res.status, 503);
+  const afterRestart = resourceApp({
+    facilitatorTransport: transport,
+    lifecycle: {
+      async loadFrozenOffer() { return structuredClone(persistedRequirements); },
+    },
+    handler: (c) => { executions += 1; return c.json({ ok: true }); },
+  });
+  const conflict = await afterRestart.request('http://seller.test/resource', {
+    method: 'POST',
+    headers: paidHeaders,
+    body: '{"input":"different bytes"}',
+  });
+  assert.equal(conflict.status, 409);
+  assert.match((await conflict.json()).error, /different request/);
+  assert.equal(facilitatorCalls, 0);
+  assert.equal(executions, 0);
+});
+
+test('missing idempotency and paid retry without a frozen offer fail before facilitator calls', async () => {
+  let facilitatorCalls = 0;
+  const transport = createMockFacilitatorTransport(async () => {
+    facilitatorCalls += 1;
+    throw new Error('must not run');
+  });
+  const app = resourceApp({ facilitatorTransport: transport });
+  const missing = await app.request('http://seller.test/resource', { method: 'POST', body: '{}' });
+  assert.equal(missing.status, 400);
+  assert.match((await missing.json()).error, /Idempotency-Key/);
+  const orphan = await app.request('http://seller.test/resource', {
+    method: 'POST',
+    headers: { 'Idempotency-Key': 'idem-orphan', 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+    body: '{}',
+  });
+  assert.equal(orphan.status, 409);
+  assert.equal(facilitatorCalls, 0);
+});
+
+test('authorization amount must equal the frozen quote exactly before facilitator submission', async () => {
+  let facilitatorCalls = 0;
+  const facilitator = createMockFacilitator();
+  const transport = createMockFacilitatorTransport(async (url, init) => {
+    facilitatorCalls += 1;
+    return facilitator.request(url, init);
+  });
+  const app = resourceApp({ facilitatorTransport: transport });
+  let requestCount = 0;
+  const result = await payingFetch(throwawayAccount(), 'http://seller.test/resource', {
+    method: 'POST', body: '{}',
+  }, {
+    idempotencyKey: 'idem-overpay',
+    fetchImpl: (url, init) => {
+      requestCount += 1;
+      if (requestCount === 2) {
+        const payment = JSON.parse(Buffer.from(init.headers['X-PAYMENT'], 'base64').toString('utf8'));
+        payment.payload.authorization.value = '250001';
+        return app.request(url, {
+          ...init,
+          headers: { ...init.headers, 'X-PAYMENT': Buffer.from(JSON.stringify(payment)).toString('base64') },
+        });
+      }
+      return app.request(url, init);
+    },
+  });
+  assert.equal(result.res.status, 402);
+  assert.match((await result.res.json()).error, /exactly match/);
+  assert.equal(facilitatorCalls, 0);
+});
+
+test('unresolved payment retries return 503 without re-verification or settlement', async () => {
+  let facilitatorCalls = 0;
+  const transport = createMockFacilitatorTransport(async () => {
+    facilitatorCalls += 1;
+    throw new Error('must not run');
+  });
+  const app = resourceApp({
+    facilitatorTransport: transport,
+    lifecycle: {
+      async onSigned() { return { kind: 'payment_unresolved', settlementReference: `0x${'1'.repeat(64)}` }; },
+    },
+  });
+  const result = await payingFetch(throwawayAccount(), 'http://seller.test/resource', {
+    method: 'POST', body: '{}',
+  }, {
+    idempotencyKey: 'idem-unresolved',
+    fetchImpl: (url, init) => app.request(url, init),
+  });
+  assert.equal(result.res.status, 503);
+  assert.match((await result.res.json()).error, /settlement unresolved/);
+  assert.equal(facilitatorCalls, 0);
+});
+
+test('terminal replay requires settled or refunded payment with a transaction and preserves HTTP status', async () => {
+  let calls = 0;
+  const transport = createMockFacilitatorTransport(async () => {
+    calls += 1;
+    throw new Error('must not run');
+  });
+  const account = throwawayAccount();
+  for (const [decision, expectedStatus] of [[{
+    kind: 'terminal', paymentState: 'rejected', txHash: null, payer: account.address,
+    httpStatus: 500, receipt: { receipt: { execution: { message: 'failed' } } },
+  }, 503], [{
+    kind: 'terminal', paymentState: 'settled', txHash: `0x${'4'.repeat(64)}`,
+    payer: account.address.toLowerCase(), httpStatus: 500,
+    receipt: { receipt: { execution: { message: 'provider failed' } } },
+  }, 500]]) {
+    const app = resourceApp({
+      facilitatorTransport: transport,
+      lifecycle: { async onSigned() { return decision; } },
+    });
+    const result = await payingFetch(account, 'http://seller.test/resource', {
+      method: 'POST', body: '{}',
+    }, {
+      idempotencyKey: `idem-terminal-${expectedStatus}`,
+      fetchImpl: (url, init) => app.request(url, init),
+    });
+    assert.equal(result.res.status, expectedStatus);
+    const body = await result.res.json();
+    if (expectedStatus === 500) {
+      assert.equal(body.replayed, true);
+      assert.equal(body.error, 'provider failed');
+      assert.equal(result.txHash, decision.txHash);
+    }
+  }
+  assert.equal(calls, 0);
+});
+
+test('live facilitator configuration pins one exact HTTPS base before authorization exists', () => {
+  let networkCalls = 0;
+  for (const malicious of [
+    'http://x402.org/facilitator',
+    'https://user:pass@x402.org/facilitator',
+    'https://x402.org:8443/facilitator',
+    'https://x402.org/facilitator/',
+    'https://x402.org/facilitator/verify',
+    'https://x402.org/facilitator?next=https://evil.test',
+    'https://x402.org/facilitator#evil',
+  ]) {
+    assert.throws(() => createLiveFacilitatorTransport(malicious, async () => { networkCalls += 1; }),
+      (error) => error.code === 'FACILITATOR_NOT_APPROVED');
+  }
+  assert.equal(networkCalls, 0);
+  assert.doesNotThrow(() => createLiveFacilitatorTransport(
+    APPROVED_LIVE_FACILITATOR_BASE,
+    async () => { networkCalls += 1; },
+  ));
+});
+
+test('verify and settle disable redirects and never follow a signed authorization', async () => {
+  for (const redirectOperation of ['verify', 'settle']) {
+    const destinations = [];
+    const transport = createMockFacilitatorTransport(async (url, init) => {
+      const operation = new URL(url).pathname.slice(1);
+      destinations.push([url, init.redirect]);
+      if (operation === redirectOperation) {
+        return new Response(null, { status: 302, headers: { location: 'https://evil.test/collect' } });
+      }
+      return new Response(JSON.stringify({ isValid: true }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    });
+    const app = resourceApp({ facilitatorTransport: transport });
+    const result = await payingFetch(throwawayAccount(), 'http://seller.test/resource', {
+      method: 'POST', body: '{}',
+    }, {
+      fetchImpl: (url, init) => app.request(url, init),
+      idempotencyKey: `idem-redirect-${redirectOperation}`,
+    });
+    assert.equal(result.res.status, 503);
+    assert.equal(destinations.at(-1)[0], `http://facilitator.invalid/${redirectOperation}`);
+    assert.ok(destinations.every(([, redirect]) => redirect === 'error'));
+    assert.ok(destinations.every(([url]) => !url.startsWith('https://evil.test')));
+  }
+});
