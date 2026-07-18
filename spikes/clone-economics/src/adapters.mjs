@@ -113,6 +113,7 @@ export class MockLlmAdapter {
     this.records.push(record);
     this.attempts.push({
       attemptId: `${request.kind}:${request.caseId ?? 'distill'}:${this.attempts.length + 1}`,
+      budgetAttemptId: null,
       kind: request.kind,
       caseId: request.caseId ?? null,
       success: true,
@@ -283,6 +284,7 @@ export class LiveAnthropicAdapter {
       this.records.push(record);
       this.attempts.push({
         attemptId: `${request.kind}:${request.caseId ?? 'distill'}:${this.attempts.length + 1}`,
+        budgetAttemptId: reservationId,
         kind: request.kind,
         caseId: request.caseId ?? null,
         success: true,
@@ -327,6 +329,7 @@ export class LiveAnthropicAdapter {
       const latencyMs = performance.now() - started;
       this.attempts.push({
         attemptId: `${request.kind}:${request.caseId ?? 'distill'}:${this.attempts.length + 1}`,
+        budgetAttemptId: reservationId,
         kind: request.kind,
         caseId: request.caseId ?? null,
         success: false,

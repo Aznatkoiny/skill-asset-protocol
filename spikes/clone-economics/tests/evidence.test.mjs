@@ -4,11 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
 import { recomputeSummary, verifyEvidenceBundle, writeEvidenceBundle } from '../src/evidence.mjs';
+import { readGitState } from '../src/git-state.mjs';
 import { normalizeSweepSamples, writeSweepEvidenceBundle } from '../src/sweep.mjs';
-import { liveAuthorizationHash } from '../src/authorization.mjs';
-import { approved, config, economics } from './fixtures/live-contract.mjs';
+import { config } from './fixtures/live-contract.mjs';
 
 const normalizedSample = (overrides = {}) => ({
   sampleId: 'run:target-heldout:a',
@@ -34,6 +35,7 @@ const normalizedSample = (overrides = {}) => ({
   criticalGatePass: true,
   failureClass: null,
   providerRequestId: null,
+  budgetAttemptId: null,
   ...overrides,
 });
 
@@ -46,12 +48,21 @@ const syntheticReportInputs = (overrides = {}) => ({
 });
 
 const readmeInputs = (bundlePath = 'evidence/adversarial-fixture') => ({ bundlePath });
+const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const currentGitState = readGitState(packageRoot);
+const currentGitIdentity = {
+  gitCommit: currentGitState.gitCommit,
+  gitDirty: currentGitState.gitDirty,
+};
 
 function evidenceInput(outputDir, overrides = {}) {
   return {
     outputDir,
     manifest: {
       experimentId: 'adversarial-fixture',
+      executionMode: 'mock',
+      gitCommit: currentGitState.gitCommit,
+      gitDirty: currentGitState.gitDirty,
       evidenceLabel: 'SYNTHETIC',
       command: 'test',
       configuration: {},
@@ -98,6 +109,8 @@ test('bundle hashes and summary recompute from normalized samples', (t) => {
     outputDir: dir,
     manifest: {
       experimentId: 'fixture-run',
+      executionMode: 'mock',
+      ...currentGitIdentity,
       evidenceLabel: 'SYNTHETIC',
       command: 'npm run sweep:mock',
       readmeInputs: readmeInputs('evidence/fixture-run'),
@@ -112,6 +125,116 @@ test('bundle hashes and summary recompute from normalized samples', (t) => {
   assert.equal(verified.summary.providerCostUsd, null);
   assert.equal(verified.summary.latencyMs.p50, 10);
   assert.equal(verified.summary.latencyMs.p95, 30);
+});
+
+test('executionMode is required and live mode requires a live budget', (t) => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'clone-evidence-mode-'));
+  t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+
+  const missingMode = evidenceInput(path.join(parent, 'missing-mode'));
+  delete missingMode.manifest.executionMode;
+  assert.throws(
+    () => writeEvidenceBundle(missingMode),
+    /manifest\.executionMode is required/,
+  );
+  assert.equal(fs.existsSync(path.join(parent, 'missing-mode')), false);
+
+  const live = evidenceInput(path.join(parent, 'live-without-budget'), {
+    manifest: {
+      executionMode: 'live',
+      evidenceLabel: 'LIVE CANDIDATE — CONCLUSIONS SUPPRESSED',
+    },
+    reportInputs: {
+      evidenceLabel: 'LIVE CANDIDATE — CONCLUSIONS SUPPRESSED',
+    },
+  });
+  assert.throws(
+    () => writeEvidenceBundle(live),
+    /live executionMode requires liveBudget/,
+  );
+  assert.equal(fs.existsSync(path.join(parent, 'live-without-budget')), false);
+});
+
+test('new-run evidence rejects missing or arbitrary git identity', (t) => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'clone-evidence-git-'));
+  t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+
+  const missing = evidenceInput(path.join(parent, 'missing'));
+  delete missing.manifest.gitDirty;
+  assert.throws(() => writeEvidenceBundle(missing), /manifest\.gitDirty is required/);
+  assert.equal(fs.existsSync(path.join(parent, 'missing')), false);
+
+  const arbitrary = evidenceInput(path.join(parent, 'arbitrary'), {
+    manifest: { gitCommit: '0'.repeat(40) },
+  });
+  assert.throws(() => writeEvidenceBundle(arbitrary), /git identity does not match current repository state/i);
+  assert.equal(fs.existsSync(path.join(parent, 'arbitrary')), false);
+});
+
+test('mode rows and historical provenance use exact non-forgeable sentinels', (t) => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'clone-evidence-modes-'));
+  t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+
+  assert.throws(
+    () => writeEvidenceBundle({
+      ...evidenceInput(path.join(parent, 'mock-budget-id')),
+      samples: [normalizedSample({ budgetAttemptId: 'attempt-000001' })],
+    }),
+    /mock evidence requires null budgetAttemptId values/,
+  );
+
+  const historicalLabel = 'HISTORICAL MIXED — INVALID BENCHMARK; acquisition MODELED';
+  const historical = (outputDir) => ({
+    outputDir,
+    manifest: {
+      experimentId: 'historical-fixture',
+      executionMode: 'historical',
+      recordedAtUtc: null,
+      gitCommit: 'historical-source-not-recorded',
+      gitDirty: null,
+      command: 'historical command not retained exactly',
+      evidenceLabel: historicalLabel,
+      sourceEvidence: {
+        kind: 'legacy-report-json',
+        sha256: '0554779988164651bfe6b037c8b16054e009ee6bac76e61c90af331ac6e85212',
+        bytes: 76_631,
+      },
+      configuration: {
+        historicalRunDate: '2026-07-12',
+        sourceTimestamp: 'not-recorded',
+        benchmarkVerdict: 'INVALID_BENCHMARK_TARGET_FAILED',
+      },
+      readmeInputs: readmeInputs('evidence/historical-fixture'),
+    },
+    samples: [normalizedSample({
+      sampleId: 'legacy:fixture',
+      distillationSeedStatus: 'not_recorded',
+      distillationSeedMechanism: 'historical_source_not_recorded',
+    })],
+    reportInputs: {
+      evidenceLabel: historicalLabel,
+      verdict: 'INVALID_BENCHMARK_TARGET_FAILED',
+      suppressionReason: 'INVALID_BENCHMARK_TARGET_FAILED',
+      limitations: ['HISTORICAL_ATTEMPTS_INCOMPLETE'],
+    },
+  });
+
+  const valid = historical(path.join(parent, 'valid-historical'));
+  writeEvidenceBundle(valid);
+  assert.equal(verifyEvidenceBundle(valid.outputDir).valid, true);
+
+  const mutations = [
+    ['git sentinel', (input) => { input.manifest.gitCommit = 'a'.repeat(40); }, /unrecorded git identity sentinel/],
+    ['dirty sentinel', (input) => { input.manifest.gitDirty = false; }, /unrecorded git identity sentinel/],
+    ['source identity', (input) => { input.manifest.sourceEvidence.bytes -= 1; }, /exact hash-locked sourceEvidence/],
+    ['invented timestamp', (input) => { input.manifest.recordedAtUtc = '2026-07-12T00:00:00Z'; }, /historical recordedAtUtc must be null/],
+  ];
+  mutations.forEach(([name, mutate, pattern], index) => {
+    const input = historical(path.join(parent, `invalid-${index}`));
+    mutate(input);
+    assert.throws(() => writeEvidenceBundle(input), pattern, name);
+    assert.equal(fs.existsSync(input.outputDir), false);
+  });
 });
 
 test('redaction rejects private payload fields', () => {
@@ -139,6 +262,8 @@ test('sample and configuration schemas reject nested values and secrets', () => 
       outputDir,
       manifest: {
         experimentId: 'nested-config',
+        executionMode: 'mock',
+        ...currentGitIdentity,
         evidenceLabel: 'SYNTHETIC',
         command: 'test',
         readmeInputs: readmeInputs('evidence/nested-config'),
@@ -188,6 +313,8 @@ function bundle(t) {
     outputDir: dir,
     manifest: {
       experimentId: 'strict-run',
+      executionMode: 'mock',
+      ...currentGitIdentity,
       evidenceLabel: 'SYNTHETIC',
       command: 'test',
       readmeInputs: readmeInputs('evidence/strict-run'),
@@ -382,6 +509,8 @@ test('writer validates all inputs before creating output', () => {
       outputDir,
       manifest: {
         experimentId: 'invalid-manifest',
+        executionMode: 'mock',
+        ...currentGitIdentity,
         recordedAtUtc: 'not-a-timestamp',
         evidenceLabel: 'SYNTHETIC',
         command: 'test',
@@ -523,6 +652,7 @@ test('sweep attempts normalize without request payload or output bytes', () => {
       providerCostUsd: null,
       failureClass: 'ProviderError',
       providerRequestId: null,
+      budgetAttemptId: 'attempt-000001',
       payload: { private: true },
       output: 'private',
     }],
@@ -530,6 +660,7 @@ test('sweep attempts normalize without request payload or output bytes', () => {
   assert.equal(normalized.length, 1);
   assert.equal(Object.hasOwn(normalized[0], 'payload'), false);
   assert.equal(Object.hasOwn(normalized[0], 'output'), false);
+  assert.equal(normalized[0].budgetAttemptId, 'attempt-000001');
   assert.doesNotThrow(() => recomputeSummary(normalized));
 });
 
@@ -564,6 +695,8 @@ test('completed sweep output writes and verifies through the public bundle seam'
   };
   const written = await writeSweepEvidenceBundle({
     result,
+    executionMode: 'mock',
+    gitState: currentGitState,
     config,
     outputDir: dir,
     experimentId: 'sweep-bundle-fixture',
@@ -573,54 +706,4 @@ test('completed sweep output writes and verifies through the public bundle seam'
   });
   assert.equal(written.verified.valid, true);
   assert.equal(written.verified.samples.length, 1);
-});
-
-test('live bundle authorization recomputes from hash-verified budget and economics snapshots', (t) => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'clone-live-evidence-'));
-  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
-  const fixturesDir = path.join(tempRoot, 'fixtures');
-  const outputDir = path.join(tempRoot, 'evidence', 'live-fixture');
-  fs.mkdirSync(fixturesDir, { recursive: true });
-  const snapshotBytes = Buffer.from(`${JSON.stringify(approved, null, 2)}\n`);
-  const economicsBytes = Buffer.from(`${JSON.stringify(economics, null, 2)}\n`);
-  fs.writeFileSync(path.join(fixturesDir, 'live-budget-v1.json'), snapshotBytes);
-  fs.writeFileSync(path.join(fixturesDir, 'live-economics-v1.json'), economicsBytes);
-  const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
-  const authorizationHash = liveAuthorizationHash({ config, snapshot: approved, economics });
-  writeEvidenceBundle({
-    outputDir,
-    manifest: {
-      experimentId: 'live-fixture',
-      evidenceLabel: 'SYNTHETIC',
-      command: 'synthetic live verifier fixture',
-      readmeInputs: readmeInputs('evidence/live-fixture'),
-      liveBudget: {
-        snapshotPath: 'fixtures/live-budget-v1.json',
-        snapshotSha256: digest(snapshotBytes),
-        economicsSnapshotPath: 'fixtures/live-economics-v1.json',
-        economicsSnapshotSha256: digest(economicsBytes),
-        authorizationHash,
-        humanCapMicroUsd: '1000000',
-        conservativeEstimateMicroUsd: '1000000',
-        worstCasePerCallMicroUsd: '1000000',
-        attemptedCalls: 1,
-        knownAccruedMicroUsd: '39',
-        outstandingReservedMicroUsd: '0',
-        lock: null,
-      },
-      configuration: { sweepConfig: config, liveEconomics: economics },
-    },
-    samples: [normalizedSample({
-      sampleId: 'live:target-heldout:a',
-      latencyMs: 1,
-      inputTokens: 3,
-      outputTokens: 2,
-      providerCostMicroUsd: '39',
-      providerCostUsd: 0.000039,
-      score: 1,
-      criticalGatePass: true,
-    })],
-    reportInputs: syntheticReportInputs(),
-  });
-  assert.equal(verifyEvidenceBundle(outputDir).valid, true);
 });

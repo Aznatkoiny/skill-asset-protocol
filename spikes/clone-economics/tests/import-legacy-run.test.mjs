@@ -69,6 +69,7 @@ test('legacy normalization retains 29 allow-listed rows and joins fidelity', () 
   assert.equal(samples.find((sample) => sample.caseId === 'heldout-1' && sample.profile === 'target').score, 0.4);
   assert.equal(samples.reduce((sum, sample) => sum + sample.acquisitionCostUsd, 0), 1.5);
   for (const sample of samples) {
+    assert.equal(sample.budgetAttemptId, null);
     for (const forbidden of ['prompt', 'payload', 'output', 'rawResponse', 'targetSkill', 'referenceText']) {
       assert.equal(Object.hasOwn(sample, forbidden), false);
     }

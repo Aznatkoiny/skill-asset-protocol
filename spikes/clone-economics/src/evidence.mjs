@@ -1,10 +1,22 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { liveAuthorizationHash } from './authorization.mjs';
-import { calculateProviderCostMicroUsd, validateBudgetSnapshotShape } from './budget.mjs';
-import { validateLiveEconomicsShape } from './live-economics.mjs';
+import {
+  calculateProviderCostMicroUsd,
+  conservativeSweepRequestCount,
+  estimateLiveSweepMicroUsd,
+  validateApprovedBudgetSnapshot,
+  validateBudgetSnapshotShape,
+} from './budget.mjs';
+import { loadFixtureSet } from './fixture-set.mjs';
+import { readGitState } from './git-state.mjs';
+import { validateApprovedLiveEconomics, validateLiveEconomicsShape } from './live-economics.mjs';
+import { validateSweepConfig } from './sweep.mjs';
+
+const evidenceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const SAMPLE_KEYS = new Set([
   'sampleId', 'phase', 'profile', 'caseId', 'n', 'replicateId',
@@ -14,6 +26,7 @@ const SAMPLE_KEYS = new Set([
   'providerCostMicroUsd', 'providerCostUsd',
   'acquisitionCostUsd', 'acquisitionEvidence', 'score', 'criticalGatePass',
   'failureClass', 'providerRequestId',
+  'budgetAttemptId',
 ]);
 const SAMPLE_PHASES = new Set(['acquisition', 'distillation', 'evaluation']);
 const SAMPLE_PROFILES = new Set(['target', 'clone', 'bad-clone']);
@@ -41,14 +54,21 @@ const CONFIGURATION_KEYS = new Set([
 const REQUIRED_BUNDLE_FILES = ['samples.jsonl', 'summary.json', 'report.md', 'README.md'];
 const ALL_BUNDLE_FILES = [...REQUIRED_BUNDLE_FILES, 'manifest.json'];
 const MANIFEST_INPUT_KEYS = [
-  'experimentId', 'recordedAtUtc', 'gitCommit', 'command', 'modelProvider', 'model',
+  'experimentId', 'executionMode', 'recordedAtUtc', 'gitCommit', 'gitDirty', 'command', 'modelProvider', 'model',
   'evidenceLabel', 'sourceEvidence', 'liveBudget', 'configuration', 'readmeInputs',
 ];
 const MANIFEST_KEYS = [
-  'schemaVersion', 'experimentId', 'recordedAtUtc', 'gitCommit', 'command', 'runtime',
+  'schemaVersion', 'experimentId', 'executionMode', 'recordedAtUtc', 'gitCommit', 'gitDirty', 'command', 'runtime',
   'modelProvider', 'model', 'evidenceLabel', 'sourceEvidence', 'liveBudget',
   'configuration', 'reportInputs', 'readmeInputs', 'files',
 ];
+const EXECUTION_MODES = new Set(['mock', 'live', 'historical']);
+const HISTORICAL_GIT_COMMIT = 'historical-source-not-recorded';
+const HISTORICAL_SOURCE_EVIDENCE = {
+  kind: 'legacy-report-json',
+  sha256: '0554779988164651bfe6b037c8b16054e009ee6bac76e61c90af331ac6e85212',
+  bytes: 76_631,
+};
 const REPORT_INPUT_KEYS = ['evidenceLabel', 'verdict', 'suppressionReason', 'limitations'];
 const EVIDENCE_LABELS = new Set([
   'SYNTHETIC',
@@ -200,6 +220,10 @@ function validateSample(sample) {
   if (sample.caseId !== null) safeIdentifier(sample.caseId, 'caseId', 128);
   if (sample.replicateId !== null) safeIdentifier(sample.replicateId, 'replicateId', 64);
   if (sample.providerRequestId !== null) safeIdentifier(sample.providerRequestId, 'providerRequestId', 128);
+  if (sample.budgetAttemptId !== null
+      && !(typeof sample.budgetAttemptId === 'string' && /^attempt-\d{6}$/.test(sample.budgetAttemptId))) {
+    throw new Error('budgetAttemptId must be an exact reservation identifier or null');
+  }
   if (sample.failureClass !== null
       && !(typeof sample.failureClass === 'string' && /^[A-Z][A-Za-z0-9]{0,63}$/.test(sample.failureClass))) {
     throw new Error('failureClass must be an error-class token or null');
@@ -536,19 +560,20 @@ function validateLiveBudget(liveBudget) {
   if (liveBudget === null || liveBudget === undefined) return null;
   assertPortableJson(liveBudget, 'manifest.liveBudget');
   const keys = [
-    'snapshotPath', 'snapshotSha256', 'authorizationHash', 'humanCapMicroUsd',
+    'configPath', 'configSha256', 'snapshotPath', 'snapshotSha256',
+    'authorizationHash', 'humanCapMicroUsd',
     'conservativeEstimateMicroUsd', 'worstCasePerCallMicroUsd', 'attemptedCalls',
     'knownAccruedMicroUsd', 'outstandingReservedMicroUsd', 'lock',
     'economicsSnapshotPath', 'economicsSnapshotSha256',
   ];
   assertExactKeys(liveBudget, keys, 'liveBudget');
-  for (const key of ['snapshotPath', 'economicsSnapshotPath']) {
+  for (const key of ['configPath', 'snapshotPath', 'economicsSnapshotPath']) {
     nonEmptyString(liveBudget[key], `liveBudget.${key}`);
     if (path.isAbsolute(liveBudget[key]) || liveBudget[key].split(/[\\/]/).includes('..')) {
       throw new Error(`liveBudget.${key} must be repository-relative`);
     }
   }
-  for (const key of ['snapshotSha256', 'economicsSnapshotSha256']) {
+  for (const key of ['configSha256', 'snapshotSha256', 'economicsSnapshotSha256']) {
     if (!/^[0-9a-f]{64}$/.test(liveBudget[key])) throw new Error(`liveBudget.${key} must be a lowercase digest`);
   }
   if (!/^sha256:[0-9a-f]{64}$/.test(liveBudget.authorizationHash)) {
@@ -578,6 +603,61 @@ function validateRecordedAtUtc(value) {
   const canonical = new Date(value).toISOString();
   const expected = value.includes('.') ? value : value.replace(/Z$/, '.000Z');
   if (canonical !== expected) throw new Error('recordedAtUtc must be an ISO-8601 instant or null');
+}
+
+function validateRecordedAtMode(recordedAtUtc, executionMode) {
+  if (executionMode === 'historical' && recordedAtUtc !== null) {
+    throw new Error('historical recordedAtUtc must be null');
+  }
+  if (executionMode !== 'historical' && recordedAtUtc === null) {
+    throw new Error(`${executionMode} recordedAtUtc must be an exact execution instant`);
+  }
+}
+
+function validateExecutionModeContract({ executionMode, evidenceLabel, liveBudget }) {
+  if (!EXECUTION_MODES.has(executionMode)) {
+    throw new Error('manifest.executionMode is required and must be mock, live, or historical');
+  }
+  if (executionMode === 'live') {
+    if (liveBudget === null) throw new Error('live executionMode requires liveBudget');
+    if (!evidenceLabel.startsWith('LIVE CANDIDATE')) {
+      throw new Error('live executionMode requires a LIVE CANDIDATE evidence label');
+    }
+    return;
+  }
+  if (liveBudget !== null) throw new Error(`${executionMode} executionMode forbids liveBudget`);
+  if (executionMode === 'mock' && !evidenceLabel.startsWith('SYNTHETIC')) {
+    throw new Error('mock executionMode requires a SYNTHETIC evidence label');
+  }
+  if (executionMode === 'historical'
+      && evidenceLabel !== 'HISTORICAL MIXED — INVALID BENCHMARK; acquisition MODELED') {
+    throw new Error('historical executionMode requires the historical evidence label');
+  }
+}
+
+function validateGitIdentity({ executionMode, gitCommit, gitDirty, sourceEvidence }, { current = false } = {}) {
+  if (executionMode === 'historical') {
+    if (gitCommit !== HISTORICAL_GIT_COMMIT || gitDirty !== null) {
+      throw new Error('historical evidence requires the exact unrecorded git identity sentinel');
+    }
+    if (JSON.stringify(canonicalize(sourceEvidence))
+        !== JSON.stringify(canonicalize(HISTORICAL_SOURCE_EVIDENCE))) {
+      throw new Error('historical evidence requires the exact hash-locked sourceEvidence');
+    }
+    return;
+  }
+  if (!/^[0-9a-f]{40}$/.test(gitCommit ?? '')) {
+    throw new Error('manifest.gitCommit must be an exact lowercase 40-hex commit');
+  }
+  if (typeof gitDirty !== 'boolean') throw new Error('manifest.gitDirty is required and must be boolean');
+  if (executionMode === 'live' && gitDirty) throw new Error('Live evidence requires a clean checkout');
+  if (sourceEvidence !== null) throw new Error(`${executionMode} evidence forbids sourceEvidence`);
+  if (current) {
+    const actual = readGitState(evidenceRoot);
+    if (actual.gitCommit !== gitCommit || actual.gitDirty !== gitDirty) {
+      throw new Error('Evidence git identity does not match current repository state');
+    }
+  }
 }
 
 function renderReport(summary, reportInputs) {
@@ -642,13 +722,25 @@ function validateManifest(manifest) {
     throw new Error('Evidence manifest experimentId is required');
   }
   validateRecordedAtUtc(manifest.recordedAtUtc);
+  validateRecordedAtMode(manifest.recordedAtUtc, manifest.executionMode);
   for (const key of ['gitCommit', 'command']) nonEmptyString(manifest[key], `manifest.${key}`);
   for (const key of ['modelProvider', 'model']) nonEmptyString(manifest[key], `manifest.${key}`, { nullable: true });
   if (!EVIDENCE_LABELS.has(manifest.evidenceLabel)) throw new Error('Evidence manifest evidenceLabel is unsupported');
   assertExactKeys(manifest.runtime, ['node', 'platform', 'arch'], 'manifest.runtime');
   for (const key of ['node', 'platform', 'arch']) nonEmptyString(manifest.runtime[key], `manifest.runtime.${key}`);
   validateSourceEvidence(manifest.sourceEvidence);
-  validateLiveBudget(manifest.liveBudget);
+  const liveBudget = validateLiveBudget(manifest.liveBudget);
+  validateExecutionModeContract({
+    executionMode: manifest.executionMode,
+    evidenceLabel: manifest.evidenceLabel,
+    liveBudget,
+  });
+  validateGitIdentity({
+    executionMode: manifest.executionMode,
+    gitCommit: manifest.gitCommit,
+    gitDirty: manifest.gitDirty,
+    sourceEvidence: manifest.sourceEvidence,
+  });
   const configuration = validateConfiguration(manifest.configuration);
   validateReportInputs(manifest.reportInputs, manifest.evidenceLabel, configuration);
   validateReadmeInputs(manifest.readmeInputs);
@@ -701,8 +793,20 @@ export function writeEvidenceBundle(input) {
   }
   const recordedAtUtc = manifest.recordedAtUtc === undefined ? new Date().toISOString() : manifest.recordedAtUtc;
   validateRecordedAtUtc(recordedAtUtc);
+  validateRecordedAtMode(recordedAtUtc, manifest.executionMode);
   const sourceEvidence = validateSourceEvidence(manifest.sourceEvidence);
   const liveBudget = validateLiveBudget(manifest.liveBudget);
+  validateExecutionModeContract({
+    executionMode: manifest.executionMode,
+    evidenceLabel: manifest.evidenceLabel,
+    liveBudget,
+  });
+  validateGitIdentity({
+    executionMode: manifest.executionMode,
+    gitCommit: manifest.gitCommit,
+    gitDirty: manifest.gitDirty,
+    sourceEvidence,
+  }, { current: true });
   const configuration = validateConfiguration(manifest.configuration);
   const validatedReadmeInputs = validateReadmeInputs(manifest.readmeInputs);
   if (recordedAtUtc === null
@@ -721,8 +825,10 @@ export function writeEvidenceBundle(input) {
   const finalManifest = {
     schemaVersion: 1,
     experimentId: manifest.experimentId,
+    executionMode: manifest.executionMode,
     recordedAtUtc,
     gitCommit: manifest.gitCommit ?? 'not-recorded',
+    gitDirty: manifest.gitDirty,
     command: manifest.command,
     runtime: { node: process.version, platform: process.platform, arch: process.arch },
     modelProvider: manifest.modelProvider ?? null,
@@ -739,6 +845,7 @@ export function writeEvidenceBundle(input) {
     }])),
   };
   validateManifest(finalManifest);
+  verifyModeRows(samples, finalManifest, evidenceRoot);
   validateOutputDirectory(outputDir);
   if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
   for (const name of REQUIRED_BUNDLE_FILES) fs.writeFileSync(path.join(outputDir, name), contents[name]);
@@ -746,57 +853,229 @@ export function writeEvidenceBundle(input) {
   return finalManifest;
 }
 
-function verifyLiveRows(samples, manifest, dir) {
-  if (manifest.liveBudget === null) return;
-  const allowed = [
-    'snapshotPath', 'snapshotSha256', 'authorizationHash', 'humanCapMicroUsd',
-    'conservativeEstimateMicroUsd', 'worstCasePerCallMicroUsd', 'attemptedCalls',
-    'knownAccruedMicroUsd', 'outstandingReservedMicroUsd', 'lock',
-    'economicsSnapshotPath', 'economicsSnapshotSha256',
-  ];
-  if (JSON.stringify(Object.keys(manifest.liveBudget).sort()) !== JSON.stringify(allowed.sort())) {
-    throw new Error('liveBudget contains unexpected or missing fields');
+function readRegularFixture(packageRoot, relativePath, label) {
+  const filePath = path.join(packageRoot, relativePath);
+  let stat;
+  try {
+    stat = fs.lstatSync(filePath);
+  } catch {
+    throw new Error(`${label} must exist as a regular file`);
   }
-  if (path.isAbsolute(manifest.liveBudget.snapshotPath) || manifest.liveBudget.snapshotPath.includes('..')) {
-    throw new Error('liveBudget snapshotPath must be repository-relative');
+  if (stat.isSymbolicLink() || !stat.isFile()) {
+    throw new Error(`${label} must exist as a regular file`);
   }
-  const snapshotPath = path.resolve(dir, '..', '..', manifest.liveBudget.snapshotPath);
-  const snapshotBytes = fs.readFileSync(snapshotPath);
-  if (sha256(snapshotBytes) !== manifest.liveBudget.snapshotSha256) throw new Error('Live budget snapshot hash mismatch');
-  const snapshot = JSON.parse(snapshotBytes);
-  if (path.isAbsolute(manifest.liveBudget.economicsSnapshotPath)
-      || manifest.liveBudget.economicsSnapshotPath.includes('..')) {
-    throw new Error('liveBudget economicsSnapshotPath must be repository-relative');
+  const bytes = fs.readFileSync(filePath);
+  let parsed;
+  try {
+    parsed = JSON.parse(bytes);
+  } catch {
+    throw new Error(`${label} must contain valid JSON`);
   }
-  const economicsPath = path.resolve(dir, '..', '..', manifest.liveBudget.economicsSnapshotPath);
-  const economicsBytes = fs.readFileSync(economicsPath);
-  if (sha256(economicsBytes) !== manifest.liveBudget.economicsSnapshotSha256) {
+  return { bytes, parsed };
+}
+
+function requireExactLivePath(actual, expected, label) {
+  if (actual !== expected) throw new Error(`Live ${label} must equal ${expected}`);
+}
+
+function canonicalEqual(left, right) {
+  return JSON.stringify(canonicalize(left)) === JSON.stringify(canonicalize(right));
+}
+
+function deriveBudgetViolation({ sample, exactCost, knownAccrued, snapshot, worstCasePerCall, humanCap }) {
+  if (sample.inputTokens > snapshot.tokenCaps.maxInputTokens
+      || sample.outputTokens > snapshot.tokenCaps.maxOutputTokens) {
+    return 'token_cap_exceeded';
+  }
+  if (knownAccrued > humanCap) return 'human_cap_exceeded';
+  if (exactCost > worstCasePerCall) return 'reservation_exceeded';
+  return null;
+}
+
+export function verifyLiveEvidenceContract(samples, manifest, packageRoot) {
+  if (!Array.isArray(samples)) throw new Error('Live samples must be an array');
+  if (typeof packageRoot !== 'string' || packageRoot === '') throw new Error('Live package root is required');
+  const liveBudget = validateLiveBudget(manifest.liveBudget);
+  validateExecutionModeContract({
+    executionMode: manifest.executionMode,
+    evidenceLabel: manifest.evidenceLabel,
+    liveBudget,
+  });
+  if (manifest.gitDirty !== false) throw new Error('Live evidence requires a clean checkout');
+  if (manifest.sourceEvidence !== null) throw new Error('Live evidence forbids sourceEvidence');
+  const configuration = validateConfiguration(manifest.configuration);
+
+  requireExactLivePath(liveBudget.configPath, 'fixtures/sweep-v1.json', 'configPath');
+  requireExactLivePath(liveBudget.snapshotPath, 'fixtures/live-budget-v1.json', 'snapshotPath');
+  requireExactLivePath(
+    liveBudget.economicsSnapshotPath,
+    'fixtures/live-economics-v1.json',
+    'economicsSnapshotPath',
+  );
+  const configFile = readRegularFixture(packageRoot, liveBudget.configPath, 'Live sweep config');
+  const snapshotFile = readRegularFixture(packageRoot, liveBudget.snapshotPath, 'Live budget snapshot');
+  const economicsFile = readRegularFixture(
+    packageRoot,
+    liveBudget.economicsSnapshotPath,
+    'Live economics snapshot',
+  );
+  if (sha256(configFile.bytes) !== liveBudget.configSha256) throw new Error('Live config hash mismatch');
+  if (sha256(snapshotFile.bytes) !== liveBudget.snapshotSha256) throw new Error('Live budget snapshot hash mismatch');
+  if (sha256(economicsFile.bytes) !== liveBudget.economicsSnapshotSha256) {
     throw new Error('Live economics snapshot hash mismatch');
   }
-  const economics = JSON.parse(economicsBytes);
-  if (JSON.stringify(canonicalize(economics)) !== JSON.stringify(canonicalize(manifest.configuration.liveEconomics))) {
+  if (!canonicalEqual(configFile.parsed, configuration.sweepConfig)) {
+    throw new Error('Live sweep configuration differs from hash-verified config');
+  }
+  if (!canonicalEqual(economicsFile.parsed, configuration.liveEconomics)) {
     throw new Error('Live economics configuration differs from hash-verified snapshot');
   }
-  const expectedAuthorization = liveAuthorizationHash({
-    config: manifest.configuration.sweepConfig,
+  const config = configFile.parsed;
+  validateBudgetSnapshotShape(snapshotFile.parsed, config);
+  const snapshot = validateApprovedBudgetSnapshot(snapshotFile.parsed, config);
+  const liveEconomics = validateApprovedLiveEconomics(economicsFile.parsed, config);
+  if (manifest.model !== snapshot.model) throw new Error('Live manifest model differs from approved snapshot');
+  if (typeof manifest.modelProvider !== 'string'
+      || manifest.modelProvider.toLowerCase() !== snapshot.provider.toLowerCase()) {
+    throw new Error('Live manifest provider differs from approved snapshot');
+  }
+
+  // Validate the fixed preregistration before using fixtureSet in any path.
+  validateSweepConfig(config, { trainCount: 100, heldoutCount: 30, v2Count: 0 });
+  for (const name of [`train-${config.fixtureSet}.json`, `heldout-${config.fixtureSet}.json`, 'v2-heldout.json']) {
+    readRegularFixture(packageRoot, path.join('fixtures', name), `Live fixture ${name}`);
+  }
+  const fixtures = loadFixtureSet(packageRoot, config.fixtureSet);
+  const v2Fixtures = readRegularFixture(packageRoot, 'fixtures/v2-heldout.json', 'Live v2 fixtures').parsed;
+  if (!Array.isArray(v2Fixtures)) throw new Error('Live v2 fixtures must be an array');
+  const counts = {
+    trainCount: fixtures.train.length,
+    heldoutCount: fixtures.heldout.length,
+    v2Count: v2Fixtures.length,
+  };
+  validateSweepConfig(config, counts);
+  const requestCount = conservativeSweepRequestCount(config, counts);
+  if (requestCount !== 1713) throw new Error('Live committed fixture request count must equal 1713');
+  const worstCasePerCall = calculateProviderCostMicroUsd({
+    inputTokens: snapshot.tokenCaps.maxInputTokens,
+    outputTokens: snapshot.tokenCaps.maxOutputTokens,
     snapshot,
-    economics,
   });
-  if (expectedAuthorization !== manifest.liveBudget.authorizationHash) throw new Error('Live authorization hash mismatch');
-  if (manifest.liveBudget.attemptedCalls !== samples.length) throw new Error('Live attempted-call count differs from samples');
-  for (const sample of samples) {
-    if (sample.inputTokens === null || sample.outputTokens === null) {
-      if (sample.providerCostMicroUsd !== null || sample.providerCostUsd !== null) {
-        throw new Error('Unknown live usage requires both provider costs to be null');
+  const conservativeEstimate = estimateLiveSweepMicroUsd({ config, counts, snapshot });
+  if (liveBudget.worstCasePerCallMicroUsd !== worstCasePerCall.toString()) {
+    throw new Error('Live worst-case per-call amount mismatch');
+  }
+  if (liveBudget.conservativeEstimateMicroUsd !== conservativeEstimate.toString()) {
+    throw new Error('Live conservative estimate mismatch');
+  }
+  const humanCap = BigInt(liveBudget.humanCapMicroUsd);
+  if (humanCap < conservativeEstimate) {
+    throw new Error('Live human cap is below the conservative estimate');
+  }
+  const expectedAuthorization = liveAuthorizationHash({ config, snapshot, economics: liveEconomics });
+  if (expectedAuthorization !== liveBudget.authorizationHash) throw new Error('Live authorization hash mismatch');
+  if (liveBudget.attemptedCalls !== samples.length || samples.length > requestCount) {
+    throw new Error('Live attempted-call count differs from samples or approved request count');
+  }
+
+  let knownAccrued = 0n;
+  const unknownIndexes = [];
+  const violations = [];
+  for (let index = 0; index < samples.length; index += 1) {
+    const sample = validateSample(samples[index]);
+    const expectedAttemptId = `attempt-${String(index + 1).padStart(6, '0')}`;
+    if (sample.budgetAttemptId !== expectedAttemptId) {
+      throw new Error(`Live budgetAttemptId sequence mismatch for ${sample.sampleId}`);
+    }
+    if (knownAccrued + worstCasePerCall > humanCap) {
+      throw new Error(`Live sample ${sample.sampleId} could not have reserved within the human cap`);
+    }
+    if (sample.phase === 'acquisition') {
+      if (sample.acquisitionCostUsd !== liveEconomics.invocationPriceUsd
+          || sample.acquisitionEvidence !== 'MODELED') {
+        throw new Error(`Live acquisition row price or evidence mismatch for ${sample.sampleId}`);
       }
+    } else if (sample.acquisitionCostUsd !== 0 || sample.acquisitionEvidence !== null) {
+      throw new Error(`Live non-acquisition row carries acquisition cost for ${sample.sampleId}`);
+    }
+
+    const unknownUsage = sample.inputTokens === null || sample.outputTokens === null;
+    if (unknownUsage) {
+      if (!(sample.inputTokens === null && sample.outputTokens === null
+          && sample.providerCostMicroUsd === null && sample.providerCostUsd === null)) {
+        throw new Error('Unknown live usage requires both usage and provider costs to be null');
+      }
+      unknownIndexes.push(index);
+      violations.push(null);
       continue;
     }
-    const expected = calculateProviderCostMicroUsd({
+    const exactCost = calculateProviderCostMicroUsd({
       inputTokens: sample.inputTokens,
       outputTokens: sample.outputTokens,
       snapshot,
     });
-    if (sample.providerCostMicroUsd !== expected.toString()) throw new Error(`Live exact provider cost mismatch for ${sample.sampleId}`);
+    if (sample.providerCostMicroUsd !== exactCost.toString()) {
+      throw new Error(`Live exact provider cost mismatch for ${sample.sampleId}`);
+    }
+    if (sample.providerCostUsd !== Number(exactCost) / 1_000_000) {
+      throw new Error(`Live provider USD cost mismatch for ${sample.sampleId}`);
+    }
+    knownAccrued += exactCost;
+    violations.push(deriveBudgetViolation({
+      sample,
+      exactCost,
+      knownAccrued,
+      snapshot,
+      worstCasePerCall,
+      humanCap,
+    }));
+  }
+  if (liveBudget.knownAccruedMicroUsd !== knownAccrued.toString()) {
+    throw new Error('Live known accrued amount differs from exact sample costs');
+  }
+
+  const outstanding = BigInt(liveBudget.outstandingReservedMicroUsd);
+  const finalIndex = samples.length - 1;
+  const finalSample = samples[finalIndex];
+  const earlierViolation = violations.findIndex((reason, index) => reason !== null && index !== finalIndex);
+  if (earlierViolation !== -1) throw new Error('Live samples continue after a budget violation');
+  if (liveBudget.lock === null) {
+    if (unknownIndexes.length !== 0) throw new Error('Unknown live cost requires an unknown_cost lock');
+    if (outstanding !== 0n) throw new Error('Unlocked live budget must have zero outstanding reservation');
+    if (violations[finalIndex] !== null && samples.length !== 0) {
+      throw new Error('Live budget violation requires a budget_overrun lock');
+    }
+    return;
+  }
+  if (!finalSample || finalSample.success !== false) throw new Error('Live budget lock requires a final failed sample');
+  if (liveBudget.lock.attemptId !== finalSample.budgetAttemptId) {
+    throw new Error('Live lock attemptId must equal final sample budgetAttemptId');
+  }
+  if (liveBudget.lock.kind === 'unknown_cost') {
+    if (unknownIndexes.length !== 1 || unknownIndexes[0] !== finalIndex) {
+      throw new Error('unknown_cost lock requires exactly one final unknown-cost sample');
+    }
+    if (outstanding !== worstCasePerCall) {
+      throw new Error('unknown_cost lock must retain exactly one worst-case reservation');
+    }
+    return;
+  }
+  if (unknownIndexes.length !== 0) throw new Error('budget_overrun lock requires a known final cost');
+  if (outstanding !== 0n) throw new Error('budget_overrun lock must have zero outstanding reservation');
+  const expectedReason = violations[finalIndex];
+  if (expectedReason === null) throw new Error('budget_overrun lock has no derived budget violation');
+  if (liveBudget.lock.reason !== expectedReason) {
+    throw new Error(`Live lock reason must equal ${expectedReason}`);
+  }
+}
+
+function verifyModeRows(samples, manifest, packageRoot) {
+  if (manifest.executionMode === 'live') {
+    verifyLiveEvidenceContract(samples, manifest, packageRoot);
+    return;
+  }
+  if (samples.some((sample) => sample.budgetAttemptId !== null)) {
+    throw new Error(`${manifest.executionMode} evidence requires null budgetAttemptId values`);
   }
 }
 
@@ -851,6 +1130,6 @@ export function verifyEvidenceBundle(dir) {
   if (fs.readFileSync(path.join(dir, 'README.md'), 'utf8') !== renderReadme(manifest.readmeInputs)) {
     throw new Error('README.md differs from deterministic rendering');
   }
-  verifyLiveRows(samples, manifest, dir);
+  verifyModeRows(samples, manifest, evidenceRoot);
   return { valid: true, manifest, summary, samples };
 }

@@ -229,6 +229,7 @@ export function normalizeSweepSamples({ experimentId, attempts }) {
       criticalGatePass: attempt.criticalGatePass ?? null,
       failureClass: attempt.failureClass ?? null,
       providerRequestId: attempt.providerRequestId ?? null,
+      budgetAttemptId: attempt.budgetAttemptId ?? null,
     };
     return normalized;
   });
@@ -236,13 +237,14 @@ export function normalizeSweepSamples({ experimentId, attempts }) {
 
 export async function writeSweepEvidenceBundle({
   result,
+  executionMode,
   config,
   outputDir,
   experimentId,
   evidenceLabel,
   command,
   recordedAtUtc,
-  gitCommit,
+  gitState,
   modelProvider = null,
   model = null,
   liveBudget = null,
@@ -259,13 +261,16 @@ export async function writeSweepEvidenceBundle({
     ...(samples.some((sample) => sample.acquisitionEvidence === 'MODELED') ? ['ACQUISITION_MODELED'] : []),
     ...(incompleteCosts ? ['INCOMPLETE_PROVIDER_COST'] : []),
     ...(evidenceLabel.startsWith('SYNTHETIC') ? ['SYNTHETIC_ONLY'] : []),
+    ...(gitState?.gitDirty === true ? ['DIRTY_CHECKOUT'] : []),
   ].sort();
   const manifest = writeEvidenceBundle({
     outputDir,
     manifest: {
       experimentId,
+      executionMode,
       ...(recordedAtUtc === undefined ? {} : { recordedAtUtc }),
-      ...(gitCommit === undefined ? {} : { gitCommit }),
+      gitCommit: gitState?.gitCommit,
+      gitDirty: gitState?.gitDirty,
       command,
       modelProvider,
       model,

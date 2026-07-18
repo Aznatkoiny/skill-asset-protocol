@@ -67,6 +67,7 @@ test('mock seed evidence is synthetic and output callback receives no payload by
     status: 'synthetic_honored',
     mechanism: 'deterministic_mock_fixture_selection',
   });
+  assert.equal(adapter.attempts[0].budgetAttemptId, null);
 });
 
 test('missing usage retains a reservation, locks unknown_cost, and permits no later fetch', async () => {
@@ -90,6 +91,7 @@ test('missing usage retains a reservation, locks unknown_cost, and permits no la
     lock: { kind: 'unknown_cost', attemptId: 'attempt-000001' },
   });
   assert.equal(adapter.attempts[0].providerCostMicroUsd, null);
+  assert.equal(adapter.attempts[0].budgetAttemptId, 'attempt-000001');
   await assert.rejects(
     adapter.invoke({ kind: 'target-heldout', caseId: 'two', payload: { input: 'small' } }),
     /budget locked/i,
@@ -126,6 +128,7 @@ test('above-token usage accrues exact cost, locks budget_overrun, and permits no
   });
   assert.equal(adapter.attempts[0].inputTokens, 501);
   assert.equal(adapter.attempts[0].providerCostMicroUsd, '511');
+  assert.equal(adapter.attempts[0].budgetAttemptId, 'attempt-000001');
   await assert.rejects(
     adapter.invoke({ kind: 'target-heldout', caseId: 'two', payload: { input: 'x' } }),
     /budget_overrun/,
@@ -156,6 +159,7 @@ test('known cost above the human cap is fully accrued and blocks all later calls
   );
   assert.equal(budget.state().knownAccruedMicroUsd, 125n);
   assert.equal(budget.state().outstandingReservedMicroUsd, 0n);
+  assert.equal(adapter.attempts[0].budgetAttemptId, 'attempt-000001');
   await assert.rejects(
     adapter.invoke({ kind: 'target-heldout', caseId: 'two', payload: { input: 'x' } }),
     /budget_overrun/,
@@ -190,4 +194,5 @@ test('live distillation records unsupported seed evidence and sends no seed fiel
     status: 'unsupported',
     mechanism: 'provider_seed_not_supported_by_adapter',
   });
+  assert.equal(adapter.attempts[0].budgetAttemptId, 'attempt-000001');
 });

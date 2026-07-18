@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   classifyHighNSeedValidity,
@@ -14,6 +15,9 @@ import {
   writeSweepEvidenceBundle,
 } from '../src/sweep.mjs';
 import { scoreEvaluation } from '../src/scoring.mjs';
+import { readGitState } from '../src/git-state.mjs';
+
+const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const config = {
   schemaVersion: 1,
@@ -227,6 +231,8 @@ test('standalone target execution failure preserves its attempt and final budget
   });
   const evidence = await writeSweepEvidenceBundle({
     result,
+    executionMode: 'mock',
+    gitState: readGitState(packageRoot),
     config: {
       ...config,
       acquisitionTreatment: 'modeled_unless_x402_receipts_attached',

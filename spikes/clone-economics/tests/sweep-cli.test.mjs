@@ -42,11 +42,14 @@ test('mock CLI completes without network and stays unpublishable', () => {
   assert.match(result.stdout, /networkAttempts=0/);
 });
 
-test('missing mode and default live contract both fail before construction', () => {
+test('missing mode and default live path both fail before construction', () => {
   const missing = run([]);
   assert.notEqual(missing.status, 0);
   assert.match(missing.stderr, /Usage:/);
   const live = run(['--live']);
   assert.notEqual(live.status, 0);
-  assert.match(live.stderr, /Live budget snapshot must be approved/);
+  assert.match(
+    live.stderr,
+    /Live sweep requires a clean checkout before provider execution|Live budget snapshot must be approved/,
+  );
 });

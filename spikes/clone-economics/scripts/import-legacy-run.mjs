@@ -89,6 +89,7 @@ export function normalizeLegacyReport(source) {
       criticalGatePass: score?.criticalGatePass ?? null,
       failureClass: null,
       providerRequestId: record.requestId ?? null,
+      budgetAttemptId: null,
     };
   });
 }
@@ -131,8 +132,10 @@ export function importLegacyRun(argv) {
     outputDir: args.output,
     manifest: {
       experimentId: '2026-07-12-n6-invalid',
+      executionMode: 'historical',
       recordedAtUtc: null,
       gitCommit: 'historical-source-not-recorded',
+      gitDirty: null,
       command: 'historical live command not retained exactly',
       modelProvider: 'Anthropic',
       model: source.usage.raw[0]?.model ?? null,

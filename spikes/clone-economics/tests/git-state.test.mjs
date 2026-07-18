@@ -1,0 +1,75 @@
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+
+import { assertLiveCheckoutClean, readGitState } from '../src/git-state.mjs';
+
+function git(cwd, args) {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    shell: false,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+}
+
+function committedRepo(t, name = 'repo') {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'clone-git-state-'));
+  t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+  const repo = path.join(parent, name);
+  fs.mkdirSync(repo);
+  git(repo, ['init']);
+  git(repo, ['config', 'user.name', 'Evidence Test']);
+  git(repo, ['config', 'user.email', 'evidence@example.invalid']);
+  fs.writeFileSync(path.join(repo, 'tracked.txt'), 'committed\n');
+  git(repo, ['add', 'tracked.txt']);
+  git(repo, ['commit', '-m', 'fixture']);
+  return { parent, repo };
+}
+
+test('readGitState captures an exact clean 40-hex commit', (t) => {
+  const { repo } = committedRepo(t);
+  const expected = git(repo, ['rev-parse', '--verify', 'HEAD']);
+  assert.deepEqual(readGitState(repo), {
+    gitCommit: expected,
+    gitDirty: false,
+    porcelain: '',
+  });
+  assert.match(expected, /^[0-9a-f]{40}$/);
+});
+
+test('readGitState includes tracked changes and untracked files', (t) => {
+  const { repo } = committedRepo(t);
+  fs.appendFileSync(path.join(repo, 'tracked.txt'), 'dirty\n');
+  fs.writeFileSync(path.join(repo, 'untracked.txt'), 'untracked\n');
+  const state = readGitState(repo);
+  assert.equal(state.gitDirty, true);
+  assert.equal(state.porcelain, ' M tracked.txt\n?? untracked.txt');
+});
+
+test('readGitState passes metacharacter paths as argv without command execution', (t) => {
+  const { parent, repo } = committedRepo(t, 'repo;touch injected-marker');
+  const marker = path.join(parent, 'injected-marker');
+  assert.match(readGitState(repo).gitCommit, /^[0-9a-f]{40}$/);
+  assert.equal(fs.existsSync(marker), false);
+});
+
+test('readGitState rejects repositories without an exact HEAD identity', (t) => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'clone-git-empty-'));
+  t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+  git(parent, ['init']);
+  assert.throws(() => readGitState(parent), /exact committed git HEAD/i);
+});
+
+test('live checkout gate rejects a captured dirty state', () => {
+  assert.throws(
+    () => assertLiveCheckoutClean({ gitCommit: 'a'.repeat(40), gitDirty: true, porcelain: '?? untracked' }),
+    /clean checkout before provider execution/,
+  );
+  assert.doesNotThrow(
+    () => assertLiveCheckoutClean({ gitCommit: 'a'.repeat(40), gitDirty: false, porcelain: '' }),
+  );
+});

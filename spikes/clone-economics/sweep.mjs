@@ -12,6 +12,7 @@ import {
 } from './src/budget.mjs';
 import { liveAuthorizationHash } from './src/authorization.mjs';
 import { loadFixtureSet } from './src/fixture-set.mjs';
+import { assertLiveCheckoutClean, readGitState } from './src/git-state.mjs';
 import { validateLiveEconomicsShape } from './src/live-economics.mjs';
 import {
   runSweep,
@@ -65,6 +66,7 @@ async function main() {
   }
 
   if (mode === '--mock') {
+    const gitState = Object.freeze(readGitState(root));
     let networkAttempts = 0;
     const priorFetch = globalThis.fetch;
     globalThis.fetch = async () => {
@@ -77,6 +79,8 @@ async function main() {
       const evidenceRelative = path.join('runs', 'mock-sweep', 'evidence', experimentId);
       await writeSweepEvidenceBundle({
         result,
+        executionMode: 'mock',
+        gitState,
         config,
         outputDir: path.join(root, evidenceRelative),
         experimentId,
@@ -95,6 +99,8 @@ async function main() {
     return;
   }
 
+  const gitState = Object.freeze(readGitState(root));
+  assertLiveCheckoutClean(gitState);
   const live = await startLiveSweep({
     env: process.env,
     config,
@@ -114,10 +120,13 @@ async function main() {
   const recordedAtUtc = new Date().toISOString();
   const experimentId = `live-high-n-${recordedAtUtc.replaceAll(/[-:.]/g, '')}`;
   const evidenceRelative = path.join('evidence', experimentId);
+  const configBytes = fs.readFileSync(path.join(root, 'fixtures/sweep-v1.json'));
   const snapshotBytes = fs.readFileSync(path.join(root, 'fixtures/live-budget-v1.json'));
   const economicsBytes = fs.readFileSync(path.join(root, 'fixtures/live-economics-v1.json'));
   await writeSweepEvidenceBundle({
     result: live.result,
+    executionMode: 'live',
+    gitState,
     config,
     outputDir: path.join(root, evidenceRelative),
     experimentId,
@@ -130,6 +139,8 @@ async function main() {
     model: snapshot.model,
     liveEconomics: economics,
     liveBudget: {
+      configPath: 'fixtures/sweep-v1.json',
+      configSha256: createHash('sha256').update(configBytes).digest('hex'),
       snapshotPath: 'fixtures/live-budget-v1.json',
       snapshotSha256: createHash('sha256').update(snapshotBytes).digest('hex'),
       economicsSnapshotPath: 'fixtures/live-economics-v1.json',
