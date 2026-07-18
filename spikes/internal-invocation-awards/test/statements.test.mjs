@@ -419,6 +419,52 @@ test('payable advances, reversal semantics, and payments determine payable closi
   }), /payable reversal exceeds advanced amount/);
 });
 
+test('prior earned-only reversals permanently reduce every later payable-advance ceiling', () => {
+  const signers = signerFixture();
+  const receipt = signedSuccess(signers, 1, 'cumulative-earned-reversal');
+  const hash = receiptHash(receipt);
+  const july = signedJulyStatement(signers, [receipt], 'cumulative-earned-reversal');
+  const august = signStatement(buildStatement({
+    statementId: 'statement-earned-reversal-august',
+    employerId: 'megacorp', creatorId: 'sam', period: '2026-08',
+    currency: 'USD', atomicScale: 6, openingPayableAtomic: july.closingPayableAtomic,
+    receipts: [], historicalReceipts: [receipt], priorStatement: july,
+    payableAdvances: [],
+    reversals: [{
+      reversalId: 'earned-reversal-august', receiptHash: hash, amountAtomic: '750000',
+      balanceEffect: 'earned_only', reason: 'authenticated_quality_correction',
+      occurredAt: '2026-08-15T00:00:00.000Z',
+    }],
+    payments: [], statementSignerId: 'collar-statement-key-2026-07',
+  }), signers.statement.privateKey);
+
+  assert.throws(() => buildStatement({
+    statementId: 'statement-overadvance-september',
+    employerId: 'megacorp', creatorId: 'sam', period: '2026-09',
+    currency: 'USD', atomicScale: 6, openingPayableAtomic: august.closingPayableAtomic,
+    receipts: [], historicalReceipts: [receipt], priorStatement: august,
+    payableAdvances: [{
+      advanceId: 'advance-over-remaining-earned', receiptHash: hash, amountAtomic: '1250001',
+      advancedAt: '2026-09-01T00:00:00.000Z',
+    }],
+    reversals: [], payments: [], statementSignerId: 'collar-statement-key-2026-07',
+  }), /advance.*earned-only reversal.*exceeds earned award/i);
+
+  const september = buildStatement({
+    statementId: 'statement-exact-remaining-september',
+    employerId: 'megacorp', creatorId: 'sam', period: '2026-09',
+    currency: 'USD', atomicScale: 6, openingPayableAtomic: august.closingPayableAtomic,
+    receipts: [], historicalReceipts: [receipt], priorStatement: august,
+    payableAdvances: [{
+      advanceId: 'advance-exact-remaining-earned', receiptHash: hash, amountAtomic: '1250000',
+      advancedAt: '2026-09-01T00:00:00.000Z',
+    }],
+    reversals: [], payments: [], statementSignerId: 'collar-statement-key-2026-07',
+  });
+  assert.equal(september.awardActivity[0].advancedAtomic, '1250000');
+  assert.equal(september.awardActivity[0].earnedReversedAtomic, '750000');
+});
+
 test('monthly-in-arrears rejects advancing or paying a current-period award', () => {
   const signers = signerFixture();
   const receipt = signedSuccess(signers);
@@ -480,7 +526,7 @@ test('receipt occurrence month blocks the July-to-August payable bypass', () => 
       }],
       statementSignerId: 'collar-statement-key-2026-07',
     });
-  }, /receipt occurredAt must fall within receipt period 2026-07/);
+  }, /invalid successful Invocation receipt state/);
 });
 
 test('receipt verification rejects a correctly signed occurrence outside its period', () => {

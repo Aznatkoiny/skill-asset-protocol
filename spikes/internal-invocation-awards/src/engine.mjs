@@ -1,4 +1,8 @@
-import { randomBytes, verify as cryptoVerify } from 'node:crypto';
+import {
+  randomBytes,
+  sign as cryptoSign,
+  verify as cryptoVerify,
+} from 'node:crypto';
 
 import {
   createBudget,
@@ -59,14 +63,22 @@ const AUTHORIZE_KEYS = [
 ];
 const CANCEL_KEYS = ['store', 'expectedRevision', 'reservationId', 'reason'];
 const EXECUTE_KEYS = ['store', 'quote', 'credential', 'executor'];
+const RECORD_AWARD_REVERSAL_KEYS = ['store', 'expectedRevision', 'signedReversal'];
+const AWARD_REVERSAL_KEYS = [
+  'schemaVersion', 'reversalId', 'awardId', 'invocationId', 'receiptHash',
+  'policyId', 'policyVersion', 'policyHash', 'amountAtomic', 'reason',
+  'issuedAt', 'signerId',
+];
+const SIGNED_AWARD_REVERSAL_KEYS = [...AWARD_REVERSAL_KEYS, 'signature'];
 const ENGINE_STATE_KEYS = [
   'revision', 'budget', 'policies', 'skillRegistrations', 'financeSigners',
   'managerSigners', 'credentialAuthorizers', 'identitySigners', 'receiptSigners',
   'invocations', 'reservations', 'awards', 'consumedNonces', 'issuedNonces',
-  'consumedPrincipalNonces', 'idempotency', 'events', 'receipts',
+  'consumedPrincipalNonces', 'idempotency', 'awardReversals', 'events', 'receipts',
   'receiptHashes', 'receiptSequenceIndex', 'nextReceiptSequences',
 ];
 const TERMINAL_STATES = new Set(['succeeded', 'failed', 'unresolved', 'cancelled']);
+const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
 function requirePlainMap(value, label) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)
@@ -172,6 +184,29 @@ function assertTrustedState(state, now) {
   return policy;
 }
 
+function assertHistoricallyTrustedState(state) {
+  capabilitiesFor(state);
+  requireExactKeys(state, ENGINE_STATE_KEYS, 'engine state');
+  const policyKey = `${state.budget.policyId}@${state.budget.policyVersion}`;
+  const policy = state.policies[policyKey];
+  if (!policy) throw new Error('budget policy is not provisioned');
+  const historicalNow = state.budget.authorization.effectiveAt;
+  const validatedPolicy = validatePolicy(policy, historicalNow);
+  const verified = createBudget(state.budget.authorization, {
+    trustedFinanceSigners: state.financeSigners,
+    policy: validatedPolicy,
+    now: historicalNow,
+  });
+  for (const key of [
+    'budgetId', 'policyId', 'policyVersion', 'policyHash', 'period', 'currency',
+    'atomicScale', 'allocatedAtomic',
+  ]) {
+    if (state.budget[key] !== verified[key]) throw new Error(`budget state changed signed ${key}`);
+  }
+  remainingAtomic(state.budget);
+  return validatedPolicy;
+}
+
 function nextState(state, changes) {
   return markTrusted(
     { ...state, ...changes, revision: state.revision + 1 },
@@ -242,8 +277,18 @@ function awardExposureAtomic(state, policy, period) {
   for (const award of Object.values(state.awards)) {
     if (award.policyId === policy.policyId
         && award.policyVersion === policy.version
-        && award.period === period) {
+        && award.period === period
+        && ['earned', 'payable', 'paid'].includes(award.state)) {
       exposure += toAtomic(award.amountAtomic);
+    }
+  }
+  for (const reversal of Object.values(state.awardReversals)) {
+    if (reversal.policyId === policy.policyId
+        && reversal.policyVersion === policy.version) {
+      const award = state.awards[reversal.awardId];
+      if (award?.period === period && ['earned', 'payable', 'paid'].includes(award.state)) {
+        exposure -= toAtomic(reversal.amountAtomic);
+      }
     }
   }
   for (const invocation of Object.values(state.invocations)) {
@@ -255,6 +300,66 @@ function awardExposureAtomic(state, policy, period) {
     }
   }
   return exposure;
+}
+
+function ordered(source, keys) {
+  return Object.fromEntries(keys.map((key) => [key, source[key]]));
+}
+
+function validateAwardReversalPayload(input) {
+  requireExactKeys(input, AWARD_REVERSAL_KEYS, 'award reversal authorization');
+  if (input.schemaVersion !== 1) throw new Error('award reversal schemaVersion must equal 1');
+  for (const key of ['reversalId', 'awardId', 'invocationId', 'policyId', 'reason', 'signerId']) {
+    if (typeof input[key] !== 'string' || input[key].length === 0) {
+      throw new Error(`award reversal ${key} must be non-empty`);
+    }
+  }
+  if (!SHA256_PATTERN.test(input.receiptHash)) throw new Error('award reversal receiptHash is invalid');
+  if (!SHA256_PATTERN.test(input.policyHash)) throw new Error('award reversal policyHash is invalid');
+  if (!Number.isSafeInteger(input.policyVersion) || input.policyVersion < 1) {
+    throw new Error('award reversal policyVersion must be a positive integer');
+  }
+  if (toAtomic(input.amountAtomic) === 0n) throw new Error('award reversal amount must be positive');
+  parseUtc(input.issuedAt, 'award reversal issuedAt');
+  return cloneFrozen(input);
+}
+
+export function canonicalAwardReversalBytes(unsignedReversal) {
+  const validated = validateAwardReversalPayload(unsignedReversal);
+  return new TextEncoder().encode(JSON.stringify(ordered(validated, AWARD_REVERSAL_KEYS)));
+}
+
+export function signAwardReversal(unsignedReversal, privateKey) {
+  const validated = validateAwardReversalPayload(unsignedReversal);
+  return cloneFrozen({
+    ...validated,
+    signature: cryptoSign(null, canonicalAwardReversalBytes(validated), privateKey).toString('base64'),
+  });
+}
+
+function decodeAwardReversalSignature(value) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) {
+    throw new Error('award reversal signature must be canonical base64');
+  }
+  const bytes = Buffer.from(value, 'base64');
+  if (bytes.length !== 64 || bytes.toString('base64') !== value) {
+    throw new Error('award reversal signature must be a 64-byte Ed25519 signature');
+  }
+  return bytes;
+}
+
+function snapshotSignedAwardReversal(value) {
+  requireExactKeys(value, SIGNED_AWARD_REVERSAL_KEYS, 'signed award reversal authorization');
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const captured = {};
+  for (const key of SIGNED_AWARD_REVERSAL_KEYS) {
+    const descriptor = descriptors[key];
+    if (!descriptor || !Object.hasOwn(descriptor, 'value') || descriptor.enumerable !== true) {
+      throw new Error(`signed award reversal ${key} must be an enumerable data property`);
+    }
+    captured[key] = descriptor.value;
+  }
+  return cloneFrozen(captured);
 }
 
 function resolveActiveRegistration(state, quote, policy, now) {
@@ -477,6 +582,7 @@ export function createEngineState(input) {
     issuedNonces: deepFreeze({}),
     consumedPrincipalNonces: deepFreeze({}),
     idempotency: deepFreeze({}),
+    awardReversals: deepFreeze({}),
     events: deepFreeze([]),
     ...receiptLedger,
   }, capabilities);
@@ -712,7 +818,7 @@ export async function cancelInternalAuthorization(input) {
   }
   const state = await input.store.transact(input.expectedRevision, (current) => {
     const now = engineNow(current);
-    assertTrustedState(current, now);
+    assertHistoricallyTrustedState(current);
     const reservation = current.reservations[input.reservationId];
     if (!reservation) throw new Error('reservation does not exist');
     const invocation = current.invocations[reservation.quote.invocationId];
@@ -772,12 +878,103 @@ export async function cancelInternalAuthorization(input) {
   return terminalResult(state, reservation.quote.invocationId);
 }
 
+export async function recordAwardReversal(input) {
+  requireExactKeys(input, RECORD_AWARD_REVERSAL_KEYS, 'award reversal input');
+  const signedReversal = snapshotSignedAwardReversal(input.signedReversal);
+  const state = await input.store.transact(input.expectedRevision, (current) => {
+    const now = engineNow(current);
+    const policy = assertTrustedState(current, now);
+    requireExactKeys(
+      signedReversal,
+      SIGNED_AWARD_REVERSAL_KEYS,
+      'signed award reversal authorization',
+    );
+    const reversal = validateAwardReversalPayload(
+      ordered(signedReversal, AWARD_REVERSAL_KEYS),
+    );
+    if (Object.hasOwn(current.awardReversals, reversal.reversalId)) {
+      throw new Error('award reversal identifier already exists');
+    }
+    if (reversal.policyId !== policy.policyId
+        || reversal.policyVersion !== policy.version
+        || reversal.policyHash !== current.budget.policyHash) {
+      throw new Error('award reversal policy binding does not match active budget');
+    }
+    if (!policy.permittedFinanceSignerIds.includes(reversal.signerId)) {
+      throw new Error('award reversal finance signer is not permitted by policy');
+    }
+    if (!Object.hasOwn(current.financeSigners, reversal.signerId)) {
+      throw new Error('award reversal finance signer is not provisioned');
+    }
+    if (!cryptoVerify(
+      null,
+      canonicalAwardReversalBytes(reversal),
+      current.financeSigners[reversal.signerId],
+      decodeAwardReversalSignature(signedReversal.signature),
+    )) throw new Error('award reversal signature verification failed');
+    const issuedAt = parseUtc(reversal.issuedAt, 'award reversal issuedAt');
+    if (issuedAt > parseUtc(now, 'engine clock')) {
+      throw new Error('award reversal issuedAt cannot be in the future');
+    }
+    const award = current.awards[reversal.awardId];
+    if (!award || !['earned', 'payable', 'paid'].includes(award.state)) {
+      throw new Error('award reversal requires an earned award');
+    }
+    const invocation = current.invocations[reversal.invocationId];
+    if (!invocation || invocation.awardId !== award.awardId
+        || invocation.receiptHash !== reversal.receiptHash
+        || award.invocationId !== reversal.invocationId
+        || award.policyId !== reversal.policyId
+        || award.policyVersion !== reversal.policyVersion
+        || award.policyHash !== reversal.policyHash) {
+      throw new Error('award reversal does not match the authenticated award receipt');
+    }
+    if (issuedAt < parseUtc(award.earnedAt, 'award earnedAt')) {
+      throw new Error('award reversal cannot precede award earning');
+    }
+    const prior = Object.values(current.awardReversals)
+      .filter((row) => row.awardId === award.awardId)
+      .reduce((sum, row) => sum + toAtomic(row.amountAtomic), 0n);
+    if (prior + toAtomic(reversal.amountAtomic) > toAtomic(award.amountAtomic)) {
+      throw new Error('cumulative award reversal exceeds earned award');
+    }
+    const stored = signedReversal;
+    const event = deepFreeze({
+      schemaVersion: 1,
+      eventId: `${invocation.invocationId}:invocation_award_reversed:${reversal.reversalId}`,
+      type: 'invocation_award_reversed',
+      invocationId: invocation.invocationId,
+      occurredAt: now,
+      reversalId: reversal.reversalId,
+      awardId: award.awardId,
+      amountAtomic: reversal.amountAtomic,
+      financeSignerId: reversal.signerId,
+    });
+    return nextState(current, {
+      awardReversals: mapWith(current.awardReversals, reversal.reversalId, stored),
+      events: deepFreeze([...current.events, event]),
+    });
+  });
+  const reversal = state.awardReversals[signedReversal.reversalId];
+  return deepFreeze({
+    state,
+    reversal,
+    event: state.events.find((row) => row.type === 'invocation_award_reversed'
+      && row.reversalId === reversal.reversalId),
+  });
+}
+
 export async function executeAuthorizedInvocation(input) {
   requireExactKeys(input, EXECUTE_KEYS, 'execution input');
   const initial = input.store.snapshot();
   capabilitiesFor(initial);
   const replay = verifyTerminalReplay(initial, input.quote, input.credential);
-  if (replay) return replay;
+  if (replay) {
+    if (replay.invocation.state === 'cancelled') {
+      throw new Error('credential authorization was cancelled and reservation released');
+    }
+    throw new Error('credential already consumed by terminal Invocation');
+  }
   if (typeof input.executor !== 'function') throw new Error('executor must be an injected function');
 
   const started = await input.store.transact(initial.revision, (current) => {
@@ -898,7 +1095,38 @@ export async function executeAuthorizedInvocation(input) {
     });
     const receiptSequence = current.nextReceiptSequences[scope] ?? 1;
     const receiptId = `receipt-${invocation.invocationId}`;
-    if (outcome.kind === 'succeeded') {
+    const crossedBudgetPeriod = now.slice(0, 7) !== invocation.period;
+    if (crossedBudgetPeriod) {
+      const executionCostKnown = outcome.kind === 'succeeded'
+        || outcome.kind === 'failed_after_start';
+      const unresolvedReason = executionCostKnown
+        ? 'period_closed_after_start'
+        : outcome.reason;
+      money = holdUnresolvedReservation(current.budget, reservation, {
+        expectedBudgetRevision: current.budget.revision,
+        expectedReservationRevision: reservation.revision,
+        executionAttemptId: invocation.executionAttemptId,
+        reason: unresolvedReason,
+        executionCostAtomic: executionCostKnown ? outcome.executionCostAtomic : null,
+        now,
+      });
+      preReceiptInvocation = deepFreeze({
+        ...invocation,
+        state: 'unresolved',
+        revision: invocation.revision + 1,
+        finalizedAt: now,
+        executionCostStatus: executionCostKnown ? 'known' : 'unresolved',
+        executionCostAtomic: executionCostKnown ? outcome.executionCostAtomic : null,
+        heldReservationAtomic: reservation.reservedAtomic,
+        outputHash: outcome.kind === 'succeeded' ? outcome.outputHash : null,
+        failureClass: outcome.kind === 'failed_after_start' ? outcome.failureClass : null,
+        unresolvedReason,
+        journalEntries: deepFreeze([]),
+        receiptSequenceScope: scope,
+        receiptSequence,
+        receiptId,
+      });
+    } else if (outcome.kind === 'succeeded') {
       const gross = toAtomic(outcome.executionCostAtomic)
         + toAtomic(reservation.quote.protocolFeeAtomic)
         + toAtomic(reservation.quote.refundReserveAtomic)

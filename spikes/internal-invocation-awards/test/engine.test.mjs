@@ -17,9 +17,12 @@ import {
 } from '../src/credentials.mjs';
 import {
   authorizeInternalInvocation,
+  canonicalAwardReversalBytes,
   cancelInternalAuthorization,
   createEngineState,
   executeAuthorizedInvocation,
+  recordAwardReversal,
+  signAwardReversal,
 } from '../src/engine.mjs';
 import { policyHash, skillRegistrationKey } from '../src/schema.mjs';
 import { receiptHash, verifyReceipt } from '../src/statements.mjs';
@@ -460,7 +463,7 @@ test('successful execution atomically commits policy-bound signed receipt and ex
   assert.doesNotThrow(() => JSON.stringify(result));
 });
 
-test('terminal retry returns the identical committed receipt and never invokes executor again', async () => {
+test('consumed terminal credentials reject and never invoke executor again', async () => {
   const fx = fixture();
   const q = makeQuote(fx.activePolicy, 'retry');
   const authorized = await authorize(fx, q);
@@ -475,7 +478,7 @@ test('terminal retry returns the identical committed receipt and never invokes e
       return { kind: 'succeeded', executionCostAtomic: '700000', outputHash: OUTPUT_HASH };
     },
   });
-  const retry = await executeAuthorizedInvocation({
+  await assert.rejects(() => executeAuthorizedInvocation({
     store: fx.store,
     quote: q,
     credential,
@@ -483,9 +486,9 @@ test('terminal retry returns the identical committed receipt and never invokes e
       calls += 1;
       throw new Error('must not execute');
     },
-  });
+  }), /credential already consumed|terminal|reservation.*consumed/i);
   assert.equal(calls, 1);
-  assert.deepEqual(retry, first);
+  assert.equal(first.invocation.state, 'succeeded');
   assert.equal(Object.keys(fx.store.snapshot().receipts).length, 1);
 });
 
@@ -493,15 +496,20 @@ test('validated known failure records exactly one shared-kernel execution COGS r
   const fx = fixture();
   const q = makeQuote(fx.activePolicy, 'failure');
   const authorized = await authorize(fx, q);
+  const credential = signCredential(authorized.credentialPayload, fx.authorizer.privateKey);
+  let calls = 0;
   const result = await executeAuthorizedInvocation({
     store: fx.store,
     quote: q,
-    credential: signCredential(authorized.credentialPayload, fx.authorizer.privateKey),
-    executor: async () => ({
-      kind: 'failed_after_start',
-      executionCostAtomic: '700000',
-      failureClass: 'provider_error',
-    }),
+    credential,
+    executor: async () => {
+      calls += 1;
+      return {
+        kind: 'failed_after_start',
+        executionCostAtomic: '700000',
+        failureClass: 'provider_error',
+      };
+    },
   });
   assert.equal(result.invocation.state, 'failed');
   assert.equal(result.budget.consumedAtomic, '700000');
@@ -514,32 +522,62 @@ test('validated known failure records exactly one shared-kernel execution COGS r
     amountAtomic: '700000',
   }]);
   assert.deepEqual(result.receipt.journalEntries, result.invocation.journalEntries);
+  await assert.rejects(() => executeAuthorizedInvocation({
+    store: fx.store, quote: q, credential,
+    executor: async () => { calls += 1; return {}; },
+  }), /credential already consumed|terminal/i);
+  assert.equal(calls, 1);
 });
 
 test('malformed and unknown-cost outcomes hold the full reservation without journals or award', async (t) => {
   const outcomes = [
-    async () => { throw new Error('provider vanished'); },
-    async () => ({ kind: 'unresolved_after_start', reason: 'cost_unknown' }),
-    async () => ({ kind: 'failed_after_start', executionCostAtomic: '1.5', failureClass: 'provider_error' }),
-    async () => ({ kind: 'succeeded', executionCostAtomic: '1', outputHash: 'bad' }),
+    ['throw', async () => { throw new Error('provider vanished'); }],
+    ['explicit executor_threw', async () => ({ kind: 'unresolved_after_start', reason: 'executor_threw' })],
+    ['explicit malformed_outcome', async () => ({ kind: 'unresolved_after_start', reason: 'malformed_outcome' })],
+    ['explicit cost_unknown', async () => ({ kind: 'unresolved_after_start', reason: 'cost_unknown' })],
+    ['unknown kind', async () => ({ kind: 'mystery' })],
+    ['missing success cost', async () => ({ kind: 'succeeded', outputHash: OUTPUT_HASH })],
+    ['negative cost', async () => ({ kind: 'failed_after_start', executionCostAtomic: '-1', failureClass: 'provider_error' })],
+    ['decimal cost', async () => ({ kind: 'failed_after_start', executionCostAtomic: '1.5', failureClass: 'provider_error' })],
+    ['non-string cost', async () => ({ kind: 'failed_after_start', executionCostAtomic: 1, failureClass: 'provider_error' })],
+    ['over-cap cost', async () => ({ kind: 'failed_after_start', executionCostAtomic: '1000001', failureClass: 'provider_error' })],
+    ['extra outcome key', async () => ({ kind: 'succeeded', executionCostAtomic: '1', outputHash: OUTPUT_HASH, surprise: true })],
+    ['malformed success hash', async () => ({ kind: 'succeeded', executionCostAtomic: '1', outputHash: 'bad' })],
+    ['missing failure cost', async () => ({ kind: 'failed_after_start', failureClass: 'provider_error' })],
+    ['invalid failure class', async () => ({ kind: 'failed_after_start', executionCostAtomic: '1', failureClass: 'timeout' })],
   ];
-  for (const [index, executor] of outcomes.entries()) {
-    await t.test(`unresolved case ${index + 1}`, async () => {
+  for (const [index, [label, executor]] of outcomes.entries()) {
+    await t.test(label, async () => {
       const fx = fixture();
       const q = makeQuote(fx.activePolicy, `unresolved-${index}`);
       const authorized = await authorize(fx, q);
+      let calls = 0;
+      const credential = signCredential(authorized.credentialPayload, fx.authorizer.privateKey);
       const result = await executeAuthorizedInvocation({
         store: fx.store,
         quote: q,
-        credential: signCredential(authorized.credentialPayload, fx.authorizer.privateKey),
-        executor,
+        credential,
+        executor: async (...args) => { calls += 1; return executor(...args); },
       });
       assert.equal(result.invocation.state, 'unresolved');
       assert.equal(result.reservation.state, 'held_unresolved');
       assert.equal(result.budget.reservedAtomic, '3050000');
       assert.equal(result.budget.consumedAtomic, '0');
+      assert.equal(result.budget.releasedAtomic, '0');
       assert.equal(result.award, null);
+      assert.equal(result.invocation.executionCostAtomic, null);
       assert.deepEqual(result.receipt.journalEntries, []);
+      assert.ok(Object.hasOwn(result.state.consumedNonces, authorized.credentialPayload.nonce));
+      assert.equal(result.events.filter((event) => event.type === 'execution_cost_unresolved').length, 1);
+      assert.equal(result.events.some((event) => event.type === 'budget_consumed'), false);
+      assert.equal(result.events.some((event) => event.type === 'budget_released'), false);
+      await assert.rejects(() => executeAuthorizedInvocation({
+        store: fx.store,
+        quote: q,
+        credential,
+        executor: async () => { calls += 1; return {}; },
+      }), /credential already consumed|terminal|held_unresolved/i);
+      assert.equal(calls, 1);
     });
   }
 });
@@ -559,6 +597,14 @@ test('cancellation atomically signs one journal-free terminal receipt', async ()
   assert.deepEqual(cancelled.receipt.journalEntries, []);
   assert.equal(cancelled.state.nextReceiptSequences[cancelled.receipt.receiptSequenceScope], 2);
   assert.equal(Object.keys(cancelled.state.receipts).length, 1);
+  let executorCalls = 0;
+  await assert.rejects(() => executeAuthorizedInvocation({
+    store: fx.store,
+    quote: q,
+    credential: signCredential(authorized.credentialPayload, fx.authorizer.privateKey),
+    executor: async () => { executorCalls += 1; return {}; },
+  }), /cancelled|released|terminal/i);
+  assert.equal(executorCalls, 0);
 });
 
 test('receipt sequence is independent per employer, Creator, currency, and scale', async () => {
@@ -769,6 +815,340 @@ test('period cap counts every open maximum exposure', async () => {
     /period award cap/,
   );
   assert.equal(Object.keys(fx.store.snapshot().reservations).length, 1);
+});
+
+test('authorization Promise race, idempotency, and reservation bindings fail closed', async () => {
+  const fx = fixture();
+  const q1 = makeQuote(fx.activePolicy, 'authorize-race-1');
+  const q2 = makeQuote(fx.activePolicy, 'authorize-race-2');
+  const raced = await Promise.allSettled([authorize(fx, q1), authorize(fx, q2)]);
+  assert.equal(raced.filter((row) => row.status === 'fulfilled').length, 1);
+  assert.equal(raced.filter((row) => row.status === 'rejected').length, 1);
+  assert.match(raced.find((row) => row.status === 'rejected').reason.message, /stale engine revision/);
+  assert.equal(Object.keys(fx.store.snapshot().reservations).length, 1);
+  assert.equal(Object.keys(fx.store.snapshot().idempotency).length, 1);
+
+  const winner = raced.find((row) => row.status === 'fulfilled').value;
+  const winnerQuote = winner.invocation.invocationId === q1.invocationId ? q1 : q2;
+  await assert.rejects(() => authorize(fx, makeQuote(fx.activePolicy, 'idempotency-replay', {
+    idempotencyKey: winnerQuote.idempotencyKey,
+  })), /idempotency key already bound/);
+
+  const other = winnerQuote === q1 ? q2 : q1;
+  let calls = 0;
+  await assert.rejects(() => executeAuthorizedInvocation({
+    store: fx.store,
+    quote: other,
+    credential: signCredential(winner.credentialPayload, fx.authorizer.privateKey),
+    executor: async () => { calls += 1; return {}; },
+  }), /no persisted authorization|credential.*match|quote.*match/i);
+  assert.equal(calls, 0);
+});
+
+test('credential and manager signer, authorizer, and reservation bindings reject before execution', async () => {
+  const fx = fixture();
+  const q = makeQuote(fx.activePolicy, 'binding');
+  const authorized = await authorize(fx, q);
+  let calls = 0;
+  const executor = async () => { calls += 1; return {}; };
+  await assert.rejects(() => executeAuthorizedInvocation({
+    store: fx.store, quote: q, credential: null, executor,
+  }), /credential authorizer|credential/i);
+  const attacker = generateKeyPairSync('ed25519');
+  await assert.rejects(() => executeAuthorizedInvocation({
+    store: fx.store,
+    quote: q,
+    credential: signCredential(authorized.credentialPayload, attacker.privateKey),
+    executor,
+  }), /signature/);
+  const wrongReservationCredential = signCredential({
+    ...authorized.credentialPayload,
+    reservationId: 'res-attacker',
+  }, fx.authorizer.privateKey);
+  await assert.rejects(() => executeAuthorizedInvocation({
+    store: fx.store, quote: q, credential: wrongReservationCredential, executor,
+  }), /credential does not match persisted authorization/);
+  assert.equal(calls, 0);
+
+  const selfFx = fixture();
+  const selfQuote = makeQuote(selfFx.activePolicy, 'manager-binding', {
+    initiatingPrincipalId: 'sam',
+  });
+  const otherQuote = makeQuote(selfFx.activePolicy, 'manager-other', {
+    initiatingPrincipalId: 'sam',
+  });
+  await assert.rejects(() => authorize(selfFx, selfQuote, {
+    managerApproval: managerApproval(selfFx, otherQuote),
+  }), /manager approval.*binding|invocation/i);
+  await assert.rejects(() => authorize(selfFx, selfQuote, {
+    managerApproval: signManagerApproval({
+      ...(() => {
+        const { signature: _signature, ...payload } = managerApproval(selfFx, selfQuote);
+        return payload;
+      })(),
+      managerSignerId: 'unknown-manager',
+    }, attacker.privateKey),
+  }), /manager signer is not permitted|not provisioned/);
+  assert.equal(selfFx.store.snapshot().revision, 0);
+});
+
+test('required policy, budget, signer, and lifecycle rejections happen before executor start', async (t) => {
+  await t.test('unauthorized Wielder, quote cap, underfunding, and expired budget', async () => {
+    const unauthorized = fixture();
+    await assert.rejects(() => authorize(
+      unauthorized,
+      makeQuote(unauthorized.activePolicy, 'bad-wielder', { wielderId: 'outsider-agent' }),
+    ), /Wielder is not permitted/);
+    assert.equal(unauthorized.store.snapshot().revision, 0);
+
+    const overCap = fixture();
+    await assert.rejects(() => authorize(overCap, makeQuote(overCap.activePolicy, 'over-cap', {
+      maxExecutionCostAtomic: '2000000',
+      maxGrossAtomic: '4050000',
+    })), /maxGrossAtomic exceeds policy/);
+    assert.equal(overCap.store.snapshot().revision, 0);
+
+    const underfunded = fixture({ budgetOverrides: { allocatedAtomic: '1000000' } });
+    await assert.rejects(
+      () => authorize(underfunded, makeQuote(underfunded.activePolicy, 'underfunded')),
+      /insufficient remaining budget/,
+    );
+    assert.equal(underfunded.store.snapshot().revision, 0);
+
+    const expired = fixture({ budgetOverrides: { expiresAt: '2026-07-17T00:02:00.000Z' } });
+    expired.clock.now = '2026-07-17T00:03:00.000Z';
+    await assert.rejects(
+      () => authorize(expired, makeQuote(expired.activePolicy, 'expired-budget')),
+      /budget authorization expired/,
+    );
+    assert.equal(expired.store.snapshot().revision, 0);
+  });
+
+  await t.test('manager approval is independent, bound, current, trusted, and key-injection-free', async () => {
+    const fx = fixture();
+    const q = makeQuote(fx.activePolicy, 'manager-matrix', { initiatingPrincipalId: 'sam' });
+    const attacker = generateKeyPairSync('ed25519');
+    const common = {
+      schemaVersion: 1,
+      approvalId: 'approval-manager-matrix',
+      invocationId: q.invocationId,
+      creatorId: q.creatorId,
+      policyId: q.policyId,
+      policyVersion: q.policyVersion,
+      issuedAt: '2026-07-17T00:00:00.000Z',
+      expiresAt: q.expiresAt,
+    };
+    await assert.rejects(() => authorize(fx, q, { managerApproval: signManagerApproval({
+      ...common, managerSignerId: 'sam',
+    }, attacker.privateKey) }), /cannot self-approve/);
+    await assert.rejects(() => authorize(fx, q, { managerApproval: signManagerApproval({
+      ...common, managerSignerId: 'unknown-manager',
+    }, attacker.privateKey) }), /manager signer is not permitted/);
+    await assert.rejects(() => authorize(fx, q, { managerApproval: signManagerApproval({
+      ...common,
+      managerSignerId: 'manager-alex',
+      issuedAt: '2026-07-17T00:00:00.000Z',
+      expiresAt: '2026-07-17T00:00:30.000Z',
+    }, fx.manager.privateKey) }), /manager approval expired/);
+    await assert.rejects(() => authorize(fx, q, {
+      managerApproval: { ...managerApproval(fx, q), publicKeyPem: publicPem(fx.manager) },
+    }), /unknown key publicKeyPem/);
+    assert.equal(fx.store.snapshot().revision, 0);
+  });
+
+  await t.test('credential requires persisted exact reservation and trusted policy authorizer', async () => {
+    const source = fixture();
+    const q1 = makeQuote(source.activePolicy, 'credential-a');
+    const q2 = makeQuote(source.activePolicy, 'credential-b');
+    const a = await authorize(source, q1);
+    const b = await authorize(source, q2);
+    const credentialA = signCredential(a.credentialPayload, source.authorizer.privateKey);
+    let calls = 0;
+    const executor = async () => { calls += 1; return {}; };
+    await assert.rejects(() => executeAuthorizedInvocation({
+      store: source.store, quote: q2, credential: credentialA, executor,
+    }), /credential does not match persisted authorization/);
+    await assert.rejects(() => executeAuthorizedInvocation({
+      store: source.store, quote: q1,
+      credential: { ...credentialA, publicKeyPem: publicPem(source.authorizer) },
+      executor,
+    }), /unknown key publicKeyPem/);
+    await assert.rejects(() => executeAuthorizedInvocation({
+      store: source.store, quote: q1, credential: credentialA, executor,
+      publicKey: source.authorizer.publicKey,
+    }), /unknown key publicKey/);
+
+    const empty = fixture();
+    await assert.rejects(() => executeAuthorizedInvocation({
+      store: empty.store, quote: q1, credential: credentialA, executor,
+    }), /no persisted authorization/);
+    const disallowed = fixture();
+    await assert.rejects(() => authorize(disallowed, makeQuote(disallowed.activePolicy, 'authorizer'), {
+      credentialAuthorizerId: 'attacker-authorizer',
+    }), /credential authorizer is not permitted/);
+    assert.equal(calls, 0);
+    assert.equal(Object.hasOwn(b.credentialPayload, 'signature'), false);
+  });
+});
+
+test('finance-authenticated append-only earned reversals reduce period exposure only after verification', async () => {
+  const fx = fixture({ policyOverrides: { maxAwardPerPeriodAtomic: '3000000' } });
+  const q1 = makeQuote(fx.activePolicy, 'reversal-cap-1');
+  const firstAuthorization = await authorize(fx, q1);
+  const first = await executeSuccess(fx, q1, firstAuthorization);
+  const q2 = makeQuote(fx.activePolicy, 'reversal-cap-2');
+  await assert.rejects(() => authorize(fx, q2), /period award cap/);
+
+  const unsignedReversal = {
+    schemaVersion: 1,
+    reversalId: 'award-reversal-001',
+    awardId: first.award.awardId,
+    invocationId: first.invocation.invocationId,
+    receiptHash: first.receiptHash,
+    policyId: first.award.policyId,
+    policyVersion: first.award.policyVersion,
+    policyHash: first.award.policyHash,
+    amountAtomic: '1000000',
+    reason: 'finance_authenticated_correction',
+    issuedAt: fx.clock.now,
+    signerId: 'megacorp-finance',
+  };
+  assert.ok(canonicalAwardReversalBytes(unsignedReversal) instanceof Uint8Array);
+  const attacker = generateKeyPairSync('ed25519');
+  const accessorBacked = {
+    ...signAwardReversal(unsignedReversal, fx.finance.privateKey),
+  };
+  const signatureValue = accessorBacked.signature;
+  Object.defineProperty(accessorBacked, 'signature', {
+    enumerable: true,
+    get: () => signatureValue,
+  });
+  await assert.rejects(() => recordAwardReversal({
+    store: fx.store,
+    expectedRevision: fx.store.snapshot().revision,
+    signedReversal: accessorBacked,
+  }), /signature must be an enumerable data property/);
+  assert.equal(Object.keys(fx.store.snapshot().awardReversals).length, 0);
+  await assert.rejects(() => recordAwardReversal({
+    store: fx.store,
+    expectedRevision: fx.store.snapshot().revision,
+    signedReversal: signAwardReversal(unsignedReversal, attacker.privateKey),
+  }), /signature/);
+  assert.equal(Object.keys(fx.store.snapshot().awardReversals).length, 0);
+
+  const recorded = await recordAwardReversal({
+    store: fx.store,
+    expectedRevision: fx.store.snapshot().revision,
+    signedReversal: signAwardReversal(unsignedReversal, fx.finance.privateKey),
+  });
+  assert.equal(recorded.reversal.amountAtomic, '1000000');
+  assert.equal(recorded.event.type, 'invocation_award_reversed');
+  await assert.rejects(() => recordAwardReversal({
+    store: fx.store,
+    expectedRevision: fx.store.snapshot().revision,
+    signedReversal: signAwardReversal(unsignedReversal, fx.finance.privateKey),
+  }), /reversal identifier already exists/);
+  await assert.rejects(() => recordAwardReversal({
+    store: fx.store,
+    expectedRevision: fx.store.snapshot().revision,
+    signedReversal: signAwardReversal({
+      ...unsignedReversal,
+      reversalId: 'award-reversal-over-earned',
+      amountAtomic: '1000001',
+    }, fx.finance.privateKey),
+  }), /cumulative award reversal exceeds earned award/);
+  assert.equal(Object.keys(fx.store.snapshot().awardReversals).length, 1);
+  const second = await authorize(fx, q2);
+  assert.equal(second.reservation.state, 'reserved');
+});
+
+test('executions crossing period close terminally hold with honest recognition time and no late award', async (t) => {
+  const julyStart = '2026-07-31T23:59:00.000Z';
+  const august = '2026-08-01T00:01:00.000Z';
+  const september = '2026-09-01T00:00:00.000Z';
+  const cases = [
+    ['success', async (fx) => {
+      fx.clock.now = august;
+      return { kind: 'succeeded', executionCostAtomic: '700000', outputHash: OUTPUT_HASH };
+    }, 'known', '700000'],
+    ['known failure', async (fx) => {
+      fx.clock.now = august;
+      return { kind: 'failed_after_start', executionCostAtomic: '600000', failureClass: 'provider_error' };
+    }, 'known', '600000'],
+    ['unknown cost', async (fx) => {
+      fx.clock.now = august;
+      return { kind: 'unresolved_after_start', reason: 'cost_unknown' };
+    }, 'unresolved', null],
+  ];
+  for (const [label, outcome, costStatus, cost] of cases) {
+    await t.test(label, async () => {
+      const fx = fixture({
+        policyOverrides: { expiresAt: september },
+        registrations: [registration({ expiresAt: september })],
+      });
+      fx.clock.now = julyStart;
+      const q = makeQuote(fx.activePolicy, `clock-crossing-${label.replace(' ', '-')}`, {
+        expiresAt: '2026-08-02T00:00:00.000Z',
+      });
+      const authorized = await authorize(fx, q, {
+        credentialIssuedAt: julyStart,
+        credentialExpiresAt: q.expiresAt,
+        principalAttestation: principalAttestation(fx, q, {
+          issuedAt: julyStart,
+          expiresAt: q.expiresAt,
+        }),
+      });
+      const result = await executeAuthorizedInvocation({
+        store: fx.store,
+        quote: q,
+        credential: signCredential(authorized.credentialPayload, fx.authorizer.privateKey),
+        executor: () => outcome(fx),
+      });
+      assert.equal(result.invocation.state, 'unresolved');
+      assert.equal(result.reservation.state, 'held_unresolved');
+      assert.equal(result.invocation.executionCostStatus, costStatus);
+      assert.equal(result.invocation.executionCostAtomic, cost);
+      assert.equal(result.invocation.invocationAwardAtomic, '0');
+      assert.equal(result.award, null);
+      assert.equal(result.budget.reservedAtomic, '3050000');
+      assert.equal(result.receipt.period, '2026-08');
+      assert.equal(result.receipt.budgetPeriod, '2026-07');
+      assert.equal(result.receipt.occurredAt, august);
+      assert.deepEqual(result.receipt.journalEntries, []);
+      assert.equal(result.events.some((event) => event.type === 'budget_consumed'), false);
+      assert.equal(result.events.some((event) => event.type === 'budget_released'), false);
+      assert.equal(result.events.some((event) => event.type === (
+        costStatus === 'known' ? 'execution_period_closed' : 'execution_cost_unresolved'
+      )), true);
+    });
+  }
+});
+
+test('historically authenticated reserved authorization can be cancelled after expiry', async () => {
+  const september = '2026-09-01T00:00:00.000Z';
+  const fx = fixture({
+    policyOverrides: { expiresAt: september },
+    registrations: [registration({ expiresAt: september })],
+  });
+  const q = makeQuote(fx.activePolicy, 'late-cancel', { expiresAt: '2026-08-02T00:00:00.000Z' });
+  const authorized = await authorize(fx, q, {
+    credentialExpiresAt: q.expiresAt,
+    principalAttestation: principalAttestation(fx, q, { expiresAt: q.expiresAt }),
+  });
+  fx.clock.now = '2026-08-02T00:01:00.000Z';
+  const cancelled = await cancelInternalAuthorization({
+    store: fx.store,
+    expectedRevision: fx.store.snapshot().revision,
+    reservationId: authorized.reservation.reservationId,
+    reason: 'expired_authorization_released_by_operator',
+  });
+  assert.equal(cancelled.invocation.state, 'cancelled');
+  assert.equal(cancelled.reservation.state, 'released');
+  assert.equal(cancelled.receipt.period, '2026-08');
+  assert.equal(cancelled.receipt.budgetPeriod, '2026-07');
+  assert.equal(cancelled.receipt.occurredAt, fx.clock.now);
+  assert.equal(cancelled.budget.reservedAtomic, '0');
+  assert.equal(cancelled.budget.releasedAtomic, '3050000');
 });
 
 test('engine configuration requires exact immutable trust roots and keeps capabilities private', () => {

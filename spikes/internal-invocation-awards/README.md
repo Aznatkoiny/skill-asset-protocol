@@ -79,8 +79,14 @@ remains earned and non-payable for that period. A payable advance must reference
 same authenticated receipt through a later statement's historical-receipt set and
 prior signed statement chain; a current-period receipt cannot be advanced or paid
 early. Receipt creation and verification also require `occurredAt` to fall within the
-receipt's declared period, so a late Execution cannot be backdated into an earlier
-month and immediately treated as historical.
+receipt's explicit recognition `period`. Each receipt separately binds the original
+`budgetPeriod`. A success or known failure can finalize normally only when those
+periods match, so a late Execution cannot be backdated into an earlier month and
+immediately treated as historical. A reserved authorization may still be cancelled
+after policy/budget expiry: the engine re-verifies the immutable signed historical
+authorization, releases only that existing reservation, and signs the cancellation
+receipt at the real later clock time. No new authorization or Execution may start
+after expiry.
 
 The engine is provisioned with an immutable `(skillId, skillVersionHash)` registration
 map that binds the canonical Creator and employer. Missing, expired, revoked,
@@ -93,10 +99,13 @@ Invocation bindings prevent replay even when many employees share one agent Wiel
 The store is a serialized, single-process CAS demonstration. It is not a distributed
 database lock. The engine uses exact global, budget, Invocation, reservation, and
 execution-attempt revisions so one stale authorization or duplicate completion wins
-at most once. It conservatively counts every earned award plus the maximum award of
+at most once. It conservatively counts every earned, non-reversed award plus the maximum award of
 every reserved, executing, or unresolved-held authorization against the period cap.
-There is no automated award-reversal lifecycle in this v1 engine, so it never reduces
-that exposure based on an unsupported reversal claim.
+An earned-award correction reduces that cap exposure only after a provisioned,
+policy-permitted finance signer authenticates an exact append-only reversal bound to
+the award, Invocation, receipt hash, policy hash, amount, reason, and issuance time.
+Caller-supplied statement rows or unsigned reductions never change authorization
+capacity. Cumulative authenticated reversals cannot exceed the original earned award.
 
 The tested pre-execution rejection set includes:
 
@@ -138,14 +147,23 @@ cost, malformed cost/hash, or over-cap cost transitions to `unresolved` and
 substitutes zero COGS, releases that hold, or creates an award automatically. Operator
 reconciliation of an unresolved hold is a human-only future gate.
 
+If an Execution starts inside its authorized budget month but completes after that
+month closes, it also terminally holds the full reservation and creates no late award.
+A valid reported COGS amount remains signed as `known` evidence (with the success hash
+or failure class) but is not silently booked or released; unknown COGS stays
+`unresolved`. The receipt records the real later recognition period alongside the
+original budget period. This avoids both an indefinitely `executing` record and a
+July-to-August payable-acceleration path.
+
 ## Receipts and statements
 
 Every terminal success, known failure, unresolved Execution, or pre-execution
 cancellation receives one monotonic receipt sequence scoped by employer, Creator,
 denomination, and atomic scale. Terminal state, signed receipt, receipt hash, and
 scoped sequence advancement commit in one serialized transaction. A terminal retry
-returns the same persisted receipt without calling the executor again; a signing or
-commit failure leaves no terminal state or receipt. A trusted receipt key ID selects
+with a cancelled, released, held, failed, or consumed credential is rejected without
+calling the executor again; callers read the already committed receipt from state. A
+signing or commit failure leaves no terminal state or receipt. A trusted receipt key ID selects
 the provisioned verification key; receipts and lifecycle requests cannot inject key
 material. Receipt canonical bytes bind the Invocation, reservation, Skill registration,
 initiating-principal attestation, Skill hash, canonical policy hash, outcome, atomic
@@ -186,7 +204,9 @@ changes only earned accounting or an already-advanced payable balance. Payments
 cannot exceed the authenticated payable balance. Advance, reversal, and payment
 timestamps must fall within the signed statement period. A later statement may cite
 an authenticated historical receipt for an advance, reversal, or payment without
-recounting that receipt's prior-period economics.
+recounting that receipt's prior-period economics. For each award, cumulative payable
+advances plus cumulative earned-only reversals can never exceed the original earned
+amount, regardless of which later statement recorded the reversal first.
 
 The receipt inclusion root uses domain-separated binary SHA-256 leaves and internal
 nodes. Odd levels duplicate the last node. The empty set has a fixed

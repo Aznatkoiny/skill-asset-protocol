@@ -25,7 +25,7 @@ const RECEIPT_KEYS = [
   'reservationId', 'employerId', 'creatorId', 'skillId', 'skillVersionHash',
   'skillRegistrationId', 'initiatingPrincipalId', 'principalAttestationId',
   'principalAttestationHash', 'policyId', 'policyVersion', 'policyHash',
-  'period', 'currency', 'atomicScale',
+  'budgetPeriod', 'period', 'currency', 'atomicScale',
   'invocationState', 'reservationState', 'executionAttemptId', 'reservedAtomic',
   'consumedAtomic', 'releasedAtomic', 'heldReservationAtomic',
   'executionCostStatus', 'executionCostAtomic', 'outputHash', 'failureClass',
@@ -133,7 +133,7 @@ function validateReceiptPayload(input) {
   for (const key of [
     'receiptId', 'receiptType', 'invocationId', 'reservationId', 'employerId',
     'creatorId', 'skillId', 'skillRegistrationId', 'initiatingPrincipalId',
-    'principalAttestationId', 'policyId', 'period', 'currency', 'invocationState',
+    'principalAttestationId', 'policyId', 'budgetPeriod', 'period', 'currency', 'invocationState',
     'reservationState', 'receiptSignerId', 'receiptSequenceScope',
   ]) requireString(input[key], key);
   if (!Number.isSafeInteger(input.sequence) || input.sequence < 1) {
@@ -146,6 +146,12 @@ function validateReceiptPayload(input) {
     throw new Error('receipt atomicScale must be an integer from 0 through 18');
   }
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(input.period)) throw new Error('receipt period must be YYYY-MM');
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(input.budgetPeriod)) {
+    throw new Error('receipt budgetPeriod must be YYYY-MM');
+  }
+  if (input.budgetPeriod > input.period) {
+    throw new Error('receipt recognition period cannot precede its budget period');
+  }
   if (!SHA256_PATTERN.test(input.skillVersionHash)) throw new Error('receipt Skill hash is invalid');
   if (!SHA256_PATTERN.test(input.policyHash)) throw new Error('receipt policyHash is invalid');
   if (!SHA256_PATTERN.test(input.principalAttestationHash)) {
@@ -184,6 +190,7 @@ function validateReceiptPayload(input) {
 
   if (input.invocationState === 'succeeded') {
     if (input.receiptType !== 'internal_invocation_finalized'
+        || input.budgetPeriod !== input.period
         || input.reservationState !== 'consumed'
         || input.executionCostStatus !== 'known'
         || input.executionCostAtomic === null
@@ -216,6 +223,7 @@ function validateReceiptPayload(input) {
     });
   } else if (input.invocationState === 'failed') {
     if (input.receiptType !== 'internal_invocation_finalized'
+        || input.budgetPeriod !== input.period
         || input.reservationState !== 'released'
         || input.executionCostStatus !== 'known'
         || input.executionCostAtomic === null
@@ -239,13 +247,23 @@ function validateReceiptPayload(input) {
       })),
     });
   } else if (input.invocationState === 'unresolved') {
+    const knownAfterClose = input.unresolvedReason === 'period_closed_after_start'
+      && input.budgetPeriod < input.period
+      && input.executionCostStatus === 'known'
+      && input.executionCostAtomic !== null
+      && toAtomic(input.executionCostAtomic) <= held
+      && ((SHA256_PATTERN.test(input.outputHash) && input.failureClass === null)
+        || (input.outputHash === null
+          && ['provider_error', 'skill_error', 'invalid_output'].includes(input.failureClass)));
+    const unknownCost = ['executor_threw', 'malformed_outcome', 'cost_unknown']
+      .includes(input.unresolvedReason)
+      && input.executionCostStatus === 'unresolved'
+      && input.executionCostAtomic === null
+      && input.outputHash === null
+      && input.failureClass === null;
     if (input.receiptType !== 'internal_invocation_finalized'
         || input.reservationState !== 'held_unresolved'
-        || input.executionCostStatus !== 'unresolved'
-        || input.executionCostAtomic !== null
-        || input.outputHash !== null
-        || input.failureClass !== null
-        || !['executor_threw', 'malformed_outcome', 'cost_unknown'].includes(input.unresolvedReason)
+        || (!knownAfterClose && !unknownCost)
         || input.protocolFeeAtomic !== '0'
         || input.refundReserveAtomic !== '0'
         || input.invocationAwardAtomic !== '0'
@@ -335,7 +353,8 @@ export function buildInvocationReceipt({
     policyId: invocation.policyId,
     policyVersion: invocation.policyVersion,
     policyHash: invocation.policyHash,
-    period: invocation.period,
+    budgetPeriod: invocation.period,
+    period: invocation.finalizedAt.slice(0, 7),
     currency: invocation.currency,
     atomicScale: invocation.atomicScale,
     invocationState: invocation.state,
@@ -682,7 +701,9 @@ export function buildStatement({
       throw new Error('payable advance must reference an authenticated historical receipt');
     }
     award.advance += toAtomic(advance.amountAtomic);
-    if (award.advance > award.amount) throw new Error('payable advance exceeds earned award');
+    if (award.advance + award.earnedReversal > award.amount) {
+      throw new Error('payable advance plus cumulative earned-only reversal exceeds earned award');
+    }
   }
   const reversalRows = uniqueSorted(reversals, 'reversalId', 'reversals', validateReversal);
   for (const reversal of reversalRows) {

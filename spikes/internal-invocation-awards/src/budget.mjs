@@ -453,8 +453,19 @@ export function holdUnresolvedReservation(budgetInput, reservationInput, options
   const reservation = validateReservation(reservationInput);
   requireExecuting(budget, reservation, options);
   parseUtc(options.now, 'now');
-  if (!['executor_threw', 'malformed_outcome', 'cost_unknown'].includes(options.reason)) {
+  if (![
+    'executor_threw', 'malformed_outcome', 'cost_unknown', 'period_closed_after_start',
+  ].includes(options.reason)) {
     throw new Error('unsupported unresolved reason');
+  }
+  const knownCost = options.reason === 'period_closed_after_start';
+  if (knownCost) {
+    const cost = toAtomic(options.executionCostAtomic);
+    if (cost > toAtomic(reservation.quote.maxExecutionCostAtomic)) {
+      throw new Error('execution cost exceeds quote maximum');
+    }
+  } else if (options.executionCostAtomic !== undefined && options.executionCostAtomic !== null) {
+    throw new Error('unknown-cost hold cannot record an execution cost');
   }
   const nextBudget = replaceBudget(budget, { revision: budget.revision + 1 });
   const nextReservation = replaceReservation(reservation, {
@@ -465,10 +476,11 @@ export function holdUnresolvedReservation(budgetInput, reservationInput, options
   return deepFreeze({
     budget: nextBudget,
     reservation: nextReservation,
-    event: event('execution_cost_unresolved', nextReservation, nextBudget, options.now, {
+    event: event(knownCost ? 'execution_period_closed' : 'execution_cost_unresolved', nextReservation, nextBudget, options.now, {
       reason: options.reason,
       heldAtomic: reservation.reservedAtomic,
-      executionCostStatus: 'unresolved',
+      executionCostStatus: knownCost ? 'known' : 'unresolved',
+      executionCostAtomic: knownCost ? options.executionCostAtomic : null,
     }),
   });
 }
