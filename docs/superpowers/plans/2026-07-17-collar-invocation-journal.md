@@ -3093,9 +3093,20 @@ and after the receipt lookup.
 
 - [ ] **Step 5: Confirm secrets and mainnet did not enter tracked files**
 
-Run: `! git ls-files -z | xargs -0 rg -n --pcre2 '-----BEGIN (?:PRIVATE|ENCRYPTED PRIVATE) KEY-----|PRIVATE_KEY\s*=\s*(?:0x)?[0-9a-fA-F]{64}'`
+Run:
 
-Expected: no output. The existing ignored local `.env` remains untouched.
+```bash
+if git grep -I -q -E -e '-----BEGIN (PRIVATE|ENCRYPTED PRIVATE) KEY-----|PRIVATE_KEY[[:space:]]*=[[:space:]]*(0x)?[0-9a-fA-F]{64}' -- .; then
+  false
+else
+  secret_scan_status=$?
+  test "$secret_scan_status" -eq 1
+fi
+```
+
+Expected: exit 0 and no output. Exit 1 from `git grep` means no match; a match or scan
+error fails the gate without printing possible secret material. The existing ignored
+local `.env` remains untouched.
 
 - [ ] **Step 6: Commit the authority documentation**
 
