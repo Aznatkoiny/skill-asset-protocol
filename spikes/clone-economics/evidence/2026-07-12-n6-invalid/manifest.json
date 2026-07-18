@@ -1,0 +1,58 @@
+{
+  "command": "historical live command not retained exactly",
+  "configuration": {
+    "acquisitionTreatment": "modeled",
+    "appliedDistillationSeeds": [
+      "not-recorded"
+    ],
+    "attemptCoverage": "successful fifth run only; four setup attempts have no normalized records",
+    "benchmarkVerdict": "INVALID_BENCHMARK_TARGET_FAILED",
+    "historicalRunDate": "2026-07-12",
+    "nValues": [
+      6
+    ],
+    "pairOrderSeeds": [
+      "not-recorded"
+    ],
+    "requestedDistillationSeeds": [
+      "not-recorded"
+    ],
+    "sourceTimestamp": "not-recorded"
+  },
+  "evidenceLabel": "HISTORICAL MIXED — INVALID BENCHMARK; acquisition MODELED",
+  "experimentId": "2026-07-12-n6-invalid",
+  "files": {
+    "README.md": {
+      "bytes": 420,
+      "sha256": "2537c49266760dc5b1c20fa83f5dd38d1afae7a46a5a07c30bcaf0223685d52a"
+    },
+    "report.md": {
+      "bytes": 532,
+      "sha256": "0eb9bbe03d0599a4188c3ef421c36881caf730db11b84cbf17aa79587c81c147"
+    },
+    "samples.jsonl": {
+      "bytes": 18424,
+      "sha256": "bba125d70aa089f45389ccfe882b1dc467169d81328dd9a9ccf309900be301d4"
+    },
+    "summary.json": {
+      "bytes": 629,
+      "sha256": "7124543f9bf16569308c69e93d6bae73973853ba025b49655e3b444b1ce15f1f"
+    }
+  },
+  "gitCommit": "historical-source-not-recorded",
+  "liveBudget": null,
+  "model": "claude-sonnet-4-6",
+  "modelProvider": "Anthropic",
+  "recordedAtUtc": null,
+  "runtime": {
+    "arch": "arm64",
+    "node": "v22.22.0",
+    "platform": "darwin"
+  },
+  "schemaVersion": 1,
+  "sourceEvidence": {
+    "bytes": 76631,
+    "kind": "legacy-report-json",
+    "sha256": "0554779988164651bfe6b037c8b16054e009ee6bac76e61c90af331ac6e85212"
+  }
+}
