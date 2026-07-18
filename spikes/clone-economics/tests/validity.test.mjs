@@ -36,3 +36,34 @@ test('a passing target admits a clone result without deciding its meaning', () =
   assert.equal(result.cloneConclusionAllowed, true);
   assert.equal(result.economicsConclusionAllowed, true);
 });
+
+test('a score-only target failure invalidates the benchmark', () => {
+  const result = assessBenchmark({ threshold: 0.8, target: score(0.4, true) });
+  assert.equal(result.valid, false);
+  assert.equal(result.reason, 'Target score 0.400 is below 0.800.');
+});
+
+test('a critical-gate-only target failure invalidates the benchmark', () => {
+  const result = assessBenchmark({ threshold: 0.8, target: score(0.9, false) });
+  assert.equal(result.valid, false);
+  assert.equal(result.reason, 'target critical gates failed.');
+});
+
+test('malformed scores and thresholds throw instead of failing open', () => {
+  for (const malformed of [Number.NaN, Number.POSITIVE_INFINITY, '0.9', null]) {
+    assert.throws(
+      () => assessBenchmark({ threshold: 0.8, target: score(malformed, true) }),
+      /target absoluteScore must be a finite number from 0 to 1/,
+    );
+  }
+  for (const malformed of [Number.NaN, Number.POSITIVE_INFINITY, '0.8', 0, 1.1]) {
+    assert.throws(
+      () => assessBenchmark({ threshold: malformed, target: score(0.9, true) }),
+      /threshold must be a finite number greater than 0 and at most 1/,
+    );
+  }
+  assert.throws(
+    () => assessBenchmark({ threshold: 0.8, target: { ...score(0.9, true), criticalGatePass: 'yes' } }),
+    /criticalGatePass must be boolean/,
+  );
+});
