@@ -17,8 +17,8 @@ out/
 # Run artifacts (belt-and-braces; spikes also ignore locally)
 runs/
 *.jsonl
-!phase0/attestations.jsonl
 phase0/.attestation-checkouts.local.json
+phase0/attestations.jsonl.*
 spikes/pi-wielder/**/*.lock
 spikes/pi-wielder/**/*.claim
 spikes/pi-wielder/**/*.pem
