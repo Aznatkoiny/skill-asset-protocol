@@ -114,6 +114,7 @@ export function x402Paywall({
   const transport = requireFacilitatorTransport(facilitatorTransport);
   const canonicalPayTo = canonicalAddress(payTo);
   const frozenOffers = new Map();
+  const locallyUnresolvedSettlements = new Set();
 
   return async (c, next) => {
     const idempotencyKey = c.req.header('Idempotency-Key')?.trim();
@@ -222,6 +223,14 @@ export function x402Paywall({
       return c.json({ error: error.message }, 409);
     }
 
+    if (locallyUnresolvedSettlements.has(idempotencyKey)
+        && !['terminal', 'settled'].includes(priorDecision?.kind)) {
+      return c.json({
+        error: 'payment settlement unresolved; trusted reconciliation is required',
+        settlementReference,
+      }, 503);
+    }
+
     if (priorDecision?.kind === 'terminal') {
       if (!terminalReplayIsTrusted(priorDecision, payer)) {
         return c.json({ error: 'terminal replay lacks a settled or refunded transaction' }, 503);
@@ -289,6 +298,7 @@ export function x402Paywall({
         }
         settle = await postJson(transport, 'settle', facilitatorBody);
       } catch (error) {
+        locallyUnresolvedSettlements.add(idempotencyKey);
         await lifecycle.onUnresolved?.({
           idempotencyKey,
           settlementReference,
@@ -308,31 +318,62 @@ export function x402Paywall({
         accepts: [requirements],
       }, 402);
     }
-    if (priorDecision?.kind !== 'settled') {
-      await lifecycle.onSettled?.({
+    const settledPayer = String(settle.payer ?? '').toLowerCase();
+    const settledTxHash = String(settle.transaction ?? '').toLowerCase();
+    if (!validTxHash(settledTxHash)
+        || settledPayer !== payer
+        || settle.network !== NETWORK) {
+      locallyUnresolvedSettlements.add(idempotencyKey);
+      await lifecycle.onUnresolved?.({
         idempotencyKey,
         settlementReference,
-        txHash: settle.transaction,
-        payer: String(settle.payer ?? payer).toLowerCase(),
-        amountAtomic: requirements.maxAmountRequired,
-        requirements: structuredClone(requirements),
+        payer,
+        reason: 'facilitator returned malformed settlement evidence',
       });
+      return c.json({
+        error: 'payment settlement unresolved: facilitator evidence is invalid',
+        settlementReference,
+      }, 503);
+    }
+    if (priorDecision?.kind !== 'settled') {
+      try {
+        await lifecycle.onSettled?.({
+          idempotencyKey,
+          settlementReference,
+          txHash: settledTxHash,
+          payer: settledPayer,
+          amountAtomic: requirements.maxAmountRequired,
+          requirements: structuredClone(requirements),
+        });
+      } catch (error) {
+        locallyUnresolvedSettlements.add(idempotencyKey);
+        await lifecycle.onUnresolved?.({
+          idempotencyKey,
+          settlementReference,
+          payer,
+          reason: `settlement confirmed but journal persistence unresolved: ${error.message}`,
+        });
+        return c.json({
+          error: 'payment settlement unresolved: authoritative persistence requires reconciliation',
+          settlementReference,
+        }, 503);
+      }
     }
 
     c.set('x402', {
       idempotencyKey,
       settlementReference,
-      txHash: settle.transaction,
-      payer: String(settle.payer ?? payer).toLowerCase(),
+      txHash: settledTxHash,
+      payer: settledPayer,
       amountAtomic: requirements.maxAmountRequired,
       requirements,
     });
     await next();
     c.res.headers.set('X-PAYMENT-RESPONSE', jsonToB64({
       success: true,
-      transaction: settle.transaction,
+      transaction: settledTxHash,
       network: NETWORK,
-      payer: settle.payer ?? payer,
+      payer: settledPayer,
       settlementReference,
     }));
     c.res.headers.set('X-402-FACILITATOR-MS', facilitatorMs.toFixed(1));

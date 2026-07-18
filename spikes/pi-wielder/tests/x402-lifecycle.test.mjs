@@ -285,3 +285,76 @@ test('verify and settle disable redirects and never follow a signed authorizatio
     assert.ok(destinations.every(([url]) => !url.startsWith('https://evil.test')));
   }
 });
+
+test('post-settle journal failure becomes durable unresolved and exact retry never settles twice', async () => {
+  const facilitator = createMockFacilitator();
+  let verifyCalls = 0;
+  let settleCalls = 0;
+  let unresolved = false;
+  let executions = 0;
+  const transport = createMockFacilitatorTransport(async (url, init) => {
+    const operation = new URL(url).pathname.slice(1);
+    if (operation === 'verify') verifyCalls += 1;
+    if (operation === 'settle') settleCalls += 1;
+    return facilitator.request(url, init);
+  });
+  const app = resourceApp({
+    facilitatorTransport: transport,
+    lifecycle: {
+      async onSigned() { return unresolved ? { kind: 'payment_unresolved' } : null; },
+      async onSettled() { throw new Error('injected journal append failure after settlement'); },
+      async onUnresolved() { unresolved = true; },
+    },
+    handler: (c) => { executions += 1; return c.json({ ok: true }); },
+  });
+  const first = await payingFetch(throwawayAccount(), 'http://seller.test/resource', {
+    method: 'POST', body: '{}',
+  }, {
+    idempotencyKey: 'idem-post-settle-gap',
+    fetchImpl: (url, init) => app.request(url, init),
+  });
+  assert.equal(first.res.status, 503);
+  assert.equal(unresolved, true);
+  const retry = await app.request('http://seller.test/resource', {
+    method: 'POST',
+    headers: { 'Idempotency-Key': first.idempotencyKey, 'X-PAYMENT': first.xPayment },
+    body: '{}',
+  });
+  assert.equal(retry.status, 503);
+  assert.equal(verifyCalls, 1);
+  assert.equal(settleCalls, 1);
+  assert.equal(executions, 0);
+});
+
+test('malformed facilitator success evidence is unresolved and never authorizes execution', async () => {
+  let unresolvedCalls = 0;
+  let executions = 0;
+  const transport = createMockFacilitatorTransport(async (url) => {
+    const operation = new URL(url).pathname.slice(1);
+    if (operation === 'verify') {
+      return new Response(JSON.stringify({ isValid: true }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify({
+      success: true,
+      transaction: 'not-a-transaction',
+      payer: `0x${'9'.repeat(40)}`,
+      network: 'base-mainnet',
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  });
+  const app = resourceApp({
+    facilitatorTransport: transport,
+    lifecycle: { async onUnresolved() { unresolvedCalls += 1; } },
+    handler: (c) => { executions += 1; return c.json({ ok: true }); },
+  });
+  const result = await payingFetch(throwawayAccount(), 'http://seller.test/resource', {
+    method: 'POST', body: '{}',
+  }, {
+    idempotencyKey: 'idem-malformed-settlement',
+    fetchImpl: (url, init) => app.request(url, init),
+  });
+  assert.equal(result.res.status, 503);
+  assert.equal(unresolvedCalls, 1);
+  assert.equal(executions, 0);
+});
