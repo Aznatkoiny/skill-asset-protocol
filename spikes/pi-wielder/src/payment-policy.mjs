@@ -425,11 +425,16 @@ export function createPaymentPolicy(config) {
     return token;
   }
 
-  function validateOffer({ requestUrl, method, bodyBytes, challenge, receivedAt }) {
+  function consumeReceivedAt(receivedAt) {
     if (!receivedAt || !receiptTokens.has(receivedAt)) {
       fail('RECEIVED_AT', 'receivedAt must come directly from this policy trusted clock');
     }
     receiptTokens.delete(receivedAt);
+    return receivedAt.receivedAtMs;
+  }
+
+  function validateOffer({ requestUrl, method, bodyBytes, challenge, receivedAt }) {
+    const receivedAtMs = consumeReceivedAt(receivedAt);
     const target = resourceUrl(requestUrl);
     const seller = rules.find((rule) => rule.origin === target.origin
       && routeMatches(target.pathname, rule.pathPrefix));
@@ -452,7 +457,6 @@ export function createPaymentPolicy(config) {
     canonicalHash(candidate.extra.quoteId, 'quoteId', 'QUOTE_ID');
     const issuedAtMs = canonicalTimestamp(candidate.extra.issuedAt, 'issuedAt');
     const expiresAtMs = canonicalTimestamp(candidate.extra.expiresAt, 'expiresAt');
-    const receivedAtMs = receivedAt.receivedAtMs;
     const validationTimeMs = trustedNow();
     if (issuedAtMs > receivedAtMs || receivedAtMs - issuedAtMs > maxQuoteAgeMs
         || expiresAtMs <= receivedAtMs || expiresAtMs <= validationTimeMs
@@ -514,17 +518,31 @@ export function createPaymentPolicy(config) {
     exactObject(input, ['authorizationId', 'requestUrl', 'method', 'bodyBytes', 'challenge', 'receivedAt'],
       'RESERVATION_SCHEMA', 'authorization reservation');
     const authorizationId = id(input.authorizationId);
-    const validated = validateOffer(input);
     const existing = records.get(authorizationId);
     if (existing) {
-      if (existing.offerFingerprint !== validated.offerFingerprint
-          || existing.requestUrl !== validated.requestUrl
-          || existing.method !== validated.method
-          || existing.requestHash !== validated.requestHash) {
+      // An existing id is an immutable binding lookup, not a new authorization.
+      // Compare the exact request and frozen offer without consulting current
+      // quote freshness or seller/budget policy, then let its stored state decide
+      // whether signing, recovery, reconciliation, or terminal rejection applies.
+      consumeReceivedAt(input.receivedAt);
+      const target = resourceUrl(input.requestUrl);
+      const method = canonicalMethod(input.method);
+      const requestHash = canonicalRequestHash({
+        requestUrl: target.href,
+        method,
+        bodyBytes: input.bodyBytes,
+      });
+      const candidate = frozenCopy(challengeSchema(input.challenge));
+      const offerFingerprint = hashJson(candidate);
+      if (existing.offerFingerprint !== offerFingerprint
+          || existing.requestUrl !== target.href
+          || existing.method !== method
+          || existing.requestHash !== requestHash) {
         fail('AUTHORIZATION_CONFLICT', 'authorizationId already binds different request or offer bytes');
       }
       return publicRecord(existing);
     }
+    const validated = validateOffer(input);
     const amount = BigInt(validated.amountAtomic);
     if (spentAtomic + reservedAtomic + amount > budget) {
       fail('SESSION_BUDGET', 'offer exceeds remaining one-process session budget');

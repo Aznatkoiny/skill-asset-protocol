@@ -432,6 +432,91 @@ test('one signed authorization permits exactly one paid retry and immutable amou
     (error) => error.code === 'QUOTE_CHANGED');
 });
 
+const existingAuthorizationReplayCases = [
+  ['signing', (subject) => {
+    const record = reserve(subject);
+    subject.claimSignature('auth-1', { offerFingerprint: record.offerFingerprint });
+  }],
+  ['settled', (subject) => {
+    sign(subject);
+    subject.beginRetry('auth-1');
+    subject.acceptSettlement('auth-1', settlementEvidence(subject));
+  }],
+  ['rejected', (subject) => {
+    sign(subject);
+    subject.beginRetry('auth-1');
+    const evidence = settlementEvidence(subject);
+    subject.reconcileRejection('auth-1', {
+      ...evidence,
+      success: false,
+      transaction: null,
+      outcome: 'rejected',
+      reasonCode: 'CHAIN_REJECTED',
+      trustToken: 'trusted-rejection',
+    });
+  }],
+  ['unresolved', (subject) => {
+    sign(subject);
+    subject.beginRetry('auth-1');
+    subject.markUnresolved('auth-1', { reasonCode: 'RETRY_RESPONSE_LOST' });
+  }],
+];
+
+for (const [state, arrange] of existingAuthorizationReplayCases) {
+  test(`same-id ${state} authorization replay ignores current quote freshness and cannot claim another signature`, () => {
+    let clock = NOW;
+    const subject = policy({
+      now: () => clock,
+      verifyRejectionProof: () => true,
+    });
+    arrange(subject);
+    const before = subject.snapshot();
+    clock = NOW + 60_000;
+
+    const replayReceipt = subject.captureReceivedAt();
+    const existing = reserve(subject, { receivedAt: replayReceipt });
+    assert.equal(existing.state, state);
+    assert.equal(subject.claimSignature('auth-1', {
+      offerFingerprint: existing.offerFingerprint,
+    }).claimed, false);
+    assert.deepEqual(subject.snapshot(), before);
+
+    assert.throws(() => reserve(subject, {
+      authorizationId: 'auth-new',
+      receivedAt: replayReceipt,
+    }), (error) => error.code === 'RECEIVED_AT');
+    assert.deepEqual(subject.snapshot(), before);
+  });
+}
+
+test('same-id changed request bytes conflict against the stored binding even after quote expiry', () => {
+  let clock = NOW;
+  const subject = policy({ now: () => clock });
+  sign(subject);
+  subject.beginRetry('auth-1');
+  subject.acceptSettlement('auth-1', settlementEvidence(subject));
+  const before = subject.snapshot();
+  clock = NOW + 60_000;
+
+  assert.throws(() => reserve(subject, {
+    bodyBytes: `${BODY} changed`,
+  }), (error) => error.code === 'AUTHORIZATION_CONFLICT');
+  assert.deepEqual(subject.snapshot(), before);
+});
+
+test('a new authorization id still receives full quote freshness validation', () => {
+  let clock = NOW;
+  const subject = policy({ now: () => clock });
+  reserve(subject);
+  const before = subject.snapshot();
+  clock = NOW + 60_000;
+
+  assert.throws(() => reserve(subject, {
+    authorizationId: 'auth-new',
+  }), (error) => error.code === 'QUOTE_EXPIRY');
+  assert.deepEqual(subject.snapshot(), before);
+});
+
 test('malformed or mismatched settlement evidence remains reserved', () => {
   for (const mutation of [
     { value: '250001' },

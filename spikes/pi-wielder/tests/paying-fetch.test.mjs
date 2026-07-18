@@ -608,6 +608,34 @@ test('concurrent copies of one idempotency key produce one signature and one pai
   assert.equal(paidRetries, 1);
 });
 
+test('a settled same-id replay after quote expiry reports already used without another signature', async () => {
+  const { account, paymentPolicy, signatureCount, setClock } = setup();
+  let initialFetches = 0;
+  await payingFetch(account, URL, { method: 'POST', body: BODY }, {
+    fetchImpl: async (_url, init) => {
+      initialFetches += 1;
+      return initialFetches === 1 ? challenge() : paidResponse(init);
+    },
+    idempotencyKey: 'idem-expired-terminal-replay',
+    paymentPolicy,
+  });
+  const before = paymentPolicy.snapshot();
+  setClock(NOW + 60_000);
+  let replayFetches = 0;
+
+  await assert.rejects(() => payingFetch(account, URL, { method: 'POST', body: BODY }, {
+    fetchImpl: async () => {
+      replayFetches += 1;
+      return challenge();
+    },
+    idempotencyKey: 'idem-expired-terminal-replay',
+    paymentPolicy,
+  }), (error) => error.code === 'AUTHORIZATION_ALREADY_USED');
+  assert.equal(replayFetches, 1);
+  assert.equal(signatureCount(), 1);
+  assert.deepEqual(paymentPolicy.snapshot(), before);
+});
+
 test('ordinary signer rejection before any signature return releases reservation exactly once', async () => {
   const { account, paymentPolicy } = setup();
   account.signTypedData = async () => { throw new Error('wallet declined before signing'); };
@@ -749,15 +777,7 @@ test('a fault after synchronous signature persistence recovers exact X-PAYMENT w
 });
 
 test('signed recovery rechecks expiry and holds the reservation without a retry', async () => {
-  let clockReads = 0;
-  const { account, paymentPolicy, signatureCount } = setup({
-    policy: {
-      now: () => {
-        clockReads += 1;
-        return clockReads >= 5 ? NOW + 59_000 : NOW;
-      },
-    },
-  });
+  const { account, paymentPolicy, setClock, signatureCount } = setup();
   await assert.rejects(() => payingFetch(account, URL, { method: 'POST', body: BODY }, {
     fetchImpl: async () => challenge(),
     idempotencyKey: 'idem-expired-recovery',
@@ -765,6 +785,7 @@ test('signed recovery rechecks expiry and holds the reservation without a retry'
     onSignedAuthorizationPersisted: () => { throw new Error('synthetic process interruption'); },
   }), /synthetic process interruption/);
   assert.equal(paymentPolicy.snapshot().authorizations[0].state, 'signed');
+  setClock(NOW + 59_000);
 
   let recoveryFetches = 0;
   await assert.rejects(() => payingFetch(account, URL, { method: 'POST', body: BODY }, {
