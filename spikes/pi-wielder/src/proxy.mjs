@@ -14,12 +14,15 @@
 // ╚══════════════════════════════════════════════════════════════════════════╝
 
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
 import { formatUsdc } from '../../../prototype/atomic-money.mjs';
 import { loadAccount } from './wallet.mjs';
 import { createLedger, renderLedger } from './ledger.mjs';
+import { receiptKeyId, verifySignedReceipt } from './invocation-journal.mjs';
 
 // EIP-712 typed data for EIP-3009 transferWithAuthorization — the single
 // signature that IS the payment. (Constants restated here on purpose: the
@@ -100,36 +103,161 @@ export async function payingFetch(account, url, init, {
   };
 }
 
+export function loadPinnedCollarTrust(env = process.env) {
+  const publicKeyFile = env.COLLAR_PUBLIC_KEY_FILE || null;
+  const expectedKeyId = env.COLLAR_KEY_ID || null;
+  if (!publicKeyFile || !expectedKeyId) {
+    throw new Error('Skill routes require COLLAR_PUBLIC_KEY_FILE and COLLAR_KEY_ID');
+  }
+  if (!path.isAbsolute(publicKeyFile)) throw new Error('COLLAR_PUBLIC_KEY_FILE must be absolute');
+  const stat = fs.lstatSync(publicKeyFile);
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new Error('COLLAR_PUBLIC_KEY_FILE must be a regular non-symlink file');
+  }
+  const descriptor = fs.openSync(
+    publicKeyFile,
+    fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0),
+  );
+  let publicKeyPem;
+  try {
+    if (!fs.fstatSync(descriptor).isFile()) {
+      throw new Error('COLLAR_PUBLIC_KEY_FILE must remain a regular file');
+    }
+    publicKeyPem = fs.readFileSync(descriptor, 'utf8');
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  const actualKeyId = receiptKeyId(publicKeyPem);
+  if (actualKeyId !== expectedKeyId) {
+    throw new Error('COLLAR_KEY_ID does not match COLLAR_PUBLIC_KEY_FILE');
+  }
+  return { trustedCollarPublicKeyPem: publicKeyPem, trustedCollarKeyId: expectedKeyId };
+}
+
+export function assertReceiptMatchesPayment(bundle, expected) {
+  const receipt = bundle?.receipt;
+  const lower = (value) => String(value ?? '').toLowerCase();
+  const terminal = new Set(['succeeded', 'failed', 'cancelled']);
+  const paymentTerminal = new Set(['settled', 'refunded']);
+  const executionState = receipt?.execution?.state;
+  const httpStatus = receipt?.execution?.httpStatus;
+  const statusSemanticsMatch = executionState === 'succeeded'
+    ? httpStatus >= 200 && httpStatus < 400
+    : Number.isSafeInteger(httpStatus) && httpStatus >= 400 && httpStatus <= 599;
+  if (!receipt
+      || receipt.schemaVersion !== 1
+      || receipt.mode !== 'external'
+      || receipt.idempotencyKey !== expected.idempotencyKey
+      || receipt.requestHash !== expected.requestHash
+      || receipt.skill?.id !== expected.skillId
+      || receipt.quote?.requestHash !== expected.requestHash
+      || receipt.quote?.quoteId !== expected.quoteId
+      || receipt.quote?.amountAtomic !== expected.amountAtomic
+      || receipt.quote?.currency !== 'USDC'
+      || receipt.quote?.network !== 'base-sepolia'
+      || receipt.quote?.resource !== expected.resource
+      || lower(receipt.wielderId) !== lower(expected.payer)
+      || !paymentTerminal.has(receipt.payment?.state)
+      || lower(receipt.payment?.payer) !== lower(expected.payer)
+      || lower(receipt.payment?.settlementReference) !== lower(expected.settlementReference)
+      || lower(receipt.payment?.txHash) !== lower(expected.txHash)
+      || (receipt.payment?.state === 'refunded'
+        && receipt.payment.refundAmountAtomic !== expected.amountAtomic)
+      || !terminal.has(executionState)
+      || httpStatus !== expected.httpStatus
+      || !statusSemanticsMatch
+      || receipt.accounting?.grossAtomic !== expected.amountAtomic) {
+    throw new Error('signed Collar receipt does not semantically match the current paid request');
+  }
+  return receipt;
+}
+
 export function createProxy({
   account = loadAccount(),
   gatewayUrl = process.env.GATEWAY_URL || 'http://127.0.0.1:8403',
   collarUrl = process.env.COLLAR_URL || 'http://127.0.0.1:8404',
   ledgerFile = process.env.LEDGER_FILE ?? null,
+  gatewayFetch = fetch,
+  collarFetch = fetch,
+  trustedCollarPublicKeyPem = null,
+  trustedCollarKeyId = null,
 } = {}) {
+  if (!trustedCollarPublicKeyPem || !trustedCollarKeyId) {
+    throw new Error('Skill routes require a pinned Collar public key and key ID');
+  }
+  if (receiptKeyId(trustedCollarPublicKeyPem) !== trustedCollarKeyId) {
+    throw new Error('pinned Collar public key and key ID do not match');
+  }
   const ledger = createLedger(ledgerFile);
   const app = new Hono();
 
   // One handler for both asset classes: /v1/* -> inference gateway (leg:
   // "model"), /invoke/* -> collar (leg: "skill"). Same wallet, same ledger.
-  const forward = (upstreamBase, leg) => async (c) => {
+  const forward = (upstreamBase, leg, fetchImpl) => async (c) => {
     const path = c.req.path;
     const bodyText = await c.req.text();
-    const { res, paid, xPayment, amountUSDC, timings } = await payingFetch(account, `${upstreamBase}${path}`, {
+    const {
+      res, paid, xPayment, idempotencyKey, amountAtomic, txHash, payer,
+      requestHash, quoteId, settlementReference, timings,
+    } = await payingFetch(account, `${upstreamBase}${path}`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: bodyText,
-    });
+    }, { fetchImpl });
     const resBody = await res.text();
 
-    if (paid && res.ok) {
+    if (paid && txHash) {
       let parsed = {};
       try { parsed = JSON.parse(resBody); } catch { /* SSE bodies are not JSON */ }
-      const model = JSON.parse(bodyText || '{}').model ?? '';
+      let requestBody = {};
+      try { requestBody = JSON.parse(bodyText || '{}'); } catch { /* seller owns request validation */ }
+      const model = requestBody.model ?? '';
       const label = leg === 'skill'
         ? `skill/${path.split('/').pop()}`
         : `${model.startsWith('claude') ? 'claude' : 'gpt'}/${c.req.header('x-session-label') || 'chat'}`;
+      const receipt = parsed.receipt ?? null;
+      if (leg === 'skill') {
+        if (!receipt || !verifySignedReceipt(receipt, {
+          publicKeyPem: trustedCollarPublicKeyPem,
+          keyId: trustedCollarKeyId,
+        })) {
+          throw new Error('Skill receipt signature does not match the pinned Collar key');
+        }
+        assertReceiptMatchesPayment(receipt, {
+          idempotencyKey,
+          requestHash,
+          quoteId,
+          amountAtomic,
+          payer,
+          settlementReference,
+          txHash,
+          httpStatus: res.status,
+          skillId: path.split('/').pop(),
+          resource: `${upstreamBase}${path}`,
+        });
+      }
+      const accounting = receipt?.receipt?.accounting ?? null;
+      const finalizedAccounting = accounting?.allocationState === 'finalized'
+        && typeof accounting.protocolFeeAtomic === 'string';
+      const splits = finalizedAccounting ? [
+        ...(accounting.holderCredits ?? []).map((credit) => ({
+          party: credit.recipientId,
+          amountAtomic: credit.amountAtomic,
+        })),
+        ...(accounting.ancestorCredits ?? []).map((credit) => ({
+          party: credit.recipientId,
+          amountAtomic: credit.amountAtomic,
+        })),
+        { party: 'treasury', amountAtomic: accounting.protocolFeeAtomic },
+      ] : null;
       ledger.record({
-        leg, label, amountUSDC,
-        txHash: unb64(res.headers.get('X-PAYMENT-RESPONSE')).transaction,
-        splits: parsed.receipt?.splits ?? null, // royalty breakdown rides back on the skill leg only
+        view: 'wielder-receipt',
+        idempotencyKey,
+        leg,
+        label,
+        amountAtomic,
+        txHash,
+        status: receipt?.receipt?.execution?.state ?? (res.ok ? 'succeeded' : 'failed'),
+        receipt,
+        splits,
       });
     }
 
@@ -144,8 +272,8 @@ export function createProxy({
     return c.newResponse(resBody, res.status, headers);
   };
 
-  app.post('/v1/*', forward(gatewayUrl, 'model'));
-  app.post('/invoke/*', forward(collarUrl, 'skill'));
+  app.post('/v1/*', forward(gatewayUrl, 'model', gatewayFetch));
+  app.post('/invoke/*', forward(collarUrl, 'skill', collarFetch));
 
   // The unified session ledger — what Pi's /ledger command renders.
   app.get('/ledger', (c) =>
@@ -166,6 +294,10 @@ export function startProxy({ port = 0, ...opts } = {}) {
 
 // Standalone: `npm run proxy`
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const { url, account } = await startProxy({ port: Number(process.env.PROXY_PORT || 8402) });
+  const trust = loadPinnedCollarTrust(process.env);
+  const { url, account } = await startProxy({
+    port: Number(process.env.PROXY_PORT || 8402),
+    ...trust,
+  });
   console.log(`[proxy] Wielder wallet ${account.address} paying at ${url} (/v1/* -> gateway, /invoke/* -> collar, /ledger)`);
 }
