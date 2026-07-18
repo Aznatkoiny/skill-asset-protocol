@@ -192,8 +192,20 @@ async function viaOpenAI(body) {
 export function startGateway({ port = 0, ...opts } = {}) {
   const app = createGateway(opts);
   return new Promise((resolve) => {
-    const server = serve({ fetch: app.fetch, port }, (info) => {
-      resolve({ url: `http://127.0.0.1:${info.port}`, port: info.port, close: () => server.close() });
+    const server = serve({ fetch: app.fetch, port, hostname: '127.0.0.1' }, (info) => {
+      let closePromise = null;
+      const close = () => {
+        closePromise ??= new Promise((closeResolve, closeReject) => {
+          server.close((error) => (error ? closeReject(error) : closeResolve()));
+        });
+        return closePromise;
+      };
+      resolve({
+        url: `http://127.0.0.1:${info.port}`,
+        port: info.port,
+        address: info.address,
+        close,
+      });
     });
   });
 }

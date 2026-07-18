@@ -8,7 +8,12 @@ import test from 'node:test';
 import { createCollar, SKILL_ID } from '../src/collar.mjs';
 import { createMockFacilitator } from '../src/facilitator-mock.mjs';
 import { canonicalJson, createReceiptSigner, verifySignedReceipt } from '../src/invocation-journal.mjs';
-import { assertReceiptMatchesPayment, createProxy, loadPinnedCollarTrust } from '../src/proxy.mjs';
+import {
+  assertReceiptMatchesPayment,
+  createProxy,
+  loadPinnedCollarTrust,
+  startProxy,
+} from '../src/proxy.mjs';
 import { throwawayAccount } from '../src/wallet.mjs';
 import { createMockFacilitatorTransport } from '../src/x402-seller.mjs';
 
@@ -164,4 +169,69 @@ test('a settled Skill failure is cached without inventing finalized treasury or 
   const rendered = await proxy.app.request('http://proxy.test/ledger');
   assert.equal(rendered.status, 200);
   assert.match(await rendered.text(), /\[failed\]/);
+});
+
+test('proxy listener binds only IPv4 loopback and closes cleanly', async () => {
+  const signer = createReceiptSigner();
+  const proxy = await startProxy({
+    account: throwawayAccount(),
+    trustedCollarPublicKeyPem: signer.publicKeyPem,
+    trustedCollarKeyId: signer.keyId,
+  });
+  try {
+    assert.equal(proxy.address, '127.0.0.1');
+    assert.equal(new URL(proxy.url).hostname, '127.0.0.1');
+    assert.equal((await fetch(`${proxy.url}/ledger?format=json`)).status, 200);
+  } finally {
+    await proxy.close();
+  }
+});
+
+test('unknown Skill fails before payment through both Collar and proxy', async () => {
+  let facilitatorCalls = 0;
+  let settlementCalls = 0;
+  let executionCalls = 0;
+  const facilitator = createMockFacilitator();
+  const collar = createCollar({
+    facilitatorTransport: createMockFacilitatorTransport(async (url, init) => {
+      facilitatorCalls += 1;
+      if (new URL(url).pathname === '/settle') settlementCalls += 1;
+      return facilitator.request(url, init);
+    }),
+    executeSkill: async () => {
+      executionCalls += 1;
+      return { output: 'must not run' };
+    },
+  });
+  const unknownUrl = 'http://collar.test/invoke/not-a-known-skill';
+  const direct = await collar.app.request(unknownUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ input: 'must remain unpaid' }),
+  });
+  assert.equal(direct.status, 404);
+  assert.deepEqual(await direct.json(), { error: "unknown Skill 'not-a-known-skill'" });
+
+  const proxy = createProxy({
+    account: throwawayAccount(),
+    collarUrl: 'http://collar.test',
+    collarFetch: (url, init) => collar.app.request(url, init),
+    gatewayFetch: async () => { throw new Error('model gateway must not run'); },
+    trustedCollarPublicKeyPem: collar.journal.signingPublicKeyPem,
+    trustedCollarKeyId: collar.journal.signingKeyId,
+  });
+  const forwarded = await proxy.app.request('http://proxy.test/invoke/not-a-known-skill', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ input: 'still unpaid' }),
+  });
+  assert.equal(forwarded.status, 404);
+  const forwardedBody = await forwarded.json();
+  assert.deepEqual(forwardedBody, { error: "unknown Skill 'not-a-known-skill'" });
+  assert.equal('receipt' in forwardedBody, false);
+  assert.equal(facilitatorCalls, 0);
+  assert.equal(settlementCalls, 0);
+  assert.equal(executionCalls, 0);
+  assert.equal(collar.journal.events.length, 0);
+  assert.equal(proxy.ledger.entries.length, 0);
 });

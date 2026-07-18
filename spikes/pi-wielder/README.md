@@ -60,8 +60,9 @@ as a unified authoritative ledger.
 
 ## Failure and refund semantics
 
-- Settlement success is never erased by a later `400`, `404`, or `500` execution
-  outcome. Exact terminal replay preserves that HTTP status.
+- Settlement success is never erased by a later `400` or `500` execution outcome.
+  Exact terminal replay preserves that HTTP status. An unknown Skill is rejected with
+  `404` before the Collar offers or claims payment.
 - If the Skill executor fails after settlement, the receipt records one full-gross
   `pending_cogs_reconciliation` hold. No Royalty or treasury claim is finalized.
 - A response lost after the provider returns leaves the durable execution attempt
@@ -99,9 +100,9 @@ Both sellers use an explicitly constructed facilitator transport.
 Offline tests inject src/facilitator-mock.mjs; no arbitrary URL is accepted.
 ```
 
-The proxy contains wallet signing and HTTP 402 retry behavior but no Story SDK, token
-custody, or Royalty calculator. That is the constructive ADR-0008 claim: the Wielder is
-a wallet boundary, not the coding harness.
+The proxy demonstrates the wallet-bound HTTP 402 transport shape contemplated by
+ADR-0008, but it contains no Story SDK, token custody, Royalty calculator, or Plan 6
+payment policy. It is not proof of the complete protocol or production readiness.
 
 ## Run the verified path
 
@@ -111,7 +112,7 @@ npm test
 npm run e2e
 ```
 
-Expected current results are 57 offline unit/integration tests and 24 offline e2e
+Expected current results are 62 offline unit/integration tests and 24 offline e2e
 checks. Counts can increase as regressions are added; zero failures is the contract.
 The e2e labels all timing output synthetic and uses in-process Hono requests only.
 

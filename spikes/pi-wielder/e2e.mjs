@@ -120,7 +120,7 @@ ok([
   'The one rule that makes this skill worth invoking',
   'The seven ingredients',
   skillContent.slice(0, 400),
-].every((fingerprint) => !responseBytes.includes(fingerprint)), 'hosted Skill artifact never crosses the Collar');
+].every((fingerprint) => !responseBytes.includes(fingerprint)), 'mock response omits tested direct Skill artifact fingerprints and bytes');
 
 const entries = proxy.ledger.entries;
 eq(entries.length, 3, 'Wielder view has three settled calls');

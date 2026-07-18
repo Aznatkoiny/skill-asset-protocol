@@ -456,6 +456,11 @@ export function createCollar({
 
   app.post(
     '/invoke/:skillId',
+    async (c, next) => {
+      const skillId = c.req.param('skillId');
+      if (skillId !== SKILL_ID) return c.json({ error: `unknown Skill '${skillId}'` }, 404);
+      await next();
+    },
     x402Paywall({
       price: priceUsdc,
       payTo,
@@ -487,9 +492,6 @@ export function createCollar({
         return c.json({ error: message, receipt: journal.issueReceipt(key) }, status);
       };
 
-      if (c.req.param('skillId') !== SKILL_ID) {
-        return finishFailure('UNKNOWN_SKILL', `unknown skill '${c.req.param('skillId')}'`, 404);
-      }
       const body = await c.req.json().catch(() => null);
       if (typeof body?.input !== 'string' || !body.input) {
         return finishFailure('INVALID_REQUEST', 'body must be JSON: { "input": "..." }', 400);

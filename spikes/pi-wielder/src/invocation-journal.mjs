@@ -258,13 +258,57 @@ export function receiptKeyId(publicKey) {
     .digest('hex')}`;
 }
 
+function normalizeReceiptSigner(signer, { requirePersistent = false } = {}) {
+  if (!signer || typeof signer !== 'object' || typeof signer.signHash !== 'function') {
+    throw new Error('receipt signer must provide signHash');
+  }
+  if (signer.algorithm !== 'Ed25519') {
+    throw new Error("receipt signer algorithm must be 'Ed25519'");
+  }
+  let publicKey;
+  try {
+    publicKey = crypto.createPublicKey(signer.publicKeyPem);
+  } catch (error) {
+    throw new Error('receipt signer must provide a valid public key', { cause: error });
+  }
+  if (publicKey.asymmetricKeyType !== 'ed25519') {
+    throw new Error('receipt signer public key must be Ed25519');
+  }
+  const publicKeyPem = publicKey.export({ type: 'spki', format: 'pem' }).toString();
+  const keyId = receiptKeyId(publicKey);
+  if (signer.keyId !== keyId) {
+    throw new Error('receipt signer key ID must be the SPKI-derived SHA-256 identifier');
+  }
+  if (requirePersistent && signer.persistent !== true) {
+    throw new Error('persistent journal refuses an ephemeral receipt signer');
+  }
+  return Object.freeze({
+    algorithm: 'Ed25519',
+    publicKeyPem,
+    keyId,
+    persistent: signer.persistent === true,
+    signHash: (hashHex) => signer.signHash.call(signer, hashHex),
+  });
+}
+
+function verifyHashSignature(hashHex, signature, publicKey) {
+  if (!/^[0-9a-f]{64}$/.test(String(hashHex ?? '')) || typeof signature !== 'string') return false;
+  const signatureBytes = Buffer.from(signature, 'base64');
+  if (signatureBytes.length !== 64 || signatureBytes.toString('base64') !== signature) return false;
+  try {
+    return crypto.verify(null, Buffer.from(hashHex, 'hex'), publicKey, signatureBytes);
+  } catch {
+    return false;
+  }
+}
+
 export function createReceiptSigner(keys = {}, { persistent = false } = {}) {
   const pair = keys.privateKey && keys.publicKey
     ? { privateKey: keys.privateKey, publicKey: keys.publicKey }
     : crypto.generateKeyPairSync('ed25519');
   const publicKeyPem = pair.publicKey.export({ type: 'spki', format: 'pem' }).toString();
   const keyId = receiptKeyId(pair.publicKey);
-  return Object.freeze({
+  return normalizeReceiptSigner({
     algorithm: 'Ed25519',
     publicKeyPem,
     keyId,
@@ -311,12 +355,9 @@ export function verifySignedReceipt(bundle, { publicKeyPem, keyId }) {
     if (bundle?.algorithm !== 'Ed25519' || bundle.keyId !== keyId) return false;
     const expectedHash = crypto.createHash('sha256').update(canonicalJson(bundle.receipt)).digest('hex');
     if (bundle.receiptHash !== expectedHash) return false;
-    return crypto.verify(
-      null,
-      Buffer.from(expectedHash, 'hex'),
-      crypto.createPublicKey(publicKeyPem),
-      Buffer.from(bundle.signature, 'base64'),
-    );
+    const publicKey = crypto.createPublicKey(publicKeyPem);
+    return publicKey.asymmetricKeyType === 'ed25519'
+      && verifyHashSignature(expectedHash, bundle.signature, publicKey);
   } catch {
     return false;
   }
@@ -434,14 +475,15 @@ export function createInvocationJournal({
   if (journalPath && journalPath === canonicalSigningKeyPath) {
     throw new Error('journal and signing key paths must differ');
   }
-  if (journalPath && signer && signer.persistent !== true) {
-    throw new Error('persistent journal refuses an ephemeral receipt signer');
-  }
+  const injectedSigner = signer
+    ? normalizeReceiptSigner(signer, { requirePersistent: Boolean(journalPath) })
+    : null;
   const diskSigner = journalPath ? loadOrCreateReceiptSigner(canonicalSigningKeyPath) : null;
-  if (signer && diskSigner && signer.keyId !== diskSigner.keyId) {
+  if (injectedSigner && diskSigner && injectedSigner.keyId !== diskSigner.keyId) {
     throw new Error('injected receipt signer does not match the persistent signing key');
   }
-  const receiptSigner = signer ?? diskSigner ?? createReceiptSigner();
+  const receiptSigner = injectedSigner ?? diskSigner ?? createReceiptSigner();
+  const receiptPublicKey = crypto.createPublicKey(receiptSigner.publicKeyPem);
   const records = new Map();
   const settlementReferences = new Map();
   const transactionHashes = new Map();
@@ -729,12 +771,10 @@ export function createInvocationJournal({
       const { eventHash, eventSignature, ...unsigned } = event;
       const expectedHash = calculateEventHash(unsigned);
       if (eventHash !== expectedHash) throw new Error(`journal event hash mismatch at ${index + 1}`);
-      if (event.keyId !== receiptSigner.keyId || !crypto.verify(
-        null,
-        Buffer.from(eventHash, 'hex'),
-        crypto.createPublicKey(receiptSigner.publicKeyPem),
-        Buffer.from(eventSignature, 'base64'),
-      )) throw new Error(`journal event signature mismatch at ${index + 1}`);
+      if (event.keyId !== receiptSigner.keyId
+          || !verifyHashSignature(eventHash, eventSignature, receiptPublicKey)) {
+        throw new Error(`journal event signature mismatch at ${index + 1}`);
+      }
       previousHash = eventHash;
       return event;
     });
@@ -782,10 +822,14 @@ export function createInvocationJournal({
         keyId: receiptSigner.keyId,
       };
       const eventHash = calculateEventHash(unsigned);
+      const eventSignature = receiptSigner.signHash(eventHash);
+      if (!verifyHashSignature(eventHash, eventSignature, receiptPublicKey)) {
+        throw new Error('generated journal event signature does not match the persistent receipt key');
+      }
       const event = {
         ...unsigned,
         eventHash,
-        eventSignature: receiptSigner.signHash(eventHash),
+        eventSignature,
       };
       // Validation must happen before the first durable byte. Replay must
       // never encounter an event that this process already knew was invalid.

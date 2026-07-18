@@ -297,7 +297,7 @@ export function x402Paywall({
       try {
         const verify = await postJson(transport, 'verify', facilitatorBody);
         if (!verify?.isValid) {
-          const reason = `payment verification failed: ${verify?.invalidReason ?? 'unknown'}`;
+          const reason = 'payment verification failed';
           await lifecycle.onRejected?.({ idempotencyKey, reason, settlementReference, payer });
           return c.json({
             x402Version: X402_VERSION,

@@ -1,16 +1,12 @@
-// proxy.mjs — THE WIELDER.
+// proxy.mjs — Wielder-side payment transport skeleton for this spike.
 //
 // ╔══════════════════════════════════════════════════════════════════════════╗
-// ║ THIS FILE IS THE ENTIRE WIELDER-SIDE PROTOCOL FOOTPRINT.                  ║
+// ║ THIS FILE COVERS THE SPIKE'S X402 CHALLENGE, SIGN, AND RETRY TRANSPORT.    ║
 // ║                                                                          ║
-// ║ Everything a client needs in order to consume BOTH asset classes         ║
-// ║ (per-call model inference AND hosted-skill invocations) is below:        ║
-// ║ answer HTTP 402 with a signed USDC payment and retry. No Story SDK,      ║
-// ║ no token custody, no chain reads. The harness (Pi) never sees any of     ║
-// ║ it — it just talks OpenAI-compatible HTTP to localhost. That is          ║
-// ║ ADR-0008 ("the Wielder is a wallet, not a harness") proved by            ║
-// ║ construction. Precedent: BlockRun's ClawRouter runs the same paying-     ║
-// ║ proxy pattern for OpenClaw on port 8402.                                 ║
+// ║ It also verifies pinned Collar receipts and maintains a payer-local      ║
+// ║ receipt view. It is not the complete protocol, accounting authority,     ║
+// ║ custody design, or proof that ADR-0008 is production-ready. Plan 6       ║
+// ║ payment policy is not implemented here.                                  ║
 // ╚══════════════════════════════════════════════════════════════════════════╝
 
 import crypto from 'node:crypto';
@@ -38,7 +34,7 @@ const EIP3009_TYPES = {
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64');
 const unb64 = (s) => JSON.parse(Buffer.from(s, 'base64').toString('utf8'));
 
-// The whole buyer protocol: request -> 402 -> sign EIP-3009 -> retry once.
+// Buyer transport loop used by this spike: request -> 402 -> sign EIP-3009 -> retry once.
 // Returns the accepted quote/authorization identity with the response. Timings are the spike's
 // payment-overhead measurement (402 roundtrip + sign + facilitator).
 export async function payingFetch(account, url, init, {
@@ -286,8 +282,22 @@ export function createProxy({
 export function startProxy({ port = 0, ...opts } = {}) {
   const { app, ledger, account } = createProxy(opts);
   return new Promise((resolve) => {
-    const server = serve({ fetch: app.fetch, port }, (info) => {
-      resolve({ url: `http://127.0.0.1:${info.port}`, port: info.port, ledger, account, close: () => server.close() });
+    const server = serve({ fetch: app.fetch, port, hostname: '127.0.0.1' }, (info) => {
+      let closePromise = null;
+      const close = () => {
+        closePromise ??= new Promise((closeResolve, closeReject) => {
+          server.close((error) => (error ? closeReject(error) : closeResolve()));
+        });
+        return closePromise;
+      };
+      resolve({
+        url: `http://127.0.0.1:${info.port}`,
+        port: info.port,
+        address: info.address,
+        ledger,
+        account,
+        close,
+      });
     });
   });
 }

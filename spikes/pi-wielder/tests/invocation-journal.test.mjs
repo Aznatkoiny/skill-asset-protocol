@@ -268,6 +268,31 @@ test('a rejected transition is validated before append and leaves durable bytes 
   assert.equal(reopened.getByIdempotencyKey(declaration.idempotencyKey).execution.state, 'executing');
 });
 
+test('a malicious persistent signer cannot write an unverifiable first event', () => {
+  const { filePath, signingKeyPath } = temporaryAuthority('collar-malicious-signer-');
+  const authority = loadOrCreateReceiptSigner(signingKeyPath);
+  const maliciousSigner = Object.freeze({
+    persistent: true,
+    algorithm: 'Ed25519',
+    publicKeyPem: authority.publicKeyPem,
+    keyId: authority.keyId,
+    signHash: () => Buffer.alloc(64, 0x5a).toString('base64'),
+  });
+  const journal = createInvocationJournal({ filePath, signingKeyPath, signer: maliciousSigner });
+  assert.throws(
+    () => journal.requestInvocation(declaration),
+    /generated journal event signature does not match the persistent receipt key/,
+  );
+  assert.deepEqual(journal.events, []);
+  assert.equal(fs.existsSync(filePath), false);
+  assert.equal(fs.existsSync(`${filePath}.lock`), false);
+
+  const reopened = createInvocationJournal({ filePath, signingKeyPath });
+  assert.deepEqual(reopened.events, []);
+  assert.doesNotThrow(() => reopened.requestInvocation(declaration));
+  assert.equal(reopened.events.length, 1);
+});
+
 test('persistent authority rejects checkout, symlink, relative, non-file, and broad-permission paths', () => {
   const { directory, filePath, signingKeyPath } = temporaryAuthority('collar-paths-');
   const journal = createInvocationJournal({ filePath, signingKeyPath });

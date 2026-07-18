@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createMockFacilitator } from '../src/facilitator-mock.mjs';
-import { createGateway, MODEL_PRICES_USDC } from '../src/gateway.mjs';
+import { createGateway, MODEL_PRICES_USDC, startGateway } from '../src/gateway.mjs';
 import { payingFetch } from '../src/proxy.mjs';
 import { throwawayAccount } from '../src/wallet.mjs';
 import { createMockFacilitatorTransport } from '../src/x402-seller.mjs';
@@ -31,4 +31,21 @@ test('gateway rejects an unapproved structural transport or legacy facilitator U
     mockLlm: true,
   }), /approved live or injected-mock/);
   assert.throws(() => createGateway({ facilitatorUrl: 'https://evil.test', mockLlm: true }), /facilitatorTransport/);
+});
+
+test('gateway listener binds only IPv4 loopback and closes cleanly', async () => {
+  const facilitator = createMockFacilitator();
+  const gateway = await startGateway({
+    facilitatorTransport: createMockFacilitatorTransport(
+      (url, init) => facilitator.request(url, init),
+    ),
+    mockLlm: true,
+  });
+  try {
+    assert.equal(gateway.address, '127.0.0.1');
+    assert.equal(new URL(gateway.url).hostname, '127.0.0.1');
+    assert.equal((await fetch(`${gateway.url}/healthz`)).status, 200);
+  } finally {
+    await gateway.close();
+  }
 });

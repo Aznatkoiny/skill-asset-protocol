@@ -706,6 +706,51 @@ test('Skill provider and settlement resolver secrets are replaced with stable pu
   assert.doesNotMatch(await resolution.text(), new RegExp(resolverSecret));
 });
 
+test('facilitator verification detail is absent from the response and durable journal', async () => {
+  const secret = 'verify-invalidReason-secret-sentinel';
+  let settleCalls = 0;
+  let executionCalls = 0;
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'collar-verify-secret-')));
+  const journalFile = path.join(directory, 'events.jsonl');
+  const signingKeyFile = path.join(directory, 'receipt-key.pem');
+  const collar = createCollar({
+    facilitatorTransport: createMockFacilitatorTransport(async (url) => {
+      if (new URL(url).pathname === '/verify') {
+        return new Response(JSON.stringify({ isValid: false, invalidReason: secret }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      settleCalls += 1;
+      throw new Error('settlement must not run after rejected verification');
+    }),
+    journalFile,
+    signingKeyFile,
+    executeSkill: async () => {
+      executionCalls += 1;
+      return { output: 'must not run' };
+    },
+  });
+  const result = await payingFetch(throwawayAccount(), invokeUrl, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: requestBody,
+  }, {
+    idempotencyKey: 'idem-verifier-secret',
+    fetchImpl: (url, init) => collar.app.request(url, init),
+  });
+  assert.equal(result.res.status, 402);
+  const responseText = await result.res.text();
+  assert.doesNotMatch(responseText, new RegExp(secret));
+  assert.equal(JSON.parse(responseText).error, 'payment verification failed');
+  const record = collar.journal.getByIdempotencyKey('idem-verifier-secret');
+  assert.equal(record.payment.state, 'rejected');
+  assert.equal(record.payment.reason, 'payment verification failed');
+  const durableBytes = fs.readFileSync(journalFile, 'utf8');
+  assert.doesNotMatch(durableBytes, new RegExp(secret));
+  assert.match(durableBytes, /payment verification failed/);
+  assert.equal(settleCalls, 0);
+  assert.equal(executionCalls, 0);
+});
+
 test('Anthropic error response bodies are never copied into the failed receipt', async () => {
   const responseSecret = 'sk-ant-secret-inside-upstream-body';
   const previousFetch = globalThis.fetch;
