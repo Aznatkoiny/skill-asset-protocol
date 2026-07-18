@@ -312,40 +312,45 @@ export function canonicalRequestHash({ method, requestUrl, bodyBytes }) {
 }
 
 export function createPaymentPolicy(config) {
-  optionalExactObject(config,
+  const capturedConfig = Object.freeze({ ...(config ?? {}) });
+  optionalExactObject(capturedConfig,
     ['network', 'chainId', 'asset', 'sessionBudgetAtomic', 'maxQuoteAgeMs',
       'maxAuthorizationSeconds', 'sellers'],
     ['now', 'verifySettlementProof', 'verifyRejectionProof'],
     'POLICY_SCHEMA', 'payment policy');
-  if (config.network !== BASE_SEPOLIA_NETWORK) fail('NETWORK_CONFIG', 'only Base Sepolia is supported');
-  if (config.chainId !== BASE_SEPOLIA_CHAIN_ID) fail('CHAIN_CONFIG', 'only Base Sepolia chain ID 84532 is supported');
-  if (config.asset !== BASE_SEPOLIA_USDC) fail('ASSET_CONFIG', 'only canonical Base Sepolia USDC is supported');
-  const budget = canonicalAtomic(config.sessionBudgetAtomic, 'sessionBudgetAtomic').value;
-  if (!Number.isSafeInteger(config.maxQuoteAgeMs) || config.maxQuoteAgeMs < 0) {
+  if (capturedConfig.network !== BASE_SEPOLIA_NETWORK) fail('NETWORK_CONFIG', 'only Base Sepolia is supported');
+  if (capturedConfig.chainId !== BASE_SEPOLIA_CHAIN_ID) fail('CHAIN_CONFIG', 'only Base Sepolia chain ID 84532 is supported');
+  if (capturedConfig.asset !== BASE_SEPOLIA_USDC) fail('ASSET_CONFIG', 'only canonical Base Sepolia USDC is supported');
+  const budget = canonicalAtomic(capturedConfig.sessionBudgetAtomic, 'sessionBudgetAtomic').value;
+  const maxQuoteAgeMs = capturedConfig.maxQuoteAgeMs;
+  const maxAuthorizationSeconds = capturedConfig.maxAuthorizationSeconds;
+  if (!Number.isSafeInteger(maxQuoteAgeMs) || maxQuoteAgeMs < 0) {
     fail('FRESHNESS_CONFIG', 'maxQuoteAgeMs must be a non-negative safe integer');
   }
-  if (!Number.isSafeInteger(config.maxAuthorizationSeconds) || config.maxAuthorizationSeconds <= 0) {
+  if (!Number.isSafeInteger(maxAuthorizationSeconds) || maxAuthorizationSeconds <= 0) {
     fail('TIMEOUT_CONFIG', 'maxAuthorizationSeconds must be a positive safe integer');
   }
-  if (!Array.isArray(config.sellers) || config.sellers.length === 0) {
+  const sellerInputs = capturedConfig.sellers;
+  if (!Array.isArray(sellerInputs) || sellerInputs.length === 0) {
     fail('SELLER_CONFIG', 'at least one trusted seller is required');
   }
-  const now = config.now ?? (() => Date.now());
+  const now = capturedConfig.now ?? (() => Date.now());
   if (typeof now !== 'function') fail('CLOCK_CONFIG', 'now must be an injected clock function');
-  const verifySettlementProof = config.verifySettlementProof ?? (() => false);
-  const verifyRejectionProof = config.verifyRejectionProof ?? (() => false);
+  const verifySettlementProof = capturedConfig.verifySettlementProof ?? (() => false);
+  const verifyRejectionProof = capturedConfig.verifyRejectionProof ?? (() => false);
   if (typeof verifySettlementProof !== 'function' || typeof verifyRejectionProof !== 'function') {
     fail('PROOF_CONFIG', 'proof verifiers must be injected functions');
   }
 
-  const rules = config.sellers.map((input) => {
+  const rules = [...sellerInputs].map((input) => {
     exactObject(input, ['origin', 'pathPrefix', 'payTo', 'maxPerCallAtomic'],
       'SELLER_SCHEMA', 'seller rule');
+    const capturedInput = frozenCopy(input);
     const rule = {
-      origin: sellerOrigin(input.origin),
-      pathPrefix: sellerPathPrefix(input.pathPrefix),
-      payTo: canonicalAddress(input.payTo, 'seller.payTo', 'SELLER_PAYEE'),
-      maxPerCallAtomic: canonicalAtomic(input.maxPerCallAtomic, 'maxPerCallAtomic').text,
+      origin: sellerOrigin(capturedInput.origin),
+      pathPrefix: sellerPathPrefix(capturedInput.pathPrefix),
+      payTo: canonicalAddress(capturedInput.payTo, 'seller.payTo', 'SELLER_PAYEE'),
+      maxPerCallAtomic: canonicalAtomic(capturedInput.maxPerCallAtomic, 'maxPerCallAtomic').text,
     };
     if (BigInt(rule.maxPerCallAtomic) <= 0n) fail('SELLER_LIMIT', 'seller per-call cap must be positive');
     return deepFreeze(rule);
@@ -362,8 +367,51 @@ export function createPaymentPolicy(config) {
   const records = new Map();
   const authorizationNonces = new Map();
   const settlementTransactions = new Map();
+  const activeMonetaryTransitions = new Map();
   let reservedAtomic = 0n;
   let spentAtomic = 0n;
+
+  function commitBudget({ reservedDelta = 0n, spentDelta = 0n }) {
+    const nextReserved = reservedAtomic + reservedDelta;
+    const nextSpent = spentAtomic + spentDelta;
+    const nextRemaining = budget - nextReserved - nextSpent;
+    if (nextReserved < 0n || nextSpent < 0n || nextRemaining < 0n
+        || nextReserved + nextSpent + nextRemaining !== budget) {
+      fail('BUDGET_INVARIANT', 'payment transition would violate budget conservation');
+    }
+    reservedAtomic = nextReserved;
+    spentAtomic = nextSpent;
+  }
+
+  function beginMonetaryTransition(record) {
+    const active = activeMonetaryTransitions.get(record.authorizationId);
+    if (active) {
+      active.reentered = true;
+      fail('TRANSITION_REENTRANCY', 'reentrant monetary transition is forbidden');
+    }
+    const transition = {
+      record,
+      expectedState: record.state,
+      reentered: false,
+    };
+    activeMonetaryTransitions.set(record.authorizationId, transition);
+    return transition;
+  }
+
+  function assertMonetaryTransition(transition) {
+    if (transition.reentered
+        || activeMonetaryTransitions.get(transition.record.authorizationId) !== transition
+        || records.get(transition.record.authorizationId) !== transition.record
+        || transition.record.state !== transition.expectedState) {
+      fail('TRANSITION_DRIFT', 'authorization changed during a trusted monetary callback');
+    }
+  }
+
+  function endMonetaryTransition(transition) {
+    if (activeMonetaryTransitions.get(transition.record.authorizationId) === transition) {
+      activeMonetaryTransitions.delete(transition.record.authorizationId);
+    }
+  }
 
   function trustedNow() {
     const value = now();
@@ -406,16 +454,21 @@ export function createPaymentPolicy(config) {
     const expiresAtMs = canonicalTimestamp(candidate.extra.expiresAt, 'expiresAt');
     const receivedAtMs = receivedAt.receivedAtMs;
     const validationTimeMs = trustedNow();
-    if (issuedAtMs > receivedAtMs || receivedAtMs - issuedAtMs > config.maxQuoteAgeMs
+    if (issuedAtMs > receivedAtMs || receivedAtMs - issuedAtMs > maxQuoteAgeMs
         || expiresAtMs <= receivedAtMs || expiresAtMs <= validationTimeMs
         || issuedAtMs >= expiresAtMs) {
       fail('QUOTE_EXPIRY', 'x402 quote is stale, future-issued, expired, or inverted');
+    }
+    if (validationTimeMs < receivedAtMs || validationTimeMs < issuedAtMs
+        || validationTimeMs - receivedAtMs > maxQuoteAgeMs
+        || validationTimeMs - issuedAtMs > maxQuoteAgeMs) {
+      fail('QUOTE_FRESHNESS', 'x402 quote exceeded local receipt or issue age after parsing');
     }
     const amount = canonicalAtomic(candidate.maxAmountRequired, 'maxAmountRequired');
     if (amount.value <= 0n) fail('AMOUNT_ZERO', 'x402 amount must be positive');
     if (amount.value > BigInt(seller.maxPerCallAtomic)) fail('PER_CALL_LIMIT', 'x402 amount exceeds per-call policy');
     if (!Number.isSafeInteger(candidate.maxTimeoutSeconds) || candidate.maxTimeoutSeconds <= 0
-        || candidate.maxTimeoutSeconds > config.maxAuthorizationSeconds) {
+        || candidate.maxTimeoutSeconds > maxAuthorizationSeconds) {
       fail('TIMEOUT_LIMIT', 'x402 timeout exceeds local policy');
     }
     const receivedSeconds = Math.floor(receivedAtMs / 1_000);
@@ -487,8 +540,8 @@ export function createPaymentPolicy(config) {
       signature: null,
       xPayment: null,
     };
+    commitBudget({ reservedDelta: amount });
     records.set(authorizationId, record);
-    reservedAtomic += amount;
     return publicRecord(record);
   }
 
@@ -512,7 +565,7 @@ export function createPaymentPolicy(config) {
     if (!['reserved', 'signing'].includes(record.state)) {
       fail('UNSIGNED_RELEASE_STATE', 'only an authorization that cannot have produced a signature may be released');
     }
-    reservedAtomic -= BigInt(record.amountAtomic);
+    commitBudget({ reservedDelta: -BigInt(record.amountAtomic) });
     record.state = 'released';
     record.reasonCode = reasonCode;
     return publicRecord(record);
@@ -606,10 +659,16 @@ export function createPaymentPolicy(config) {
   function assertAuthorizationFresh(authorizationId) {
     const record = get(authorizationId);
     const currentTimeMs = trustedNow();
+    const issuedAtMs = canonicalTimestamp(record.offer.extra.issuedAt, 'issuedAt');
     const expiresAtMs = canonicalTimestamp(record.offer.extra.expiresAt, 'expiresAt');
     const currentTimeSeconds = BigInt(Math.floor(currentTimeMs / 1_000));
     if (currentTimeMs >= expiresAtMs || currentTimeSeconds >= BigInt(record.validBefore)) {
       fail('QUOTE_EXPIRY', 'x402 quote or signed authorization expired before the paid retry');
+    }
+    if (currentTimeMs < record.receivedAtMs || currentTimeMs < issuedAtMs
+        || currentTimeMs - record.receivedAtMs > maxQuoteAgeMs
+        || currentTimeMs - issuedAtMs > maxQuoteAgeMs) {
+      fail('QUOTE_FRESHNESS', 'x402 quote exceeded local receipt or issue age before retry');
     }
     return publicRecord(record);
   }
@@ -659,7 +718,8 @@ export function createPaymentPolicy(config) {
     }
   }
 
-  function settle(record, evidence) {
+  function settle(record, evidence, transition) {
+    assertMonetaryTransition(transition);
     if (record.state === 'settled') {
       if (record.txHash !== evidence.transaction) fail('SETTLEMENT_CONFLICT', 'authorization already binds another transaction');
       return publicRecord(record);
@@ -668,9 +728,14 @@ export function createPaymentPolicy(config) {
     if (transactionOwner && transactionOwner !== record.authorizationId) {
       fail('TRANSACTION_REUSE', 'settlement transaction is already bound to another authorization');
     }
+    if (!['signed', 'retrying', 'unresolved'].includes(record.state)) {
+      fail('SETTLEMENT_STATE', 'authorization is not in a settleable state');
+    }
+    commitBudget({
+      reservedDelta: -BigInt(record.amountAtomic),
+      spentDelta: BigInt(record.amountAtomic),
+    });
     settlementTransactions.set(evidence.transaction, record.authorizationId);
-    reservedAtomic -= BigInt(record.amountAtomic);
-    spentAtomic += BigInt(record.amountAtomic);
     record.state = 'settled';
     record.txHash = evidence.transaction;
     record.reasonCode = null;
@@ -678,13 +743,19 @@ export function createPaymentPolicy(config) {
   }
 
   function acceptSettlement(authorizationId, input) {
-    const record = get(authorizationId);
+    const capturedAuthorizationId = id(authorizationId);
+    const evidence = settlementSchema(frozenCopy(input));
+    const record = get(capturedAuthorizationId);
     if (!['retrying', 'settled'].includes(record.state)) {
       fail('SETTLEMENT_STATE', 'only the immediate paid retry response can settle without trusted reconciliation');
     }
-    const evidence = settlementSchema(frozenCopy(input));
     assertSettlementMatches(record, evidence);
-    return settle(record, evidence);
+    const transition = beginMonetaryTransition(record);
+    try {
+      return settle(record, evidence, transition);
+    } finally {
+      endMonetaryTransition(transition);
+    }
   }
 
   function verifierAccepted(verifier, record, proof) {
@@ -694,34 +765,48 @@ export function createPaymentPolicy(config) {
   }
 
   function reconcileSettlement(authorizationId, proof) {
+    const capturedAuthorizationId = id(authorizationId);
     const capturedProof = frozenCopy(proof);
     const evidence = reconciliationSchema(capturedProof, 'settled');
-    const record = get(authorizationId);
+    const record = get(capturedAuthorizationId);
     if (!['signed', 'retrying', 'unresolved', 'settled'].includes(record.state)) {
       fail('RECONCILIATION_STATE', 'settlement reconciliation requires a signed authorization');
     }
     assertSettlementMatches(record, evidence, 'RECONCILIATION_MISMATCH');
-    if (!verifierAccepted(verifySettlementProof, record, capturedProof)) {
-      fail('SETTLEMENT_PROOF', 'trusted settlement proof verifier rejected evidence');
+    const transition = beginMonetaryTransition(record);
+    try {
+      if (!verifierAccepted(verifySettlementProof, record, capturedProof)) {
+        fail('SETTLEMENT_PROOF', 'trusted settlement proof verifier rejected evidence');
+      }
+      assertMonetaryTransition(transition);
+      return settle(record, evidence, transition);
+    } finally {
+      endMonetaryTransition(transition);
     }
-    return settle(record, evidence);
   }
 
   function reconcileRejection(authorizationId, proof) {
+    const capturedAuthorizationId = id(authorizationId);
     const capturedProof = frozenCopy(proof);
     const evidence = reconciliationSchema(capturedProof, 'rejected');
-    const record = get(authorizationId);
+    const record = get(capturedAuthorizationId);
     if (!['signed', 'retrying', 'unresolved'].includes(record.state)) {
       fail('RECONCILIATION_STATE', 'rejection reconciliation requires a nonterminal signed authorization');
     }
     assertSettlementMatches(record, evidence, 'RECONCILIATION_MISMATCH');
-    if (!verifierAccepted(verifyRejectionProof, record, capturedProof)) {
-      fail('REJECTION_PROOF', 'trusted rejection proof verifier rejected evidence');
+    const transition = beginMonetaryTransition(record);
+    try {
+      if (!verifierAccepted(verifyRejectionProof, record, capturedProof)) {
+        fail('REJECTION_PROOF', 'trusted rejection proof verifier rejected evidence');
+      }
+      assertMonetaryTransition(transition);
+      commitBudget({ reservedDelta: -BigInt(record.amountAtomic) });
+      record.state = 'rejected';
+      record.reasonCode = capturedProof.reasonCode;
+      return publicRecord(record);
+    } finally {
+      endMonetaryTransition(transition);
     }
-    reservedAtomic -= BigInt(record.amountAtomic);
-    record.state = 'rejected';
-    record.reasonCode = capturedProof.reasonCode;
-    return publicRecord(record);
   }
 
   function snapshot() {

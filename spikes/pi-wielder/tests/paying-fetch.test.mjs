@@ -208,6 +208,116 @@ test('a quote expiring while the first 402 JSON is parsed is rejected before sig
   assert.equal(paymentPolicy.snapshot().reservedAtomic, '0');
 });
 
+test('trusted quote age is rechecked after JSON parse against receipt and issue times', async () => {
+  const cases = [
+    {
+      name: 'receipt age',
+      candidate: baseOffer({
+        extra: { ...baseOffer().extra, issuedAt: new Date(NOW).toISOString() },
+      }),
+      afterParse: NOW + 5_001,
+    },
+    {
+      name: 'issue age',
+      candidate: baseOffer({
+        extra: { ...baseOffer().extra, issuedAt: new Date(NOW - 4_000).toISOString() },
+      }),
+      afterParse: NOW + 2_000,
+    },
+    {
+      name: 'backward clock',
+      candidate: baseOffer(),
+      afterParse: NOW - 1,
+    },
+  ];
+
+  for (const { name, candidate, afterParse } of cases) {
+    const { account, paymentPolicy, setClock, signatureCount } = setup();
+    let fetches = 0;
+    await assert.rejects(() => payingFetch(account, URL, { method: 'POST', body: BODY }, {
+      idempotencyKey: `idem-parse-${name.replaceAll(' ', '-')}`,
+      paymentPolicy,
+      fetchImpl: async () => {
+        fetches += 1;
+        return {
+          status: 402,
+          async json() {
+            setClock(afterParse);
+            return challengePayload(candidate);
+          },
+        };
+      },
+    }), (error) => error.code === 'QUOTE_FRESHNESS');
+    assert.equal(fetches, 1, name);
+    assert.equal(signatureCount(), 0, name);
+    assert.equal(paymentPolicy.snapshot().reservedAtomic, '0', name);
+  }
+});
+
+test('caller RequestInit accessors and mutable body bytes are captured once for both requests', async () => {
+  const { account, paymentPolicy, signatureCount } = setup();
+  const originalBody = Buffer.from('{"input":"captured"}', 'utf8');
+  const expectedBody = Buffer.from(originalBody);
+  const expectedRequestHash = canonicalRequestHash({
+    method: 'POST', requestUrl: URL, bodyBytes: expectedBody,
+  });
+  const capturedOffer = baseOffer({
+    extra: { ...baseOffer().extra, requestHash: expectedRequestHash },
+  });
+  const reads = { method: 0, body: 0, headers: 0 };
+  const requestInitPrototype = {};
+  Object.defineProperties(requestInitPrototype, {
+    method: {
+      enumerable: true,
+      get() {
+        reads.method += 1;
+        return reads.method === 1 ? 'POST' : 'PUT';
+      },
+    },
+    body: {
+      enumerable: true,
+      get() {
+        reads.body += 1;
+        return reads.body === 1 ? originalBody : Buffer.from('{"input":"changed"}', 'utf8');
+      },
+    },
+    headers: {
+      enumerable: true,
+      get() {
+        reads.headers += 1;
+        return reads.headers === 1
+          ? { 'content-type': 'application/json', 'x-captured': 'yes' }
+          : { 'content-type': 'text/plain', 'x-captured': 'no' };
+      },
+    },
+  });
+  const callerInit = Object.create(requestInitPrototype);
+
+  let fetches = 0;
+  const result = await payingFetch(account, URL, callerInit, {
+    idempotencyKey: 'idem-captured-init',
+    paymentPolicy,
+    fetchImpl: async (_url, requestInit) => {
+      fetches += 1;
+      assert.equal(requestInit.method, 'POST');
+      assert.deepEqual(Buffer.from(requestInit.body), expectedBody);
+      assert.equal(new Headers(requestInit.headers).get('x-captured'), 'yes');
+      if (fetches === 1) {
+        originalBody.fill(0x78);
+        callerInit.injected = 'late mutation';
+        return challenge(capturedOffer);
+      }
+      return paidResponse(requestInit, { settlement: { requestHash: expectedRequestHash } });
+    },
+  });
+
+  assert.equal(result.res.status, 200);
+  assert.equal(fetches, 2);
+  assert.equal(signatureCount(), 1);
+  assert.deepEqual(reads, { method: 1, body: 1, headers: 1 });
+  assert.equal(result.requestHash, expectedRequestHash);
+});
+
 test('caller-supplied payment and idempotency headers are rejected case-insensitively before fetch', async () => {
   for (const headers of [
     { 'idempotency-key': 'caller-owned' },
@@ -498,13 +608,9 @@ test('concurrent copies of one idempotency key produce one signature and one pai
   assert.equal(paidRetries, 1);
 });
 
-test('signer rejection before any signature releases reservation exactly once', async () => {
+test('ordinary signer rejection before any signature return releases reservation exactly once', async () => {
   const { account, paymentPolicy } = setup();
-  account.signTypedData = async () => {
-    const error = new Error('wallet declined before signing');
-    error.signatureProduced = false;
-    throw error;
-  };
+  account.signTypedData = async () => { throw new Error('wallet declined before signing'); };
   await assert.rejects(() => payingFetch(account, URL, { method: 'POST', body: BODY }, {
     fetchImpl: async () => challenge(), idempotencyKey: 'idem-declined', paymentPolicy,
   }), /wallet declined/);
@@ -535,6 +641,24 @@ test('an invalid signer return is potentially signed and never releases budget',
   assert.equal(paymentPolicy.snapshot().authorizations[0].state, 'unresolved');
 });
 
+test('persistence failure after a signature return remains unresolved with budget held', async () => {
+  const { account, paymentPolicy, signatureCount } = setup();
+  const failingPersistencePolicy = Object.freeze({
+    ...paymentPolicy,
+    persistSignedAuthorization() {
+      throw new Error('synthetic persistence failure after signer return');
+    },
+  });
+  await assert.rejects(() => payingFetch(account, URL, { method: 'POST', body: BODY }, {
+    fetchImpl: async () => challenge(),
+    idempotencyKey: 'idem-persistence-failure',
+    paymentPolicy: failingPersistencePolicy,
+  }), /synthetic persistence failure/);
+  assert.equal(signatureCount(), 1);
+  assert.equal(paymentPolicy.snapshot().reservedAtomic, '250000');
+  assert.equal(paymentPolicy.snapshot().authorizations[0].state, 'unresolved');
+});
+
 test('a quote expiring after signature persistence never starts the paid retry', async () => {
   const { account, paymentPolicy, setClock, signatureCount } = setup();
   let fetches = 0;
@@ -555,6 +679,42 @@ test('a quote expiring after signature persistence never starts the paid retry',
   assert.equal(signatureCount(), 1);
   assert.equal(paymentPolicy.snapshot().reservedAtomic, '250000');
   assert.equal(paymentPolicy.snapshot().authorizations[0].state, 'unresolved');
+});
+
+test('trusted quote age and monotonic time are rechecked after signing before retry', async () => {
+  const cases = [
+    {
+      name: 'issue age',
+      candidate: baseOffer({
+        extra: { ...baseOffer().extra, issuedAt: new Date(NOW - 4_000).toISOString() },
+      }),
+      beforeRetry: NOW + 2_000,
+    },
+    {
+      name: 'backward clock',
+      candidate: baseOffer(),
+      beforeRetry: NOW - 1,
+    },
+  ];
+
+  for (const { name, candidate, beforeRetry } of cases) {
+    const { account, paymentPolicy, setClock, signatureCount } = setup();
+    let fetches = 0;
+    await assert.rejects(() => payingFetch(account, URL, { method: 'POST', body: BODY }, {
+      idempotencyKey: `idem-retry-${name.replaceAll(' ', '-')}`,
+      paymentPolicy,
+      fetchImpl: async () => {
+        fetches += 1;
+        if (fetches > 1) throw new Error('stale authorization must not start a paid retry');
+        return challenge(candidate);
+      },
+      onSignedAuthorizationPersisted: () => { setClock(beforeRetry); },
+    }), (error) => error.code === 'QUOTE_FRESHNESS');
+    assert.equal(fetches, 1, name);
+    assert.equal(signatureCount(), 1, name);
+    assert.equal(paymentPolicy.snapshot().reservedAtomic, '250000', name);
+    assert.equal(paymentPolicy.snapshot().authorizations[0].state, 'unresolved', name);
+  }
 });
 
 test('a fault after synchronous signature persistence recovers exact X-PAYMENT without signing again', async () => {

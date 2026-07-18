@@ -37,6 +37,13 @@ bounded-time quote, a per-call cap, and remaining session budget. The policy rej
 numeric or coerced atomic amounts, unknown protocol fields, caller-supplied payment or
 idempotency headers, ambiguous URL forms, and path-prefix confusion.
 
+The caller's method, body bytes, and headers are captured once before the unpaid
+request and reused for the policy hash, signed recovery, and paid retry; redirects are
+disabled on both requests. Validated policy limits and seller rules are snapshotted at
+construction. The trusted clock rejects backward movement and rechecks age from both
+local receipt and server issue time after challenge parsing and immediately before the
+paid retry.
+
 Budget is synchronously reserved before signing. The exact authorization, signature,
 and encoded `X-PAYMENT` value are stored before the one paid retry begins. A recovery
 path can reuse those exact stored bytes after a local interruption; it never creates a
@@ -44,6 +51,11 @@ replacement signature. A changed second offer, another `402`, a lost retry respo
 or missing/mismatched settlement evidence aborts without exposing the upstream body
 and retains the amount as `unresolved`. Only exact response evidence or an injected
 trusted reconciliation capability may advance that state.
+
+An ordinary signer rejection before a signature is returned releases its unsigned
+reservation. Any persistence failure after a signature return remains conservatively
+`unresolved`. Trusted reconciliation callbacks cannot reenter a monetary transition,
+and every monetary commit enforces non-negative, conserved session-budget counters.
 
 This policy is an in-memory, one-process session control. Restarting the proxy loses
 its policy snapshot, so this is not production spend enforcement and provides no
@@ -137,7 +149,7 @@ npm test
 npm run e2e
 ```
 
-Expected current results are 113 offline unit/integration tests and 30 offline e2e
+Expected current results are 127 offline unit/integration tests and 30 offline e2e
 checks. Counts can increase as regressions are added; zero failures is the contract.
 The e2e labels all timing output synthetic and uses in-process Hono requests only.
 

@@ -43,6 +43,11 @@ const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64');
 const payingFetchOptionKeys = new Set([
   'fetchImpl', 'idempotencyKey', 'paymentPolicy', 'onSignedAuthorizationPersisted', 'nonceFactory',
 ]);
+const requestInitKeys = Object.freeze([
+  'body', 'cache', 'credentials', 'dispatcher', 'duplex', 'headers', 'integrity', 'keepalive',
+  'method', 'mode', 'priority', 'redirect', 'referrer', 'referrerPolicy', 'signal', 'window',
+]);
+const requestInitKeySet = new Set(requestInitKeys);
 
 function paymentError(code, message) {
   return new PaymentPolicyError(code, message);
@@ -90,6 +95,90 @@ function ownedRequestHeaders(input) {
   return Object.fromEntries(normalized.entries());
 }
 
+function captureRequestInitDictionary(input) {
+  if (input == null) return {};
+  const source = Object(input);
+  const captured = {};
+  for (const key of requestInitKeys) {
+    const value = source[key];
+    if (value !== undefined) captured[key] = value;
+  }
+  for (const key of Reflect.ownKeys(source)) {
+    if (typeof key === 'string' && requestInitKeySet.has(key)) continue;
+    const descriptor = Object.getOwnPropertyDescriptor(source, key);
+    if (descriptor?.enumerable) captured[key] = source[key];
+  }
+  return captured;
+}
+
+function capturePayingRequestInit(init, idempotencyKey) {
+  // Materialize caller-owned accessors exactly once. Every transport request is
+  // rebuilt from this private snapshot, never by re-spreading the caller object.
+  const captured = captureRequestInitDictionary(init);
+  const method = captured.method ?? 'GET';
+  if (typeof method !== 'string' || method !== method.toUpperCase()) {
+    throw paymentError('REQUEST_METHOD', 'request method must be uppercase');
+  }
+
+  const callerBody = captured.body;
+  let bodyBytes;
+  let transportBody;
+  if (callerBody == null) {
+    bodyBytes = null;
+    transportBody = callerBody;
+  } else if (typeof callerBody === 'string') {
+    bodyBytes = callerBody;
+    transportBody = callerBody;
+  } else if (callerBody instanceof Uint8Array) {
+    bodyBytes = Buffer.from(callerBody);
+    transportBody = bodyBytes;
+  } else {
+    throw paymentError(
+      'REQUEST_BODY',
+      'payingFetch requires a replayable string, Uint8Array, or null request body',
+    );
+  }
+
+  const requestHeaders = Object.freeze({
+    ...ownedRequestHeaders(captured.headers),
+    'Idempotency-Key': idempotencyKey,
+  });
+  const hasBody = Object.hasOwn(captured, 'body');
+  const baseInit = { ...captured, method };
+  delete baseInit.headers;
+  delete baseInit.body;
+  delete baseInit.redirect;
+  Object.freeze(baseInit);
+
+  function transportInit(xPayment = null) {
+    const request = {
+      ...baseInit,
+      method,
+      redirect: 'error',
+      headers: {
+        ...requestHeaders,
+        ...(xPayment === null ? {} : { 'X-PAYMENT': xPayment }),
+      },
+    };
+    if (hasBody) {
+      request.body = transportBody instanceof Uint8Array
+        ? Buffer.from(transportBody)
+        : transportBody;
+    }
+    return request;
+  }
+
+  function policyBodyBytes() {
+    return bodyBytes instanceof Uint8Array ? Buffer.from(bodyBytes) : bodyBytes;
+  }
+
+  return Object.freeze({
+    method,
+    policyBodyBytes,
+    transportInit,
+  });
+}
+
 function decodeSettlementHeader(value) {
   if (typeof value !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) {
     throw paymentError('SETTLEMENT_EVIDENCE', 'settlement evidence is missing or malformed');
@@ -131,16 +220,10 @@ export async function payingFetch(account, url, init, options = {}) {
   if (typeof idempotencyKey !== 'string' || !/^[A-Za-z0-9._:-]{1,200}$/.test(idempotencyKey)) {
     throw paymentError('AUTHORIZATION_ID', 'idempotencyKey must be a bounded canonical token');
   }
-  const method = init?.method ?? 'GET';
-  if (typeof method !== 'string' || method !== method.toUpperCase()) {
-    throw paymentError('REQUEST_METHOD', 'request method must be uppercase');
-  }
-  const requestHeaders = {
-    ...ownedRequestHeaders(init?.headers),
-    'Idempotency-Key': idempotencyKey,
-  };
+  const request = capturePayingRequestInit(init, idempotencyKey);
+  const { method } = request;
   const t0 = performance.now();
-  const first = await fetchImpl(url, { ...init, redirect: 'error', headers: requestHeaders });
+  const first = await fetchImpl(url, request.transportInit());
   if (first.status !== 402) return { res: first, paid: false, idempotencyKey };
   const receivedAt = paymentPolicy.captureReceivedAt();
   const ms402 = performance.now() - t0;
@@ -155,7 +238,7 @@ export async function payingFetch(account, url, init, options = {}) {
     authorizationId: idempotencyKey,
     requestUrl: url,
     method,
-    bodyBytes: init?.body ?? null,
+    bodyBytes: request.policyBodyBytes(),
     challenge: firstChallenge,
     receivedAt,
   });
@@ -234,7 +317,7 @@ export async function payingFetch(account, url, init, options = {}) {
         xPayment,
       });
     } catch (error) {
-      if (!signatureReturned && error?.signatureProduced === false) {
+      if (!signatureReturned) {
         paymentPolicy.releaseUnsigned(idempotencyKey, { reasonCode: 'SIGNER_REJECTED' });
       } else {
         paymentPolicy.markPotentiallySigned(idempotencyKey, {
@@ -251,7 +334,7 @@ export async function payingFetch(account, url, init, options = {}) {
       authorizationId: idempotencyKey,
       requestUrl: url,
       method,
-      bodyBytes: init?.body ?? null,
+      bodyBytes: request.policyBodyBytes(),
     });
   } else {
     throw paymentError(
@@ -273,11 +356,7 @@ export async function payingFetch(account, url, init, options = {}) {
   const tRetry = performance.now();
   let res;
   try {
-    res = await fetchImpl(url, {
-      ...init,
-      redirect: 'error',
-      headers: { ...requestHeaders, 'X-PAYMENT': xPayment },
-    });
+    res = await fetchImpl(url, request.transportInit(xPayment));
   } catch (error) {
     paymentPolicy.markUnresolved(idempotencyKey, { reasonCode: 'RETRY_RESPONSE_LOST' });
     throw error;

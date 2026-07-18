@@ -178,6 +178,43 @@ test('each trusted local receipt-time capability is single-use even for the same
     (error) => error.code === 'RECEIVED_AT');
 });
 
+test('validated policy primitives and seller rules are snapshotted at construction', () => {
+  const seller = {
+    origin: 'https://trusted.example',
+    pathPrefix: '/invoke/',
+    payTo: PAYEE,
+    maxPerCallAtomic: '300000',
+  };
+  const config = {
+    network: BASE_SEPOLIA_NETWORK,
+    chainId: BASE_SEPOLIA_CHAIN_ID,
+    asset: BASE_SEPOLIA_USDC,
+    sessionBudgetAtomic: '500000',
+    maxQuoteAgeMs: 5_000,
+    maxAuthorizationSeconds: 60,
+    now: () => NOW,
+    sellers: [seller],
+  };
+  const subject = createPaymentPolicy(config);
+
+  config.network = 'base';
+  config.chainId = 1;
+  config.asset = `0x${'9'.repeat(40)}`;
+  config.sessionBudgetAtomic = '1';
+  config.maxQuoteAgeMs = 0;
+  config.maxAuthorizationSeconds = 1;
+  seller.origin = 'https://evil.example';
+  seller.pathPrefix = '/';
+  seller.payTo = `0x${'8'.repeat(40)}`;
+  seller.maxPerCallAtomic = '1';
+  config.sellers.length = 0;
+
+  const record = reserve(subject);
+  assert.equal(record.amountAtomic, '250000');
+  assert.equal(record.offer.maxTimeoutSeconds, 60);
+  assert.equal(subject.snapshot().remainingAtomic, '250000');
+});
+
 const rejectionCases = [
   ['wrong scheme', offer({ scheme: 'upto' }), 'SCHEME'],
   ['wrong network', offer({ network: 'Base-Sepolia' }), 'NETWORK'],
@@ -513,6 +550,117 @@ test('trusted reconciliation captures accessor-backed proof fields exactly once'
   assert.equal(verifiedProof.reasonCode, 'CHAIN_REJECTED');
   assert.equal(subject.snapshot().reservedAtomic, '0');
   assert.equal(subject.snapshot().authorizations[0].reasonCode, 'CHAIN_REJECTED');
+});
+
+test('reentrant settlement input and proof verifiers cannot double-commit budget', () => {
+  {
+    const subject = policy({ verifyRejectionProof: () => true });
+    sign(subject);
+    subject.beginRetry('auth-1');
+    const rejection = {
+      ...settlementEvidence(subject),
+      success: false,
+      transaction: null,
+      outcome: 'rejected',
+      reasonCode: 'CHAIN_REJECTED',
+      trustToken: 'trusted-rejection',
+    };
+    const settlement = settlementEvidence(subject);
+    Object.defineProperty(settlement, 'transaction', {
+      enumerable: true,
+      get() {
+        subject.reconcileRejection('auth-1', rejection);
+        return TX_HASH;
+      },
+    });
+
+    assert.throws(() => subject.acceptSettlement('auth-1', settlement),
+      (error) => ['SETTLEMENT_STATE', 'TRANSITION_DRIFT'].includes(error.code));
+    assert.deepEqual(subject.snapshot(), {
+      sessionBudgetAtomic: '500000',
+      reservedAtomic: '0',
+      spentAtomic: '0',
+      remainingAtomic: '500000',
+      authorizations: [{
+        authorizationId: 'auth-1', amountAtomic: '250000', state: 'rejected',
+        retryCount: 1, txHash: null, reasonCode: 'CHAIN_REJECTED',
+      }],
+    });
+  }
+
+  {
+    let subject;
+    let rejection;
+    subject = policy({
+      verifyRejectionProof: () => true,
+      verifySettlementProof: () => {
+        subject.reconcileRejection('auth-1', rejection);
+        return true;
+      },
+    });
+    sign(subject);
+    subject.beginRetry('auth-1');
+    subject.markUnresolved('auth-1', { reasonCode: 'RETRY_RESPONSE_LOST' });
+    const evidence = settlementEvidence(subject);
+    rejection = {
+      ...evidence,
+      success: false,
+      transaction: null,
+      outcome: 'rejected',
+      reasonCode: 'CHAIN_REJECTED',
+      trustToken: 'trusted-rejection',
+    };
+    const settlementProof = {
+      ...evidence,
+      outcome: 'settled',
+      trustToken: 'trusted-settlement',
+    };
+
+    assert.throws(() => subject.reconcileSettlement('auth-1', settlementProof),
+      (error) => ['TRANSITION_REENTRANCY', 'TRANSITION_DRIFT'].includes(error.code));
+    const snapshot = subject.snapshot();
+    assert.equal(snapshot.reservedAtomic, '250000');
+    assert.equal(snapshot.spentAtomic, '0');
+    assert.equal(snapshot.remainingAtomic, '250000');
+    assert.equal(snapshot.authorizations[0].state, 'unresolved');
+  }
+
+  {
+    let subject;
+    let settlementProof;
+    subject = policy({
+      verifySettlementProof: () => true,
+      verifyRejectionProof: () => {
+        subject.reconcileSettlement('auth-1', settlementProof);
+        return true;
+      },
+    });
+    sign(subject);
+    subject.beginRetry('auth-1');
+    subject.markUnresolved('auth-1', { reasonCode: 'RETRY_RESPONSE_LOST' });
+    const evidence = settlementEvidence(subject);
+    settlementProof = {
+      ...evidence,
+      outcome: 'settled',
+      trustToken: 'trusted-settlement',
+    };
+    const rejection = {
+      ...evidence,
+      success: false,
+      transaction: null,
+      outcome: 'rejected',
+      reasonCode: 'CHAIN_REJECTED',
+      trustToken: 'trusted-rejection',
+    };
+
+    assert.throws(() => subject.reconcileRejection('auth-1', rejection),
+      (error) => ['TRANSITION_REENTRANCY', 'TRANSITION_DRIFT'].includes(error.code));
+    const snapshot = subject.snapshot();
+    assert.equal(snapshot.reservedAtomic, '250000');
+    assert.equal(snapshot.spentAtomic, '0');
+    assert.equal(snapshot.remainingAtomic, '250000');
+    assert.equal(snapshot.authorizations[0].state, 'unresolved');
+  }
 });
 
 test('one EIP-3009 nonce cannot be persisted under two authorizations', () => {
