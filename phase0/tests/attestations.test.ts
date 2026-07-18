@@ -14,6 +14,8 @@ import {
   displayAttestation,
   organizationStatementHash,
   parseAttestationEvent,
+  parseForgeObservation,
+  parseRepositoryChallenge,
   registrationSubjectsFromManifest,
   reduceAttestationEvents,
   repositoryStatementHash,
@@ -375,6 +377,35 @@ test("sequence gaps, duplicate IDs, malformed normalized inputs, and overclaim t
   assert.doesNotMatch(rendered, /authored by|safe skill|proves originality|proves safety/);
 });
 
+test("repository attestations accept only exact 40- or 64-character lowercase commit OIDs", () => {
+  const account = privateKeyToAccount(generatePrivateKey());
+  const challenge = challengeFor(subject(IP_A, account.address));
+  const observation = {
+    schemaVersion: 1 as const,
+    repositoryId: "demo",
+    repositoryUrl: challenge.repositoryUrl,
+    trustedRef: "refs/heads/main" as const,
+    proofCommitSha: "2".repeat(40),
+    challengeNonce: challenge.nonce,
+    observedAt: "2026-07-18T11:00:00.000Z",
+    forgeSignerId: "forge-1",
+    signature: "test-signature",
+  };
+
+  for (const length of [41, 63]) {
+    assert.throws(
+      () => parseRepositoryChallenge({ ...challenge, artifactCommitSha: "a".repeat(length) }),
+      /lowercase full commit SHA/,
+    );
+    assert.throws(
+      () => parseForgeObservation({ ...observation, proofCommitSha: "b".repeat(length) }),
+      /lowercase full commit SHA/,
+    );
+  }
+  assert.equal(parseRepositoryChallenge({ ...challenge, artifactCommitSha: "a".repeat(64) }).artifactCommitSha.length, 64);
+  assert.equal(parseForgeObservation({ ...observation, proofCommitSha: "b".repeat(64) }).proofCommitSha.length, 64);
+});
+
 test("human status output uses explicit evidence-level language", async () => {
   const account = privateKeyToAccount(generatePrivateKey());
   const base = subject(IP_A, account.address);
@@ -384,6 +415,54 @@ test("human status output uses explicit evidence-level language", async () => {
   assert.match(output, /claim: wallet registered these bytes and declared this ancestry/);
   assert.match(output, /safety review: not_reviewed/);
   assert.match(output, /warning: registration does not prove authorship, originality, legal ownership, or safety/);
+});
+
+test("valid signed challenge identifiers cannot forge human status lines or terminal controls", async () => {
+  const challenged = privateKeyToAccount(generatePrivateKey());
+  const challenger = privateKeyToAccount(generatePrivateKey());
+  const a = subject(IP_A, challenged.address, HASH_A);
+  const b = subject(IP_B, challenger.address, HASH_B);
+  const conflictId = "conflict\"\\\rstatus: forged\u0000\u001b\u007f\u0085\u009f\u061c\u200e\u200f\u2028\u2029\u202a\u202e\u2066\u2069";
+  const eventId = "event\"\\\nwarning: forged\u0001\u001b\u0080\u009b\u2028\u2029\u202d\u2067";
+  const unsigned = {
+    type: "challenge_opened" as const,
+    eventId,
+    sequence: 1,
+    occurredAt: NOW,
+    conflictId,
+    challengedRegistrationId: a.registrationId,
+    challengerRegistrationId: b.registrationId,
+    challengerWallet: b.wallet,
+    evidenceUris: ["https://example.com/signed-evidence"],
+    reason: "misattributed_creator" as const,
+    statementHash: HASH_A,
+    signature: "0x00" as `0x${string}`,
+  };
+  const statementHash = challengeEventStatementHash(unsigned);
+  const event: ChallengeOpenedEvent = {
+    ...unsigned,
+    statementHash,
+    signature: await challenger.signMessage({
+      message: canonicalChallengeEventStatement({ ...unsigned, statementHash }),
+    }),
+  };
+  const index = await reduceAttestationEvents([event], { baseSubjects: [a, b] });
+
+  const lines = renderAttestationStatus(index, { registrationId: a.registrationId });
+  const renderedConflict = lines.find((line) => line.startsWith("conflict: "));
+  const renderedEvents = lines.find((line) => line.startsWith("conflict events: "));
+  assert.ok(renderedConflict?.startsWith('conflict: "'));
+  assert.ok(renderedConflict?.endsWith('"'));
+  assert.ok(renderedEvents?.startsWith('conflict events: "'));
+  for (const escaped of ["\\\"", "\\\\", "\\u0000", "\\u001b", "\\u007f", "\\u0085", "\\u009f", "\\u061c", "\\u200e", "\\u200f", "\\u2028", "\\u2029", "\\u202a", "\\u202e", "\\u2066", "\\u2069"]) {
+    assert.match(renderedConflict ?? "", new RegExp(escaped.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")));
+  }
+  assert.ok(lines.every((line) => !/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/u.test(line)));
+  assert.equal(lines.filter((line) => line.startsWith("status: forged") || line.startsWith("warning: forged")).length, 0);
+
+  const json = JSON.parse(renderAttestationStatus(index, { registrationId: a.registrationId, json: true })[0]);
+  assert.equal(json.conflicts[0].conflictId, conflictId);
+  assert.deepEqual(json.conflicts[0].eventIds, [eventId]);
 });
 
 test("human status output lists challenged registrations and every matching conflict deterministically", async () => {
@@ -405,7 +484,7 @@ test("human status output lists challenged registrations and every matching conf
   assert.equal(lines.filter((line) => line === "status: challenged").length, 2);
   assert.deepEqual(lines.slice(-8), [
     "conflicts: 1",
-    `conflict: ${conflictId}`,
+    `conflict: "${conflictId}"`,
     `conflict artifact hash: ${a.artifactHash}`,
     "conflict status: open",
     "conflict reason: duplicate_bytes",
@@ -426,7 +505,7 @@ test("human status output lists challenged registrations and every matching conf
   assert.ok(unsortedArrayLines.includes(
     `conflict registrations: ${[a.registrationId, b.registrationId].sort().join(", ")}`,
   ));
-  assert.ok(unsortedArrayLines.includes("conflict events: event-a, event-z"));
+  assert.ok(unsortedArrayLines.includes('conflict events: "event-a", "event-z"'));
 
   const json = JSON.parse(renderAttestationStatus(forward, { artifactHash: a.artifactHash, json: true })[0]);
   assert.equal(json.registrations.length, 2);

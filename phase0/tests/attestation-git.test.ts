@@ -3,7 +3,7 @@ import { createHash, generateKeyPairSync, sign as signBytes } from "node:crypto"
 import { chmod, mkdir, mkdtemp, realpath, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import test from "node:test";
 
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
@@ -343,6 +343,54 @@ test("Git verification ignores poisoned process environment, PATH, and replaceme
 
 test("ExecGitReader requires an absolute verifier-controlled executable", () => {
   assert.throws(() => new ExecGitReader({ gitExecutable: "git" }), /absolute Git executable/);
+});
+
+test("ExecGitReader rejects 41- and 63-character hexadecimal object names on every commit path", async (t) => {
+  const f = await fixture(t);
+  const reader = new ExecGitReader();
+  for (const length of [41, 63]) {
+    const invalid = "a".repeat(length);
+    await assert.rejects(reader.commitExists(f.root, invalid), /not a full commit OID/);
+    await assert.rejects(reader.readBlob(f.root, invalid, "skills/demo/SKILL.md"), /not a full commit OID/);
+    await assert.rejects(reader.isAncestor(f.root, invalid, f.proofCommit), /not a full commit OID/);
+    await assert.rejects(reader.isAncestor(f.root, f.artifactCommit, invalid), /not a full commit OID/);
+  }
+});
+
+test("ExecGitReader requires the exact fully resolved OID in a SHA-256 repository", async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "phase0-attestation-git-sha256-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const initialized = spawnSync("/usr/bin/git", ["-C", root, "init", "--object-format=sha256", "-b", "main"], {
+    encoding: "utf8",
+    env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" },
+  });
+  if (initialized.status !== 0) {
+    const detail = `${initialized.stdout}\n${initialized.stderr}`;
+    if (/unknown option.*object-format|unknown hash algorithm.*sha256|unsupported.*sha256|sha256.*not supported/i.test(detail)) {
+      t.skip("installed Git does not support SHA-256 repositories");
+      return;
+    }
+    assert.fail(`SHA-256 repository initialization failed unexpectedly: ${detail}`);
+  }
+
+  git(root, "config", "user.name", "SHA-256 Test");
+  git(root, "config", "user.email", "sha256@example.invalid");
+  await writeFile(join(root, "artifact.txt"), "sha256 repository artifact\n");
+  git(root, "add", "artifact.txt");
+  git(root, "commit", "-m", "add SHA-256 artifact");
+  const fullOid = git(root, "rev-parse", "HEAD");
+  assert.equal(fullOid.length, 64);
+  const prefix40 = fullOid.slice(0, 40);
+  const prefix41 = fullOid.slice(0, 41);
+  const reader = new ExecGitReader();
+
+  assert.equal(await reader.commitExists(root, fullOid), true);
+  assert.equal(await reader.commitExists(root, prefix40), false);
+  await assert.rejects(reader.commitExists(root, prefix41), /not a full commit OID/);
+  await assert.rejects(reader.readBlob(root, prefix40, "artifact.txt"), /exact full commit OID/);
+  await assert.rejects(reader.readBlob(root, prefix41, "artifact.txt"), /not a full commit OID/);
+  assert.equal(await reader.isAncestor(root, prefix40, fullOid), false);
+  await assert.rejects(reader.isAncestor(root, prefix41, fullOid), /not a full commit OID/);
 });
 
 test("missing partial-clone objects fail without invoking a remote helper", async (t) => {

@@ -88,10 +88,12 @@ function validRepositoryPath(value: string): void {
   }
 }
 
-function validObjectName(value: string, label: string): void {
-  if (!/^(?:[0-9a-f]{40,64}|refs\/(?:heads|remotes)\/[A-Za-z0-9._\/-]+)$/.test(value) || value.includes("..")) {
+function validObjectName(value: string, label: string): "commit" | "ref" {
+  if (/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value)) return "commit";
+  if (!/^refs\/(?:heads|remotes)\/[A-Za-z0-9._\/-]+$/.test(value) || value.includes("..")) {
     throw new Error(`${label} is not a full commit OID or configured trusted ref`);
   }
+  return "ref";
 }
 
 function validRelativePath(value: string): void {
@@ -115,6 +117,17 @@ export class ExecGitReader implements GitReader {
     return runGit(this.gitExecutable, args);
   }
 
+  private async resolvesToExactCommitOid(repositoryPath: string, commitOid: string): Promise<boolean> {
+    try {
+      const resolved = await this.run(["-C", repositoryPath, "rev-parse", "--verify", `${commitOid}^{commit}`]);
+      return Buffer.from(resolved).toString("ascii").trim() === commitOid;
+    } catch (error) {
+      const cause = (error as Error & { cause?: { code?: string | number } }).cause;
+      if (cause && typeof cause.code === "number") return false;
+      throw error;
+    }
+  }
+
   async repositoryIdentity(repositoryPath: string): Promise<{ device: number; inode: number }> {
     validRepositoryPath(repositoryPath);
     const handle = await open(repositoryPath, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
@@ -131,7 +144,8 @@ export class ExecGitReader implements GitReader {
 
   async commitExists(repositoryPath: string, commitSha: string): Promise<boolean> {
     validRepositoryPath(repositoryPath);
-    validObjectName(commitSha, "Git commit");
+    const kind = validObjectName(commitSha, "Git commit");
+    if (kind === "commit") return this.resolvesToExactCommitOid(repositoryPath, commitSha);
     try {
       await this.run(["-C", repositoryPath, "cat-file", "-e", `${commitSha}^{commit}`]);
       return true;
@@ -144,15 +158,20 @@ export class ExecGitReader implements GitReader {
 
   async readBlob(repositoryPath: string, commitSha: string, relativePath: string): Promise<Uint8Array> {
     validRepositoryPath(repositoryPath);
-    validObjectName(commitSha, "Git commit");
+    const kind = validObjectName(commitSha, "Git commit");
+    if (kind !== "commit" || !await this.resolvesToExactCommitOid(repositoryPath, commitSha)) {
+      throw new Error("Git blob commit is absent or not an exact full commit OID for this repository");
+    }
     validRelativePath(relativePath);
     return this.run(["-C", repositoryPath, "show", `${commitSha}:${relativePath}`]);
   }
 
   async isAncestor(repositoryPath: string, ancestor: string, descendant: string): Promise<boolean> {
     validRepositoryPath(repositoryPath);
-    validObjectName(ancestor, "Git ancestor");
-    validObjectName(descendant, "Git descendant");
+    const ancestorKind = validObjectName(ancestor, "Git ancestor");
+    const descendantKind = validObjectName(descendant, "Git descendant");
+    if (ancestorKind === "commit" && !await this.resolvesToExactCommitOid(repositoryPath, ancestor)) return false;
+    if (descendantKind === "commit" && !await this.resolvesToExactCommitOid(repositoryPath, descendant)) return false;
     try {
       await this.run(["-C", repositoryPath, "merge-base", "--is-ancestor", ancestor, descendant]);
       return true;

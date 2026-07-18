@@ -156,7 +156,7 @@ export interface AttestationIndex {
 
 const ADDRESS = /^0x[0-9a-f]{40}$/;
 const HASH = /^0x[0-9a-f]{64}$/;
-const COMMIT = /^[0-9a-f]{40,64}$/;
+const COMMIT = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const NONCE = /^0x[0-9a-f]{64}$/;
 const HEX_SIGNATURE = /^0x(?:[0-9a-fA-F]{2})+$/;
 const REGISTRATION_ID = /^eip155:1315:0x[0-9a-f]{40}$/;

@@ -243,6 +243,40 @@ function statusPayload(index: AttestationIndex, options: AttestationCommandOptio
   };
 }
 
+function quoteHumanIdentifier(value: string): string {
+  let quoted = '"';
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit === 0x22) {
+      quoted += '\\"';
+    } else if (codeUnit === 0x5c) {
+      quoted += "\\\\";
+    } else if (
+      codeUnit <= 0x1f
+      || (codeUnit >= 0x7f && codeUnit <= 0x9f)
+      || codeUnit === 0x061c
+      || codeUnit === 0x200e
+      || codeUnit === 0x200f
+      || (codeUnit >= 0x2028 && codeUnit <= 0x202e)
+      || (codeUnit >= 0x2066 && codeUnit <= 0x2069)
+      || (codeUnit >= 0xd800 && codeUnit <= 0xdfff
+        && !(codeUnit <= 0xdbff
+          && index + 1 < value.length
+          && value.charCodeAt(index + 1) >= 0xdc00
+          && value.charCodeAt(index + 1) <= 0xdfff))
+    ) {
+      quoted += `\\u${codeUnit.toString(16).padStart(4, "0")}`;
+    } else {
+      quoted += value[index];
+      if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+        index += 1;
+        quoted += value[index];
+      }
+    }
+  }
+  return `${quoted}"`;
+}
+
 export function renderAttestationStatus(index: AttestationIndex, options: AttestationCommandOptions = {}): string[] {
   const payload = statusPayload(index, options);
   if (options.json) return [JSON.stringify(payload, null, 2)];
@@ -260,13 +294,13 @@ export function renderAttestationStatus(index: AttestationIndex, options: Attest
   lines.push(`conflicts: ${payload.conflicts.length}`);
   for (const conflictValue of payload.conflicts) {
     const conflict = conflictValue as AttestationIndex["conflicts"][number];
-    lines.push(`conflict: ${conflict.conflictId}`);
+    lines.push(`conflict: ${quoteHumanIdentifier(conflict.conflictId)}`);
     lines.push(`conflict artifact hash: ${conflict.artifactHash ?? "(none)"}`);
     lines.push(`conflict status: ${conflict.status}`);
     lines.push(`conflict reason: ${conflict.reason}`);
     lines.push(`conflict outcome: ${conflict.outcome ?? "(none)"}`);
     lines.push(`conflict registrations: ${[...conflict.registrationIds].sort().join(", ")}`);
-    lines.push(`conflict events: ${conflict.eventIds.length > 0 ? [...conflict.eventIds].sort().join(", ") : "(none)"}`);
+    lines.push(`conflict events: ${conflict.eventIds.length > 0 ? [...conflict.eventIds].sort().map(quoteHumanIdentifier).join(", ") : "(none)"}`);
   }
   return lines;
 }
