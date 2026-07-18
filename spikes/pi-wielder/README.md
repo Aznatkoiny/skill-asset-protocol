@@ -149,7 +149,7 @@ npm test
 npm run e2e
 ```
 
-Expected current results are 134 offline unit/integration tests and 30 offline e2e
+Expected current results are 141 offline unit/integration tests and 30 offline e2e
 checks. Counts can increase as regressions are added; zero failures is the contract.
 The e2e labels all timing output synthetic and uses in-process Hono requests only.
 

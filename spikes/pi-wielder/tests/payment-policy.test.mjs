@@ -313,6 +313,184 @@ test('concurrent reservations count reserved and settled spend against one sessi
   });
 });
 
+test('caught same-id reservation reentry from an input accessor commits one reservation', () => {
+  const subject = policy();
+  let nestedErrors = 0;
+  const input = {
+    authorizationId: 'auth-accessor-caught',
+    requestUrl: URL,
+    method: 'POST',
+    bodyBytes: BODY,
+    challenge: challenge(),
+    receivedAt: subject.captureReceivedAt(),
+  };
+  Object.defineProperty(input, 'requestUrl', {
+    enumerable: true,
+    get() {
+      try {
+        reserve(subject, { authorizationId: 'auth-accessor-caught' });
+      } catch (error) {
+        assert.equal(error.code, 'TRANSITION_REENTRANCY');
+        nestedErrors += 1;
+      }
+      return URL;
+    },
+  });
+
+  const record = subject.reserveAuthorization(input);
+  assert.equal(record.authorizationId, 'auth-accessor-caught');
+  assert.equal(nestedErrors, 1);
+  assert.deepEqual(subject.snapshot(), {
+    sessionBudgetAtomic: '500000',
+    reservedAtomic: '250000',
+    spentAtomic: '0',
+    remainingAtomic: '250000',
+    authorizations: [{
+      authorizationId: 'auth-accessor-caught', amountAtomic: '250000', state: 'reserved',
+      retryCount: 0, txHash: null, reasonCode: null,
+    }],
+  });
+  subject.releaseUnsigned('auth-accessor-caught', { reasonCode: 'CALL_CANCELLED' });
+  assert.equal(subject.snapshot().reservedAtomic, '0');
+  assert.equal(subject.snapshot().remainingAtomic, '500000');
+});
+
+test('uncaught same-id reservation reentry from an input accessor clears its guard', () => {
+  const subject = policy();
+  const input = {
+    authorizationId: 'auth-accessor-uncaught',
+    requestUrl: URL,
+    method: 'POST',
+    bodyBytes: BODY,
+    challenge: challenge(),
+    receivedAt: subject.captureReceivedAt(),
+  };
+  Object.defineProperty(input, 'requestUrl', {
+    enumerable: true,
+    get() {
+      reserve(subject, { authorizationId: 'auth-accessor-uncaught' });
+      return URL;
+    },
+  });
+
+  assert.throws(() => subject.reserveAuthorization(input),
+    (error) => error.code === 'TRANSITION_REENTRANCY');
+  assert.deepEqual(subject.snapshot(), {
+    sessionBudgetAtomic: '500000',
+    reservedAtomic: '0',
+    spentAtomic: '0',
+    remainingAtomic: '500000',
+    authorizations: [],
+  });
+
+  reserve(subject, { authorizationId: 'auth-accessor-uncaught' });
+  subject.releaseUnsigned('auth-accessor-uncaught', { reasonCode: 'CALL_CANCELLED' });
+  assert.equal(subject.snapshot().reservedAtomic, '0');
+  assert.equal(subject.snapshot().remainingAtomic, '500000');
+});
+
+test('caught same-id reservation reentry from the trusted clock commits one reservation', () => {
+  let subject;
+  let reenter = false;
+  let nestedErrors = 0;
+  subject = policy({
+    now: () => {
+      if (reenter) {
+        reenter = false;
+        try {
+          reserve(subject, { authorizationId: 'auth-clock-caught' });
+        } catch (error) {
+          assert.equal(error.code, 'TRANSITION_REENTRANCY');
+          nestedErrors += 1;
+        }
+      }
+      return NOW;
+    },
+  });
+  const receivedAt = subject.captureReceivedAt();
+  reenter = true;
+
+  const record = subject.reserveAuthorization({
+    authorizationId: 'auth-clock-caught',
+    requestUrl: URL,
+    method: 'POST',
+    bodyBytes: BODY,
+    challenge: challenge(),
+    receivedAt,
+  });
+  assert.equal(record.authorizationId, 'auth-clock-caught');
+  assert.equal(nestedErrors, 1);
+  assert.equal(subject.snapshot().authorizations.length, 1);
+  assert.equal(subject.snapshot().reservedAtomic, '250000');
+  assert.equal(subject.snapshot().remainingAtomic, '250000');
+  subject.releaseUnsigned('auth-clock-caught', { reasonCode: 'CALL_CANCELLED' });
+  assert.equal(subject.snapshot().reservedAtomic, '0');
+  assert.equal(subject.snapshot().remainingAtomic, '500000');
+});
+
+test('uncaught same-id reservation reentry from the trusted clock clears its guard', () => {
+  let subject;
+  let reenter = false;
+  subject = policy({
+    now: () => {
+      if (reenter) {
+        reenter = false;
+        reserve(subject, { authorizationId: 'auth-clock-uncaught' });
+      }
+      return NOW;
+    },
+  });
+  const receivedAt = subject.captureReceivedAt();
+  reenter = true;
+
+  assert.throws(() => subject.reserveAuthorization({
+    authorizationId: 'auth-clock-uncaught',
+    requestUrl: URL,
+    method: 'POST',
+    bodyBytes: BODY,
+    challenge: challenge(),
+    receivedAt,
+  }), (error) => error.code === 'TRANSITION_REENTRANCY');
+  assert.equal(subject.snapshot().authorizations.length, 0);
+  assert.equal(subject.snapshot().reservedAtomic, '0');
+  assert.equal(subject.snapshot().remainingAtomic, '500000');
+
+  reserve(subject, { authorizationId: 'auth-clock-uncaught' });
+  subject.releaseUnsigned('auth-clock-uncaught', { reasonCode: 'CALL_CANCELLED' });
+  assert.equal(subject.snapshot().reservedAtomic, '0');
+  assert.equal(subject.snapshot().remainingAtomic, '500000');
+});
+
+test('different-id callback reservations retain ordinary session-budget behavior', () => {
+  const subject = policy();
+  let nestedRecord;
+  const input = {
+    authorizationId: 'auth-outer',
+    requestUrl: URL,
+    method: 'POST',
+    bodyBytes: BODY,
+    challenge: challenge(),
+    receivedAt: subject.captureReceivedAt(),
+  };
+  Object.defineProperty(input, 'requestUrl', {
+    enumerable: true,
+    get() {
+      nestedRecord = reserve(subject, { authorizationId: 'auth-inner' });
+      return URL;
+    },
+  });
+
+  subject.reserveAuthorization(input);
+  assert.equal(nestedRecord.authorizationId, 'auth-inner');
+  assert.equal(subject.snapshot().authorizations.length, 2);
+  assert.equal(subject.snapshot().reservedAtomic, '500000');
+  assert.equal(subject.snapshot().remainingAtomic, '0');
+  subject.releaseUnsigned('auth-inner', { reasonCode: 'CALL_CANCELLED' });
+  subject.releaseUnsigned('auth-outer', { reasonCode: 'CALL_CANCELLED' });
+  assert.equal(subject.snapshot().reservedAtomic, '0');
+  assert.equal(subject.snapshot().remainingAtomic, '500000');
+});
+
 test('authorization, signature, and encoded payment are exact, immutable, and copied before persistence', () => {
   const subject = policy();
   const record = reserve(subject);

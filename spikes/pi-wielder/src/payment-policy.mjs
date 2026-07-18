@@ -367,6 +367,7 @@ export function createPaymentPolicy(config) {
   const records = new Map();
   const authorizationNonces = new Map();
   const settlementTransactions = new Map();
+  const activeReservations = new Set();
   const activeMonetaryTransitions = new Map();
   let reservedAtomic = 0n;
   let spentAtomic = 0n;
@@ -542,25 +543,33 @@ export function createPaymentPolicy(config) {
       }
       return publicRecord(existing);
     }
-    const validated = validateOffer(input);
-    const amount = BigInt(validated.amountAtomic);
-    if (spentAtomic + reservedAtomic + amount > budget) {
-      fail('SESSION_BUDGET', 'offer exceeds remaining one-process session budget');
+    if (activeReservations.has(authorizationId)) {
+      fail('TRANSITION_REENTRANCY', 'reentrant authorization reservation is forbidden');
     }
-    const record = {
-      authorizationId,
-      ...validated,
-      state: 'reserved',
-      retryCount: 0,
-      txHash: null,
-      reasonCode: null,
-      authorization: null,
-      signature: null,
-      xPayment: null,
-    };
-    commitBudget({ reservedDelta: amount });
-    records.set(authorizationId, record);
-    return publicRecord(record);
+    activeReservations.add(authorizationId);
+    try {
+      const validated = validateOffer(input);
+      const amount = BigInt(validated.amountAtomic);
+      if (spentAtomic + reservedAtomic + amount > budget) {
+        fail('SESSION_BUDGET', 'offer exceeds remaining one-process session budget');
+      }
+      const record = {
+        authorizationId,
+        ...validated,
+        state: 'reserved',
+        retryCount: 0,
+        txHash: null,
+        reasonCode: null,
+        authorization: null,
+        signature: null,
+        xPayment: null,
+      };
+      commitBudget({ reservedDelta: amount });
+      records.set(authorizationId, record);
+      return publicRecord(record);
+    } finally {
+      activeReservations.delete(authorizationId);
+    }
   }
 
   function claimSignature(authorizationId, input) {

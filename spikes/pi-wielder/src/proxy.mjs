@@ -253,13 +253,22 @@ export async function payingFetch(account, url, init, options = {}) {
     if (!claim.claimed) {
       throw paymentError('AUTHORIZATION_ALREADY_USED', 'idempotency key already has a signature claim');
     }
-    const payer = typeof account?.address === 'string' ? account.address.toLowerCase() : '';
-    if (!/^0x[0-9a-f]{40}$/.test(payer) || typeof account?.signTypedData !== 'function') {
-      paymentPolicy.releaseUnsigned(idempotencyKey, { reasonCode: 'INVALID_WALLET_CAPABILITY' });
-      throw paymentError('WALLET_CAPABILITY', 'wallet must expose a canonical address and signTypedData capability');
-    }
+    let payer;
+    let signTypedData;
     let authorization;
+    let preSignFailureReason = 'LOCAL_AUTHORIZATION_FAILURE';
     try {
+      const address = account?.address;
+      const signer = account?.signTypedData;
+      payer = typeof address === 'string' ? address.toLowerCase() : '';
+      if (!/^0x[0-9a-f]{40}$/.test(payer) || typeof signer !== 'function') {
+        preSignFailureReason = 'INVALID_WALLET_CAPABILITY';
+        throw paymentError(
+          'WALLET_CAPABILITY',
+          'wallet must expose a canonical address and signTypedData capability',
+        );
+      }
+      signTypedData = signer;
       const nonce = nonceFactory();
       if (nonce && typeof nonce.then === 'function') {
         throw paymentError('NONCE_CAPABILITY', 'nonceFactory must be synchronous');
@@ -277,7 +286,7 @@ export async function payingFetch(account, url, init, options = {}) {
       };
     } catch (error) {
       paymentPolicy.releaseUnsigned(idempotencyKey, {
-        reasonCode: 'LOCAL_AUTHORIZATION_FAILURE',
+        reasonCode: preSignFailureReason,
       });
       throw error;
     }
@@ -285,7 +294,7 @@ export async function payingFetch(account, url, init, options = {}) {
     let signatureReturned = false;
     let signature;
     try {
-      signature = await account.signTypedData({
+      signature = await Reflect.apply(signTypedData, account, [{
         domain: {
           name: req.extra.name,
           version: req.extra.version,
@@ -300,7 +309,7 @@ export async function payingFetch(account, url, init, options = {}) {
           validAfter: BigInt(authorization.validAfter),
           validBefore: BigInt(authorization.validBefore),
         },
-      });
+      }]);
       signatureReturned = true;
       msSign = performance.now() - tSign;
       const xPayment = b64({

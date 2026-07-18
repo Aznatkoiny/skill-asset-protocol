@@ -646,6 +646,70 @@ test('ordinary signer rejection before any signature return releases reservation
   assert.equal(paymentPolicy.snapshot().authorizations[0].state, 'released');
 });
 
+test('wallet address and signer access failures release before signer invocation', async () => {
+  for (const capability of ['address', 'signTypedData']) {
+    const { account, paymentPolicy, signatureCount } = setup();
+    Object.defineProperty(account, capability, {
+      configurable: true,
+      enumerable: true,
+      get() {
+        throw new Error(`synthetic ${capability} access failure`);
+      },
+    });
+
+    await assert.rejects(() => payingFetch(account, URL, { method: 'POST', body: BODY }, {
+      fetchImpl: async () => challenge(),
+      idempotencyKey: `idem-${capability}-access-failure`,
+      paymentPolicy,
+    }), new RegExp(`synthetic ${capability} access failure`));
+    assert.equal(signatureCount(), 0, capability);
+    assert.equal(paymentPolicy.snapshot().reservedAtomic, '0', capability);
+    assert.equal(paymentPolicy.snapshot().remainingAtomic, '500000', capability);
+    assert.equal(paymentPolicy.snapshot().authorizations[0].state, 'released', capability);
+  }
+});
+
+test('wallet address and signer capabilities are captured exactly once before signing', async () => {
+  const { account, paymentPolicy, signatureCount } = setup();
+  const signer = account.signTypedData;
+  let addressReads = 0;
+  let signerReads = 0;
+  Object.defineProperty(account, 'address', {
+    configurable: true,
+    enumerable: true,
+    get() {
+      addressReads += 1;
+      if (addressReads > 1) throw new Error('wallet address was reread');
+      return PAYER;
+    },
+  });
+  Object.defineProperty(account, 'signTypedData', {
+    configurable: true,
+    enumerable: true,
+    get() {
+      signerReads += 1;
+      if (signerReads > 1) throw new Error('wallet signer was reread');
+      return signer;
+    },
+  });
+  let fetches = 0;
+
+  const result = await payingFetch(account, URL, { method: 'POST', body: BODY }, {
+    fetchImpl: async (_url, init) => {
+      fetches += 1;
+      return fetches === 1 ? challenge() : paidResponse(init);
+    },
+    idempotencyKey: 'idem-wallet-snapshot',
+    paymentPolicy,
+  });
+  assert.equal(result.paid, true);
+  assert.equal(addressReads, 1);
+  assert.equal(signerReads, 1);
+  assert.equal(signatureCount(), 1);
+  assert.equal(paymentPolicy.snapshot().reservedAtomic, '0');
+  assert.equal(paymentPolicy.snapshot().spentAtomic, '250000');
+});
+
 test('local nonce construction failure before signer invocation releases the reservation', async () => {
   const { account, paymentPolicy, signatureCount } = setup();
   await assert.rejects(() => payingFetch(account, URL, { method: 'POST', body: BODY }, {
