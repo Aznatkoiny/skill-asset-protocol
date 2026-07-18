@@ -10,15 +10,22 @@ language anywhere.*
 
 ## 1. Show HN draft
 
+> **PUBLICATION BLOCKED — INVALID BENCHMARK.** The 2026-07-12 target scored
+> 0.400 and failed its own critical gates, so clone-quality, fidelity-defense, and
+> break-even conclusions are suppressed. Acquisition was modeled at $1.50; no
+> x402 acquisition payments settled. Unblock only after
+> `spikes/clone-economics` produces a valid N=100 result with committed normalized
+> evidence and three live-adapter-confirmed independent distillation seeds.
+
 ### Title options (pick one; all under 80 chars)
 
 1. `Show HN: A manifesto that is also a paid API endpoint (HTTP 402)`
-2. `Show HN: We paid $1.58 to clone our own AI skill. It failed all 6 gates`
+2. `Show HN: An invalid clone benchmark and the gate we added after it`
 3. `Show HN: Metering AI skills per invocation instead of handing them over`
 
 Recommendation: title 1. It describes the artifact, not the thesis, and the artifact is the
-novel thing. Title 2 is the fallback if a second submission is ever warranted — it leads with
-the result that is most likely to survive HN scrutiny, because it is us attacking ourselves.
+novel thing. Title 2 remains blocked with the clone-economics copy until the evidence gate
+above is satisfied and a human approves revised copy.
 
 ### Post text (submit as a text post with the URL, or as first comment — ~230 words)
 
@@ -38,10 +45,10 @@ the result that is most likely to survive HN scrutiny, because it is us attackin
 > p50 731ms / p95 1206ms per call (n=48 settled calls, both model providers);
 > hosted-agent cold start ~2.5s to first token.
 >
-> What we tried to break: we paid $1.58 to distill a clone of our own skill from its
-> outputs (distillation itself cost $0.03). The clone failed all 6 held-out fidelity gates —
-> but N=6, high-N behavior unknown. Modeled break-even if a clone ever passes: 8 invocations.
-> Cost protects nothing.
+> The historical N=6 run used a modeled $1.50 acquisition cost and measured about
+> $0.03 of distillation-provider cost; no acquisition payment settled. Its target
+> failed the benchmark, so clone quality, fidelity defense, and break-even are
+> unknown. Publication remains blocked pending a valid preregistered N=100 run.
 >
 > We also documented two live failure modes: 10 calls that settled then 500'd ($0.87 paid,
 > no refund path in x402 v1 — our bug, published), and 1 of 50 that settled on-chain yet
@@ -53,9 +60,9 @@ the result that is most likely to survive HN scrutiny, because it is us attackin
 > Code (Apache-2.0): https://github.com/Aznatkoiny/skill-asset-protocol — the end-to-end
 > demo runs offline with zero API keys and zero funds.
 
-Notes on register: no adjectives doing sales work, every claim has a number, and the two
-weakest points (N=6, no demand evidence) are volunteered before anyone finds them. On HN
-the honesty ledger IS the pitch.
+Notes on register: no adjectives doing sales work, every claim has a number, and the invalid
+clone benchmark plus lack of demand evidence are volunteered before anyone finds them. On
+HN the honesty ledger IS the pitch.
 
 ### First-hour comment strategy: the 5 hardest questions, with prepared answers
 
@@ -103,14 +110,10 @@ Post these as replies, verbatim or trimmed. Never argue tone; concede fast and l
 
 **Q4. "Anyone can distill your skill from its own outputs for pennies. Your economics are dead."**
 
-> We ran exactly that attack on ourselves before launch and published it. Total cost $1.58,
-> and the distillation step itself was $0.03; modeled break-even is 8 invocations if a clone
-> ever passes. So yes: cost protects nothing, and we say so in those words. What we observed
-> is that the clone failed all 6 held-out fidelity gates, and a synthetic evolution pass
-> doubled the target–clone gap in one revision — fidelity and live evolution are the only
-> defenses we've seen work. Big caveat we volunteer: N=6, high-N behavior unknown, we won't
-> cite it as resolved. And in the intra-org frame the employer already has the file, so
-> clone-resistance isn't what's being sold there — attribution is.
+> The historical N=6 run used a modeled $1.50 acquisition cost and measured about
+> $0.03 of distillation-provider cost; no acquisition payment settled. Its target
+> failed the benchmark, so clone quality, fidelity defense, and break-even are
+> unknown. Publication remains blocked pending a valid preregistered N=100 run.
 
 **Q5. "Who would actually pay for this?"**
 

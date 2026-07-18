@@ -46,43 +46,47 @@ Launch day, Tuesday–Thursday ~8:30am ET; pin to profile and leave it pinned th
 
 ---
 
-## Post 2 — The clone story: "$1.58 to steal my own product"
+## Post 2 — Clone-economics benchmark: publication blocked
+
+> **PUBLICATION BLOCKED — INVALID BENCHMARK.** The 2026-07-12 target scored
+> 0.400 and failed its own critical gates, so clone-quality, fidelity-defense, and
+> break-even conclusions are suppressed. Acquisition was modeled at $1.50; no
+> x402 acquisition payments settled. Unblock only after
+> `spikes/clone-economics` produces a valid N=100 result with committed normalized
+> evidence and three live-adapter-confirmed independent distillation seeds.
 
 **Target audience:** business readers broadly — the moat lesson travels beyond the ICP.
 
 ### Post text
 
-> Last week I paid $1.58 to steal my own product.
+> We ran a six-example clone-economics pilot against our own hosted Skill.
 >
-> The product is a hosted AI skill — expertise packaged as software, metered per use. You send a request, you get the output. You never see the skill itself.
+> The provider calls were live. The acquisition price was not: six examples at
+> $0.25 each contributed a modeled $1.50, no x402 acquisition payments settled,
+> and the measured distillation-provider cost was about $0.03. The resulting
+> $1.58 attacker-build figure is therefore a modeled lower bound that excludes
+> labor and several failed setup attempts, not money paid for six Invocations.
 >
-> The obvious attack: buy enough outputs, train a copycat on them, stop paying. So I ran the attack on myself.
+> More importantly, the benchmark target failed its own acceptance gate. That
+> invalidates any conclusion about whether the clone failed, whether fidelity is
+> a defense, or where break-even lands. We preserved the run as historical
+> evidence and blocked this post rather than promote an answer the evaluator
+> could not support.
 >
-> Six paid runs. $1.58 total (play money on a public test network, but the ratios are what matter). The distillation step — turning those outputs into a working clone — cost three cents.
->
-> The copying was over 40x cheaper than the buying, and the buying was under two dollars.
->
-> Then the clone failed. All six held-out fidelity checks. Zero passes. It resembled my skill the way a wax figure resembles a person.
->
-> Here's the uncomfortable math anyway. I modeled the break-even: if a clone ever DOES pass, it pays for itself in 8 invocations. Eight. Cost is not a moat. It never was — not for skills, not for playbooks, not for anything made of text.
->
-> Honest caveat: six samples is a small test. Whether a clone passes at 600 or 6,000 samples is unknown, and the published write-up says so instead of pretending otherwise.
->
-> The business lesson survives the caveat. If your defense is "copying is expensive," you don't have a defense. What held up wasn't price — it was fidelity (the parts of a skill that never show up in any single output) and the fact that a live skill keeps evolving while a clone is a photograph of it.
->
-> That's true of your company's internal expertise too, whether or not you ever touch my product.
->
-> Full numbers and method in the first comment.
+> The next admissible result requires at least 30 held-out fixtures and a
+> preregistered N=6/25/50/100 sweep with three live-adapter-confirmed independent
+> distillation seeds.
+> No high-N result exists yet.
 
 ### First comment
 
-> The clone-attack harness, raw numbers, and all six fidelity gates are in the open-source repo: https://github.com/Aznatkoiny/skill-asset-protocol
+> The clone-attack harness, historical numbers, and invalid benchmark target are in the open-source repo: https://github.com/Aznatkoiny/skill-asset-protocol
 >
-> The skill it failed to clone is live (testnet, play money): https://neverhandedover.com
+> The hosted Skill used by the pilot is live (testnet, play money): https://neverhandedover.com
 
 ### Posting context
 
-2–4 days after Post 1, mid-week morning; this hook stands alone, so it's the best post of the five for reaching past the existing network.
+Do not publish until the gate above is satisfied and a human approves revised copy.
 
 ---
 
