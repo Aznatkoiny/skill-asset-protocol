@@ -487,12 +487,20 @@ const branchingClaims = () => ({
 });
 
 function assertBalanced(result, expectedSourceAccount, grossAtomic) {
-  const debitTotal = result.journalEntries.reduce((sum, entry) => sum + entry.amountAtomic, 0n);
-  const creditTotal = result.journalEntries.reduce((sum, entry) => sum + entry.amountAtomic, 0n);
+  const debits = result.journalEntries.map((entry) => ({
+    accountId: entry.debitAccountId,
+    amountAtomic: entry.amountAtomic,
+  }));
+  const credits = result.journalEntries.map((entry) => ({
+    accountId: entry.creditAccountId,
+    amountAtomic: entry.amountAtomic,
+  }));
+  const debitTotal = debits.reduce((sum, entry) => sum + entry.amountAtomic, 0n);
+  const creditTotal = credits.reduce((sum, entry) => sum + entry.amountAtomic, 0n);
   assert.equal(debitTotal, grossAtomic);
   assert.equal(creditTotal, grossAtomic);
-  assert.ok(result.journalEntries.every((entry) => entry.debitAccountId === expectedSourceAccount));
-  assert.ok(result.journalEntries.every((entry) => entry.creditAccountId && entry.amountAtomic >= 0n));
+  assert.ok(debits.every((entry) => entry.accountId === expectedSourceAccount));
+  assert.ok(credits.every((entry) => entry.accountId && entry.amountAtomic >= 0n));
 }
 
 test('152-case external matrix conserves gross across costs, claims, ancestry, and rounding', () => {
@@ -555,27 +563,38 @@ test('152-case external matrix conserves gross across costs, claims, ancestry, a
 
 test('20-case internal matrix conserves employer gross at zero, dust, and large amounts', () => {
   let cases = 0;
-  for (const grossAtomic of [0n, 1n, 2n, 250_001n, 1_000_003n]) {
-    const third = grossAtomic / 3n;
-    const partitions = [
-      { executionCostAtomic: 0n, protocolFeeAtomic: 0n, refundReserveAtomic: 0n },
-      { executionCostAtomic: grossAtomic, protocolFeeAtomic: 0n, refundReserveAtomic: 0n },
-      { executionCostAtomic: 0n, protocolFeeAtomic: grossAtomic, refundReserveAtomic: 0n },
-      { executionCostAtomic: third, protocolFeeAtomic: third, refundReserveAtomic: third },
-    ];
-    for (const partition of partitions) {
-      const result = allocateInternalGross({
-        grossAtomic,
-        ...partition,
-        recipientId: 'employee',
-      });
-      assert.equal(
-        result.executionCostAtomic + result.protocolFeeAtomic
-          + result.refundReserveAtomic + result.invocationAwardAtomic,
-        grossAtomic,
-      );
-      assertBalanced(result, 'employer:invocation-gross', grossAtomic);
-      cases += 1;
+  for (const grossAtomic of [0n, 1n, 2n, 250_001n]) {
+    for (const executionCostAtomic of [0n, 1n]) {
+      for (const protocolFeeAtomic of [0n, 1n]) {
+        for (const refundReserveAtomic of [0n, 1n]) {
+          if (executionCostAtomic + protocolFeeAtomic + refundReserveAtomic > grossAtomic) {
+            continue;
+          }
+          const result = allocateInternalGross({
+            grossAtomic,
+            executionCostAtomic,
+            protocolFeeAtomic,
+            refundReserveAtomic,
+            recipientId: 'employee',
+          });
+          assert.equal(
+            result.executionCostAtomic + result.protocolFeeAtomic
+              + result.refundReserveAtomic + result.invocationAwardAtomic,
+            grossAtomic,
+          );
+          assertBalanced(result, 'employer:invocation-gross', grossAtomic);
+          const awardEntries = result.journalEntries.filter(
+            (entry) => entry.category === 'invocation-award',
+          );
+          assert.deepEqual(awardEntries, [{
+            category: 'invocation-award',
+            debitAccountId: 'employer:invocation-gross',
+            creditAccountId: 'employee:employee',
+            amountAtomic: result.invocationAwardAtomic,
+          }]);
+          cases += 1;
+        }
+      }
     }
   }
   assert.equal(cases, 20);
