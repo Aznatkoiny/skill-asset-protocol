@@ -90,8 +90,12 @@ function decodeSignature(value, label) {
 }
 
 function trustedKey(map, keyId, label) {
-  if (map === null || typeof map !== 'object' || Array.isArray(map)) {
-    throw new Error(`${label} trust map must be an object`);
+  if (map === null || typeof map !== 'object' || Array.isArray(map)
+      || Object.getPrototypeOf(map) !== Object.prototype) {
+    throw new Error(`${label} trust map must be a plain object`);
+  }
+  if (!Object.hasOwn(map, keyId)) {
+    throw new Error(`${label} key ID ${keyId} is not trusted`);
   }
   const key = map[keyId];
   if (typeof key !== 'string' || key.length === 0) {
@@ -154,6 +158,9 @@ function validateReceiptPayload(input) {
     atomicScale: input.atomicScale,
   })) throw new Error('receipt sequence scope does not match receipt identity');
   parseUtc(input.occurredAt, 'receipt occurredAt');
+  if (input.occurredAt.slice(0, 7) !== input.period) {
+    throw new Error(`receipt occurredAt must fall within receipt period ${input.period}`);
+  }
   for (const key of [
     'reservedAtomic', 'consumedAtomic', 'releasedAtomic', 'heldReservationAtomic',
     'protocolFeeAtomic', 'refundReserveAtomic', 'invocationAwardAtomic',

@@ -279,6 +279,19 @@ test('budget authorization validates its own effective window and policy signer 
   assert.throws(() => verifiedBudget(signer), /finance signer is not permitted/);
 });
 
+test('budget authorization window stays within its declared monthly period', () => {
+  assert.throws(() => financeFixture({
+    effectiveAt: '2026-06-30T23:59:59.999Z',
+  }), /budget effectiveAt must fall within period 2026-07/);
+  assert.throws(() => financeFixture({
+    expiresAt: '2026-08-01T00:00:00.001Z',
+  }), /budget expiresAt must not exceed period 2026-07/);
+  assert.doesNotThrow(() => financeFixture({
+    effectiveAt: '2026-07-01T00:00:00.000Z',
+    expiresAt: '2026-08-01T00:00:00.000Z',
+  }));
+});
+
 test('reservation uses exact budget and reservation revisions then kernel finalizes', () => {
   const budget = verifiedBudget();
   const reserved = reserveBudget(budget, QUOTE, {

@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
-import { createHash, generateKeyPairSync } from 'node:crypto';
+import {
+  createHash,
+  generateKeyPairSync,
+  sign as cryptoSign,
+} from 'node:crypto';
 import test from 'node:test';
 
 import { receiptSequenceScope } from '../src/receipt-ledger.mjs';
@@ -436,6 +440,70 @@ test('monthly-in-arrears rejects advancing or paying a current-period award', ()
   }), /payable advance must reference an authenticated historical receipt/);
 });
 
+test('receipt occurrence month blocks the July-to-August payable bypass', () => {
+  const signers = signerFixture();
+  const occurredAt = '2026-08-01T00:01:00.000Z';
+  const records = successRecords(1, 'late-july');
+  assert.throws(() => {
+    const receipt = signReceipt(buildInvocationReceipt({
+      invocation: {
+        ...records.invocation,
+        finalizedAt: occurredAt,
+      },
+      reservation: {
+        ...records.reservation,
+        finalizedAt: occurredAt,
+      },
+      award: {
+        ...records.award,
+        measuredAt: occurredAt,
+        earnedAt: occurredAt,
+      },
+      employerId: 'megacorp',
+      receiptSignerId: 'collar-receipt-key-2026-07',
+    }), signers.receipt.privateKey);
+    const july = signedJulyStatement(signers, [receipt], 'late-july');
+    const hash = receiptHash(receipt);
+    return buildStatement({
+      statementId: 'statement-immediate-august-payment',
+      employerId: 'megacorp', creatorId: 'sam', period: '2026-08',
+      currency: 'USD', atomicScale: 6, openingPayableAtomic: july.closingPayableAtomic,
+      receipts: [], historicalReceipts: [receipt], priorStatement: july,
+      payableAdvances: [{
+        advanceId: 'advance-immediate', receiptHash: hash,
+        amountAtomic: '2000000', advancedAt: occurredAt,
+      }],
+      reversals: [],
+      payments: [{
+        paymentId: 'payment-immediate', amountAtomic: '2000000',
+        paidAt: occurredAt, railReference: 'simulated-immediate-payment',
+      }],
+      statementSignerId: 'collar-statement-key-2026-07',
+    });
+  }, /receipt occurredAt must fall within receipt period 2026-07/);
+});
+
+test('receipt verification rejects a correctly signed occurrence outside its period', () => {
+  const signers = signerFixture();
+  const valid = signedSuccess(signers, 1, 'verification-period');
+  const { signature: _signature, ...unsigned } = valid;
+  const mismatched = {
+    ...unsigned,
+    occurredAt: '2026-08-01T00:01:00.000Z',
+  };
+  const mismatchedSigned = {
+    ...mismatched,
+    signature: cryptoSign(
+      null,
+      new TextEncoder().encode(JSON.stringify(mismatched)),
+      signers.receipt.privateKey,
+    ).toString('base64'),
+  };
+  assert.throws(() => verifyReceipt(mismatchedSigned, {
+    trustedReceiptSigners: signers.receiptTrust,
+  }), /receipt occurredAt must fall within receipt period 2026-07/);
+});
+
 test('receipt and statement verification reject RSA-512 and private-key trust material', () => {
   const signers = signerFixture();
   const rsa = generateKeyPairSync('rsa', { modulusLength: 512 });
@@ -469,6 +537,43 @@ test('receipt and statement verification reject RSA-512 and private-key trust ma
   assert.throws(() => verifyReceipt(receipt, {
     trustedReceiptSigners: { 'collar-receipt-key-2026-07': privatePem },
   }), /public SPKI PEM/);
+});
+
+test('receipt verification rejects inherited signer-map entries', () => {
+  const signers = signerFixture();
+  const receipt = signedSuccess(signers, 1, 'inherited-receipt-key');
+  const inheritedTrust = Object.create({
+    'collar-receipt-key-2026-07': signers.receipt.publicKey.export({
+      type: 'spki', format: 'pem',
+    }),
+  });
+  assert.throws(() => verifyReceipt(receipt, {
+    trustedReceiptSigners: inheritedTrust,
+  }), /receipt signer trust map must be a plain object/);
+});
+
+test('statement verification does not trust a prototype-polluted empty signer map', () => {
+  const signers = signerFixture();
+  const receipt = signedSuccess(signers, 1, 'inherited-statement-key');
+  const unsigned = buildStatement({
+    statementId: 'statement-inherited-key', employerId: 'megacorp', creatorId: 'sam',
+    period: '2026-07', currency: 'USD', atomicScale: 6, openingPayableAtomic: '0',
+    receipts: [receipt], payableAdvances: [], reversals: [], payments: [],
+    statementSignerId: 'collar-statement-key-2026-07',
+  });
+  const signed = signStatement(unsigned, signers.statement.privateKey);
+  Object.prototype['collar-statement-key-2026-07'] = signers.statement.publicKey.export({
+    type: 'spki', format: 'pem',
+  });
+  try {
+    assert.throws(() => verifyStatement(signed, {
+      signedReceipts: [receipt],
+      trustedReceiptSigners: signers.receiptTrust,
+      trustedStatementSigners: {},
+    }), /statement signer key ID collar-statement-key-2026-07 is not trusted/);
+  } finally {
+    delete Object.prototype['collar-statement-key-2026-07'];
+  }
 });
 
 test('August can authenticate a July award without recounting July economics', () => {

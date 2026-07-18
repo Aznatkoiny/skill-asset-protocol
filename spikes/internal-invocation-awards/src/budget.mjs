@@ -9,6 +9,7 @@ import {
   deepFreeze,
   fromAtomic,
   parseUtc,
+  periodEndExclusive,
   policyHash,
   requireExactKeys,
   sumAtomic,
@@ -58,6 +59,13 @@ function decodeSignature(value) {
   return bytes;
 }
 
+function periodBounds(period) {
+  return {
+    start: parseUtc(`${period}-01T00:00:00.000Z`, 'budget period start'),
+    end: parseUtc(periodEndExclusive(period, 'budget period'), 'budget period end'),
+  };
+}
+
 function validateUnsignedAuthorization(input) {
   requireExactKeys(input, BUDGET_AUTHORIZATION_KEYS, 'budget authorization');
   if (input.schemaVersion !== 1) throw new Error('budget authorization schemaVersion must equal 1');
@@ -77,6 +85,13 @@ function validateUnsignedAuthorization(input) {
   const effectiveAt = parseUtc(input.effectiveAt, 'budget effectiveAt');
   const expiresAt = parseUtc(input.expiresAt, 'budget expiresAt');
   if (expiresAt <= effectiveAt) throw new Error('budget expiresAt must follow effectiveAt');
+  const bounds = periodBounds(input.period);
+  if (effectiveAt < bounds.start || effectiveAt >= bounds.end) {
+    throw new Error(`budget effectiveAt must fall within period ${input.period}`);
+  }
+  if (expiresAt > bounds.end) {
+    throw new Error(`budget expiresAt must not exceed period ${input.period}`);
+  }
   return cloneFrozen(input);
 }
 

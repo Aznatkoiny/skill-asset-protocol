@@ -28,6 +28,7 @@ import {
   fromAtomic,
   parseExecutorOutcome,
   parseUtc,
+  periodEndExclusive,
   requireExactKeys,
   skillRegistrationKey,
   toAtomic,
@@ -193,12 +194,19 @@ function invocationEvent(type, invocationId, occurredAt, details = {}) {
   });
 }
 
+function requireActiveBudgetPeriod(budget, now) {
+  if (budget.period !== now.slice(0, 7)) {
+    throw new Error('Invocation is outside the active employer budget period');
+  }
+}
+
 function effectiveCredentialExpiry(requested, quote, policy, budget) {
   const candidates = [
     requested,
     quote.expiresAt,
     policy.expiresAt,
     budget.authorization.expiresAt,
+    periodEndExclusive(budget.period),
   ];
   for (const [index, candidate] of candidates.entries()) {
     parseUtc(candidate, `credential bound ${index}`);
@@ -488,10 +496,10 @@ export async function authorizeInternalInvocation(input) {
     const validatedPolicy = validatePolicy(policy, now);
     const quote = validateQuote(input.quote, validatedPolicy, now);
     const registration = resolveActiveRegistration(current, quote, validatedPolicy, now);
-    if (current.budget.policyHash !== quote.policyHash
-        || current.budget.period !== now.slice(0, 7)) {
+    if (current.budget.policyHash !== quote.policyHash) {
       throw new Error('quote is outside the active employer budget');
     }
+    requireActiveBudgetPeriod(current.budget, now);
     if (current.budget.revision !== input.expectedBudgetRevision) {
       throw new Error(
         `stale budget revision: expected ${input.expectedBudgetRevision}, received ${current.budget.revision}`,
@@ -774,6 +782,7 @@ export async function executeAuthorizedInvocation(input) {
 
   const started = await input.store.transact(initial.revision, (current) => {
     const now = engineNow(current);
+    requireActiveBudgetPeriod(current.budget, now);
     const policy = assertTrustedState(current, now);
     const quote = validateQuote(input.quote, policy, now);
     const invocation = current.invocations[quote.invocationId];

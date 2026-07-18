@@ -84,6 +84,17 @@ export function sumAtomic(values) {
   return values.reduce((sum, value) => sum + toAtomic(value), 0n);
 }
 
+export function periodEndExclusive(period, label = 'period') {
+  if (typeof period !== 'string' || !/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) {
+    throw new Error(`${label} must be YYYY-MM`);
+  }
+  const [year, month] = period.split('-').map(Number);
+  const end = new Date(0);
+  end.setUTCFullYear(year, month, 1);
+  end.setUTCHours(0, 0, 0, 0);
+  return end.toISOString();
+}
+
 export function receiptSequenceScope({ employerId, creatorId, currency, atomicScale }) {
   for (const [value, label] of [
     [employerId, 'receipt employerId'],

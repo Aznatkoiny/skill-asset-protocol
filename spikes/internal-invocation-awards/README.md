@@ -15,8 +15,10 @@ protected ubiquitous language, PRD, or ADR corpus.
 The example employer signs an immutable `EmployerBudgetAuthorizationV1` for a
 denomination and period. Mutable reservation, consumption, and release counters live
 in a separate `BudgetStateV1`; changing a signed authorization field invalidates its
-signature. Effective and expiry times are checked at both reservation and Execution
-start.
+signature. The signed budget's effective time must fall within its declared month and
+its expiry may reach, but never pass, the next-month boundary. Execution credentials
+are capped at that boundary, and both reservation and Execution start require the
+trusted clock to remain in the declared budget period.
 
 The accounting flow is:
 
@@ -76,7 +78,9 @@ Version 1 accepts only `paymentSchedule: monthly_in_arrears`. A current-period a
 remains earned and non-payable for that period. A payable advance must reference the
 same authenticated receipt through a later statement's historical-receipt set and
 prior signed statement chain; a current-period receipt cannot be advanced or paid
-early.
+early. Receipt creation and verification also require `occurredAt` to fall within the
+receipt's declared period, so a late Execution cannot be backdated into an earlier
+month and immediately treated as historical.
 
 The engine is provisioned with an immutable `(skillId, skillVersionHash)` registration
 map that binds the canonical Creator and employer. Missing, expired, revoked,
@@ -149,14 +153,16 @@ totals, kernel journal entries, and absence of an external settlement.
 
 Every verifier accepts only a canonical Ed25519 SPKI public key. RSA, private-key PEM,
 noncanonical PEM, and a public PEM with appended material fail closed; only canonical
-public PEM is retained in engine state. Engine provisioning signs a random,
-domain-separated challenge and verifies it with the configured receipt public key
-before any Invocation can start. Each receipt is still independently verified, its
-caller-supplied hash is recomputed over the exact strict signed-receipt schema, and
-hash reuse is rejected across receipt IDs. If a correctly provisioned signer later
-fails or misbehaves after the executor starts, the terminal transaction commits no
-award or receipt and leaves the Invocation in `executing` for operator reconciliation;
-the executor is not run again automatically.
+public PEM is retained in engine state. Receipt and statement verifier trust maps must
+be ordinary plain objects, and a signer ID resolves only through an own map entry;
+inherited or prototype-polluted keys are never trusted. Engine provisioning signs a
+random, domain-separated challenge and verifies it with the configured receipt public
+key before any Invocation can start. Each receipt is still independently verified,
+its caller-supplied hash is recomputed over the exact strict signed-receipt schema,
+and hash reuse is rejected across receipt IDs. If a correctly provisioned signer
+later fails or misbehaves after the executor starts, the terminal transaction commits
+no award or receipt and leaves the Invocation in `executing` for operator
+reconciliation; the executor is not run again automatically.
 
 Employer and employee verify the same signed receipt bytes. They also verify a
 separate whole-statement signature that binds:

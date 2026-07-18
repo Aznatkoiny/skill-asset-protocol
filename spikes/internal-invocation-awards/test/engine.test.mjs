@@ -645,6 +645,41 @@ test('active Skill registration and signed budget trust are re-established befor
   assert.equal(calls, 0);
 });
 
+test('July authorization is capped at month end and cannot execute in August', async () => {
+  const augustStart = '2026-08-01T00:00:00.000Z';
+  const septemberStart = '2026-09-01T00:00:00.000Z';
+  const fx = fixture({
+    policyOverrides: { expiresAt: septemberStart },
+    registrations: [registration({ expiresAt: septemberStart })],
+  });
+  const q = makeQuote(fx.activePolicy, 'cross-period', {
+    expiresAt: '2026-08-02T00:00:00.000Z',
+  });
+  const authorized = await authorize(fx, q, {
+    credentialExpiresAt: q.expiresAt,
+    principalAttestation: principalAttestation(fx, q, { expiresAt: q.expiresAt }),
+  });
+  assert.equal(authorized.credentialPayload.expiresAt, augustStart);
+
+  fx.clock.now = '2026-08-01T00:01:00.000Z';
+  let executorCalls = 0;
+  await assert.rejects(() => executeAuthorizedInvocation({
+    store: fx.store,
+    quote: q,
+    credential: signCredential(authorized.credentialPayload, fx.authorizer.privateKey),
+    executor: async () => {
+      executorCalls += 1;
+      return { kind: 'succeeded', executionCostAtomic: '700000', outputHash: OUTPUT_HASH };
+    },
+  }), /outside the active employer budget period/);
+  assert.equal(executorCalls, 0);
+  const snapshot = fx.store.snapshot();
+  assert.equal(snapshot.invocations[q.invocationId].state, 'authorized');
+  assert.equal(snapshot.reservations[authorized.reservation.reservationId].state, 'reserved');
+  assert.equal(Object.keys(snapshot.receipts).length, 0);
+  assert.equal(Object.keys(snapshot.awards).length, 0);
+});
+
 test('canonical policy bytes are bound through budget, quote, credential, Invocation, award, and receipt', async () => {
   const fx = fixture();
   const mutated = {
