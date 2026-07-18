@@ -70,11 +70,25 @@ function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
-async function fetchInlineMetadata(input: string | URL | Request): Promise<Response> {
-  const url = new URL(String(input));
-  assert.equal(url.origin, "https://httpbin.org");
-  assert.match(url.pathname, /^\/base64\//);
-  return new Response(Buffer.from(url.pathname.slice("/base64/".length), "base64url"));
+function fakePinataFetcher(): typeof fetch {
+  const pinned = new Map<string, Buffer>();
+  let uploadCount = 0;
+  return async (input, init) => {
+    const url = String(input);
+    if (init?.method === "POST") {
+      assert.equal(url, "https://uploads.pinata.cloud/v3/files");
+      assert.ok(init.body instanceof FormData);
+      const file = init.body.get("file");
+      assert.ok(file instanceof Blob);
+      uploadCount += 1;
+      const cid = `bafyabsolute${uploadCount}`;
+      pinned.set(`https://gateway.pinata.cloud/ipfs/${cid}`, Buffer.from(await file.arrayBuffer()));
+      return Response.json({ data: { cid } });
+    }
+    const bytes = pinned.get(url);
+    assert.ok(bytes, `unexpected metadata fetch ${url}`);
+    return new Response(bytes.toString("utf8"));
+  };
 }
 
 async function sha256(path: string): Promise<`0x${string}`> {
@@ -516,7 +530,10 @@ test("the real metadata provider accepts an absolute demo artifact path at the j
   const chain = new CrashableChain();
   chain.stopAfterRoot = true;
   const store = collectionOnlyStore();
-  const metadata = new HttpMetadataProvider({ fetcher: fetchInlineMetadata });
+  const metadata = new HttpMetadataProvider({
+    fetcher: fakePinataFetcher(),
+    pinataJwt: "fixture-token",
+  });
 
   await assert.rejects(
     runDemo({ wallet: WALLET, chain, metadata, store, journal: new MemoryJournal() }),
