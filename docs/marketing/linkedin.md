@@ -182,15 +182,24 @@ Week 2–3, mid-week; resonates with founders and diligence-minded operators, so
 >
 > Phase 3 — the live endpoint. The manifesto site IS the system. POST without payment and you get an actual HTTP 402. Pay $0.25 in testnet USDC — play money, deliberately — and the hosted skill runs and streams you the output. Never the skill.
 >
-> Numbers from the working demo on Base Sepolia (July 12; distribution re-measured July 15 across 48 settled calls and two model providers), one wallet paying per model call AND per skill invocation:
+> Numbers from the first working demo on Base Sepolia (2026-07-12; testnet,
+> play money), one wallet paying per model call AND per Skill Invocation:
 >
-> — Ledger: $0.041 for the model's planning call, $0.25 for the skill invocation
-> — Split: $0.24375 credited to the creator, $0.00625 to the treasury
-> — On-chain balances reconciled to the cent
-> — Payment overhead: p50 731ms / p95 1206ms per call (n=48 settled calls; the first run's n=1 read was ~781ms)
+> — Ledger (testnet USDC, play money): $0.041 for the model's planning call,
+> $0.25 for the Skill Invocation
+> — First instrumented payment-overhead read: ~781 ms (n=1, 2026-07-12;
+> Base Sepolia testnet, play money)
 > — Hosted-agent cold start: ~2.5s to first token
 >
-> That 731ms median is honest and it isn't free. Neither is the cold start. Both are in the docs, because you'd find them in your first hour anyway.
+> The aggregate testnet USDC payment to the seller `payTo` address reconciled
+> on-chain. The Creator/treasury amounts were off-chain reference-ledger credits;
+> they were not separate on-chain transfers.
+>
+> The 2026-07-15 overhead distribution is historical but not reproducible from a
+> clean checkout because normalized per-call samples were not retained. Its sample
+> count, p50, and p95 are quarantined from publication; see
+> `spikes/pi-wielder/evidence/2026-07-15-overhead/manifest.json`. No replacement
+> measurement has been run.
 >
 > Everything is Apache-2.0: the collar that holds the sole API key, the metering ledger, the clone-attack harness we ran against ourselves, the kill-criteria, the not-validated list.
 >

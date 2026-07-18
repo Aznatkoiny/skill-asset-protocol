@@ -39,18 +39,29 @@ above is satisfied and a human approves revised copy.
 > and splits the metered revenue to a co-held claim. Carta for AI work artifacts. The
 > marketplace angle is future optionality, not the product.
 >
-> What we measured (testnet, 2026-07-12): one wallet paid per model call AND per skill
-> invocation over x402. Ledger: claude/plan $0.041, skill $0.25 → creator $0.24375 /
-> treasury $0.00625, reconciled against on-chain balances to the cent. Payment overhead
-> p50 731ms / p95 1206ms per call (n=48 settled calls, both model providers);
-> hosted-agent cold start ~2.5s to first token.
+> What we measured (testnet, 2026-07-12): one wallet paid per model call AND per Skill
+> Invocation over x402. The first instrumented payment-overhead read was ~781 ms
+> (n=1, Base Sepolia testnet, play money); hosted-agent cold start was ~2.5s to
+> first token in a separate measurement. Ledger (testnet USDC, play money):
+> claude/plan $0.041, Skill $0.25 → Creator $0.24375 / treasury $0.00625.
+>
+> The aggregate testnet USDC payment to the seller `payTo` address reconciled
+> on-chain. The Creator/treasury amounts were off-chain reference-ledger credits;
+> they were not separate on-chain transfers.
+>
+> The 2026-07-15 overhead distribution is historical but not reproducible from a
+> clean checkout because normalized per-call samples were not retained. Its sample
+> count, p50, and p95 are quarantined from publication; see
+> `spikes/pi-wielder/evidence/2026-07-15-overhead/manifest.json`. No replacement
+> measurement has been run.
 >
 > The historical N=6 run used a modeled $1.50 acquisition cost and measured about
 > $0.03 of distillation-provider cost; no acquisition payment settled. Its target
 > failed the benchmark, so clone quality, fidelity defense, and break-even are
 > unknown. Publication remains blocked pending a valid preregistered N=100 run.
 >
-> We also documented two live failure modes: 10 calls that settled then 500'd ($0.87 paid,
+> We also documented two live failure modes: 10 calls that settled then 500'd ($0.87 of
+> testnet USDC play money paid,
 > no refund path in x402 v1 — our bug, published), and 1 of 50 that settled on-chain yet
 > returned 402 — that one caught only by cent-exact wallet reconciliation.
 >
@@ -92,10 +103,15 @@ Post these as replies, verbatim or trimmed. Never argue tone; concede fast and l
 > Stripe's card-and-account rails can't do machine-to-machine 25-cent calls without an
 > onboarding relationship (Stripe itself now ships an x402 integration).
 > Provenance: fork ancestry lives on a neutral registry (Story Protocol) that neither
-> employer nor employee administers. And the receipts in the demo are publicly auditable —
-> that's how we reconciled the ledger to the cent. We're explicit in the docs that the
-> idealized atomic loop does not compose (wrong chain, wrong token, wrong primitive) and
-> settlement is two-leg and eventually consistent.
+> employer nor employee administers.
+>
+> The aggregate testnet USDC payment to the seller `payTo` address reconciled
+> on-chain. The Creator/treasury amounts were off-chain reference-ledger credits;
+> they were not separate on-chain transfers.
+>
+> We're explicit in the docs that the idealized atomic loop does not compose
+> (wrong chain, wrong token, wrong primitive) and settlement is two-leg and
+> eventually consistent.
 
 **Q3. "A skill is a markdown file. Prompts are worthless; the model does the work."**
 
@@ -137,8 +153,9 @@ monitored monthly; platforms won't ship 409A-structured co-held comp instruments
 
 ## 2. Demo clip script (45–60s screen recording, no voiceover, big captions)
 
-One continuous story: read → blocked → pay → output → receipt → split → thesis. Captions in
-a large mono face, bottom third, one sentence max. Terminal at large font size (18pt+).
+One continuous story: read → blocked → pay → output → receipt → off-chain split credits →
+thesis. Captions in a large mono face, bottom third, one sentence max. Terminal at large
+font size (18pt+).
 Target total: **57s**.
 
 | # | Sec | On screen | Caption text |
@@ -148,15 +165,16 @@ Target total: **57s**.
 | 3 | 13–21 (8s) | Same terminal: client retries with x402 payment; a `$0.25` testnet USDC payment line and settle confirmation appear | `Pay $0.25 — testnet USDC. Play money.` |
 | 4 | 21–31 (10s) | Skill output streams into the terminal, token by token (real speed; ~2.5s pause to first token left in — it is honest and reads as live) | `You get the output. Never the skill.` |
 | 5 | 31–40 (9s) | Browser: the transaction on sepolia.basescan.org — highlight the transfer to the payTo address, cursor circles the amount | `Every invocation is an on-chain receipt.` |
-| 6 | 40–49 (9s) | The ledger, zoomed on one line: `claude/plan $0.041 · skill $0.25 → creator $0.24375 / treasury $0.00625` — then a second frame: on-chain balances matching | `Metered, split, reconciled to the cent.` |
+| 6 | 40–49 (9s) | BaseScan, zoomed on the aggregate testnet USDC transfer to the seller `payTo` address; then the off-chain reference-ledger Creator/treasury credits | `Seller payment on-chain. Split credits off-chain.` |
 | 7 | 49–57 (8s) | Cut to black. Two lines of text, then URLs fade in: `neverhandedover.com` / `github.com/Aznatkoiny/skill-asset-protocol` | `The artifact was never handed over.` (line 2, smaller: `Testnet demo. Open source, Apache-2.0.`) |
 
 Production notes:
 - No music required; if any, something metronomic and quiet.
 - Shots 2–4 are one unbroken terminal take — do not cut between 402 and output; the
   no-cut is the proof.
-- Keep real latency visible (the ~731ms-median payment beat, the ~2.5s cold start). Speeding it up
-  would be the only dishonest frame in the clip.
+- If the 2026-07-12 take is used, keep its ~781 ms instrumented payment beat
+  (n=1, Base Sepolia testnet, play money) and the ~2.5s cold start visible. Do not
+  caption it with the quarantined 2026-07-15 distribution.
 - Shot 6's caption carries the compliance load with shot 3: "testnet / play money" must be
   on screen in both the payment shot and the closing card.
 - Export 1080p or better; the basescan and ledger text must be legible on a phone.
@@ -225,13 +243,14 @@ Phase-0 window, we do not build Phase 1 on spec.
 > private — its repo link 404'd for readers from Monday until the flip on Wed 07-15. No
 > pre-flight was logged and this table was not started on time; the rows below are
 > reconstructed from verifiable sources, with "not logged" where nothing was recorded.
-> Day 0's ~$0.328 of gateway-debugging spend is not logged per-call; on-chain receipts
+> Day 0's ~$0.328 of testnet USDC play-money gateway-debugging spend is not logged
+> per-call; on-chain receipts
 > are pullable from basescan retroactively. All on-chain invocations to date are our own
 > wallet (self-traffic): unique external payers = 0.
 
 | Day | Date | Demo invocations (count / unique payers) | Repo stars / forks / clones | Conversations started | Critiques we couldn't answer |
 |---|---|---|---|---|---|
-| — | Sun 07-12 | 3 / 1 (self — first real-network run: 2 model legs + 1 skill, $0.332, reconciled on-chain) | n/a (repo private) | 0 | 0 |
-| 0 | Mon 07-13 | self only, ~$0.328 (gateway debugging; not logged per-call) | n/a (repo private — Post 1 link 404) | not logged | not logged |
+| — | Sun 2026-07-12 | 3 / 1 (self — first real-network run: 2 model legs + 1 Skill, $0.332 of testnet USDC play money; aggregate seller payment reconciled on-chain) | n/a (repo private) | 0 | 0 |
+| 0 | Mon 07-13 | self only, ~$0.328 of testnet USDC play money (gateway debugging; not logged per-call) | n/a (repo private — Post 1 link 404) | not logged | not logged |
 | 1 | Tue 07-14 | 0 | n/a (repo private) | not logged | not logged |
-| 2 | Wed 07-15 | 57 settlements / 1 payer (all self): 1 smoke + 7 pi session + 48 bench + 1 settled-but-rejected; $3.211 total, wallet 19.340 → 16.129 reconciled to the cent | flip today — baseline 0 / 0 / 0; first insights readable tomorrow | fill at EOD | fill at EOD |
+| 2 | Wed 2026-07-15 | Self-traffic only. The overhead batch's sample count and distribution are quarantined under the historical tombstone; separate retained events include 1 smoke, 7 pi-session calls, and 1 settled-but-rejected call. Aggregate wallet reconciliation is not normalized latency evidence. | flip today — baseline 0 / 0 / 0; first insights readable tomorrow | fill at EOD | fill at EOD |

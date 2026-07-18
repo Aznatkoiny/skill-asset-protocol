@@ -90,11 +90,11 @@ verified live, LinkedIn Post 1 out — no X thread, no HN.
 | 0 | Mon 07-13 | *(done)* LinkedIn Post 1 out, pinned. Repo flip did NOT happen — slip recorded. |
 | 1 | Tue 07-14 | *(done)* Silent. x402 Foundation launches under the Linux Foundation — this week's reply-routine entry point. |
 | **2** | **Wed 07-15 (today)** | ① **Repo public FIRST** (pre-flight passed; verify from a logged-out browser after the flip). ② Reply to any Post-1 comments that hit the 404 — factual correction in a reply, never silent. ③ **BLOCKED:** do not publish clone-economics copy. The N=6 target failed its own acceptance gate; the required valid N=100 evidence bundle does not exist. ④ **X artifact #1**: the raw 402 from the LIVE endpoint (`docs/marketing/artifacts/raw-402-response-live.txt` — production URL + "output only, never the skill" in the payload); tweet text below. ⑤ Reply routine starts (x402-Foundation news as the entry; measured numbers, never a pitch). ⑥ Metrics table started (`hn-and-demo.md` §3 daily log). |
-| 3 | Thu 07-16 | X artifact #2: the ledger line reconciled on-chain to the cent (testnet, play money). Replies. |
+| 3 | Thu 07-16 | X artifact #2: the aggregate seller `payTo` transfer reconciled on-chain; the Creator/treasury credits remained off-chain (testnet, play money). Replies. |
 | 4 | Fri 07-17 | X artifact #3: "What we have NOT validated" page, screenshotted. Light day. |
 | 5–6 | Sat–Sun 07-18/19 | **Rest days** (Sun: optional 15 min of replies if a good conversation is live). |
 | 7 | Mon 07-20 | X artifact #4: the kill-criteria arithmetic that killed education mode. Replies. |
-| 8 | Tue 07-21 | **LinkedIn Post 3** (design-partner ask) ~8:30am ET + targeted reshares. X artifact #5: the n=48 overhead distribution (new artifact, x.md §4). |
+| 8 | Tue 07-21 | **LinkedIn Post 3** (design-partner ask) ~8:30am ET + targeted reshares. **BLOCKED:** do not publish the historical overhead distribution; use the 2026-07-15 quarantine status below. |
 | 9 | Wed 07-22 | **Record the demo clip** (`hn-and-demo.md` §2) — one week of live traffic since the flip; verify basescan links. X artifact #6: pay-then-fail receipt. Prep ecosystem tag reply; hand-verify org @handles. |
 | 10 | Thu 07-23 | **X launch thread** (x.md §1, amended numbers) late morning, demo clip on tweet 1, pin, ecosystem tag reply first. Hours 1–3 live in replies. |
 | 11 | Fri 07-24 | Thread aftercare. X spacer: the pi session ledger (single tweet — 48h thread spacing holds). |
@@ -104,11 +104,28 @@ verified live, LinkedIn Post 1 out — no X thread, no HN.
 | 16 | Wed 07-29 | HN aftercare (hourly sweeps; log unanswerable critiques as corpus defects). X spacer: settled-but-rejected reconciliation — the honesty artifact while HN eyes are on the account. |
 | 17 | Thu 07-30 | **BLOCKED:** do not publish clone-economics copy. The N=6 target failed its own acceptance gate; the required valid N=100 evidence bundle does not exist. **LinkedIn Post 4** (kill-criteria). **Day-7-after-launch-thread review**: count conversations that could become a design-partner LOI — the one derived number that matters. |
 
+**Historical overhead artifact status:**
+
+The 2026-07-15 overhead distribution is historical but not reproducible from a
+clean checkout because normalized per-call samples were not retained. Its sample
+count, p50, and p95 are quarantined from publication; see
+`spikes/pi-wielder/evidence/2026-07-15-overhead/manifest.json`. No replacement
+measurement has been run.
+
+**Accounting boundary for ledger artifacts:**
+
+The aggregate testnet USDC payment to the seller `payTo` address reconciled
+on-chain. The Creator/treasury amounts were off-chain reference-ledger credits;
+they were not separate on-chain transfers.
+
 Constraint check: repo flip before anything that links to it ✓ · ≥48h between threads (07-23 / 07-28 / 07-30) ✓ · launch thread + HN on Tue/Thu ✓ · weekends rest ✓ · demo clip after a week of live traffic ✓.
 
 **Today's X artifact #1 tweet** (attach the live-endpoint 402 capture; ~250 chars, verify at post time; single tweet, no thread, no link — the artifact is the content):
 
-> POST to a paid endpoint without paying and this is the reply: HTTP 402, with the terms machine-readable in the body — amount, network, asset, payTo. No API key, no account; the settlement receipt becomes the auth. Base Sepolia testnet — play money.
+> POST to a paid endpoint without paying and this is the reply: HTTP 402, with
+> machine-readable terms — amount, network, asset, payTo. The retry carries a
+> signed `X-PAYMENT` authorization; the settlement transaction hash is evidence
+> returned afterward, not the retry credential. Base Sepolia testnet — play money.
 
 **Standing daily items (every non-rest day, not repeated in the table):**
 
@@ -127,7 +144,7 @@ Constraint check: repo flip before anything that links to it ✓ · ≥48h betwe
 | **−1** | Mon 07-13 (today) | Pre-flight checklist from `hn-and-demo.md` §3: LICENSE, README offline-e2e story, secrets scan, fresh-machine clone-and-run with zero keys/funds, live 402 check, both domains serving, compliance pass on every queued post. If the fresh-machine test fails, Day 0 slips — nothing else changes. |
 | **0** | Tue 07-14 | **Repo public first** (runbook step 1), verify clone-and-run from a logged-out browser. **LinkedIn Post 1** ("Never handed over", `linkedin.md`) at ~8:30am ET, link in first comment, pin to profile. X: replies only. Log day-0 measurements. |
 | **1** | Wed 07-15 | X build-in-public artifact #1: screenshot of the raw HTTP 402 response (`x.md` §4, week-2 list). Single tweet, no thread. |
-| **2** | Thu 07-16 | **BLOCKED:** do not publish clone-economics copy. The N=6 target failed its own acceptance gate; the required valid N=100 evidence bundle does not exist. X artifact #2: the ledger line, reconciled on-chain to the cent (testnet, play money). |
+| **2** | Thu 07-16 | **BLOCKED:** do not publish clone-economics copy. The N=6 target failed its own acceptance gate; the required valid N=100 evidence bundle does not exist. X artifact #2: the aggregate seller `payTo` transfer reconciled on-chain; the Creator/treasury credits remained off-chain (testnet, play money). |
 | **3** | Fri 07-17 | X artifact #3: the "What we have NOT validated" page, screenshotted. Light day otherwise. |
 | **4** | Sat 07-18 | **Rest day.** Nothing posted anywhere. No replies. |
 | **5** | Sun 07-19 | **Rest day** (light): optional 15 min of X replies if a good conversation is live; otherwise nothing. |
