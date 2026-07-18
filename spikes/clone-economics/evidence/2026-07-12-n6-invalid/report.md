@@ -1,6 +1,11 @@
 # Clone-economics evidence report
 
-INVALID_BENCHMARK_TARGET_FAILED. The target scored 0.400 and failed its critical gates, so clone quality, fidelity defense, moat, retention, break-even, and economics conclusions are suppressed. Provider execution was measured where retained; acquisition was modeled. Four earlier setup attempts have no normalized records.
+- Evidence label: HISTORICAL MIXED — INVALID BENCHMARK; acquisition MODELED
+- Verdict: INVALID_BENCHMARK_TARGET_FAILED
+- Suppression reason: INVALID_BENCHMARK_TARGET_FAILED
+- Limitations: ACQUISITION_MODELED, HISTORICAL_ATTEMPTS_INCOMPLETE
+
+## Recomputed metrics
 
 - Attempted samples: 29
 - Successful samples: 29

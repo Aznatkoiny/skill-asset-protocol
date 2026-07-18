@@ -20,6 +20,7 @@
     "sourceTimestamp": "not-recorded"
   },
   "evidenceLabel": "HISTORICAL MIXED — INVALID BENCHMARK; acquisition MODELED",
+  "executionMode": "historical",
   "experimentId": "2026-07-12-n6-invalid",
   "files": {
     "README.md": {
@@ -27,12 +28,12 @@
       "sha256": "2537c49266760dc5b1c20fa83f5dd38d1afae7a46a5a07c30bcaf0223685d52a"
     },
     "report.md": {
-      "bytes": 532,
-      "sha256": "0eb9bbe03d0599a4188c3ef421c36881caf730db11b84cbf17aa79587c81c147"
+      "bytes": 473,
+      "sha256": "c951d64edb45126386353adf0c9053817bbe4fcc58938a320f381a0ba463a44f"
     },
     "samples.jsonl": {
-      "bytes": 18424,
-      "sha256": "bba125d70aa089f45389ccfe882b1dc467169d81328dd9a9ccf309900be301d4"
+      "bytes": 19091,
+      "sha256": "beda15ac63f136e9ff413662d978ee89b005d4bdf09d4505bdee8e9faf4dffdd"
     },
     "summary.json": {
       "bytes": 629,
@@ -40,10 +41,23 @@
     }
   },
   "gitCommit": "historical-source-not-recorded",
+  "gitDirty": null,
   "liveBudget": null,
   "model": "claude-sonnet-4-6",
   "modelProvider": "Anthropic",
+  "readmeInputs": {
+    "bundlePath": "evidence/2026-07-12-n6-invalid"
+  },
   "recordedAtUtc": null,
+  "reportInputs": {
+    "evidenceLabel": "HISTORICAL MIXED — INVALID BENCHMARK; acquisition MODELED",
+    "limitations": [
+      "ACQUISITION_MODELED",
+      "HISTORICAL_ATTEMPTS_INCOMPLETE"
+    ],
+    "suppressionReason": "INVALID_BENCHMARK_TARGET_FAILED",
+    "verdict": "INVALID_BENCHMARK_TARGET_FAILED"
+  },
   "runtime": {
     "arch": "arm64",
     "node": "v22.22.0",
