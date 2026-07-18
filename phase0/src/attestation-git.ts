@@ -1,5 +1,8 @@
 import { createHash, verify as verifySignature } from "node:crypto";
 import { execFile } from "node:child_process";
+import { constants } from "node:fs";
+import { open } from "node:fs/promises";
+import { isAbsolute } from "node:path";
 
 import {
   canonicalRepositoryStatement,
@@ -14,6 +17,7 @@ import {
 } from "./attestations";
 
 export interface GitReader {
+  repositoryIdentity(repositoryPath: string): Promise<{ device: number; inode: number }>;
   commitExists(repositoryPath: string, commitSha: string): Promise<boolean>;
   readBlob(repositoryPath: string, commitSha: string, relativePath: string): Promise<Uint8Array>;
   isAncestor(repositoryPath: string, ancestor: string, descendant: string): Promise<boolean>;
@@ -24,6 +28,8 @@ export interface TrustedRepository {
   repositoryId: string;
   repositoryUrl: string;
   repositoryPath: string;
+  repositoryDevice: number;
+  repositoryInode: number;
   trustedRef: `refs/heads/${string}` | `refs/remotes/${string}`;
   permittedForgeSignerIds: readonly string[];
 }
@@ -38,13 +44,33 @@ export interface SignedRepositoryChallengeFileV1 {
   signature: `0x${string}`;
 }
 
-function runGit(args: readonly string[]): Promise<Uint8Array> {
+const MINIMAL_GIT_ENVIRONMENT = Object.freeze({
+  LANG: "C",
+  LC_ALL: "C",
+  GIT_CONFIG_NOSYSTEM: "1",
+  GIT_CONFIG_SYSTEM: "/dev/null",
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_CONFIG_COUNT: "0",
+  GIT_ATTR_NOSYSTEM: "1",
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_OPTIONAL_LOCKS: "0",
+  GIT_NO_REPLACE_OBJECTS: "1",
+  GIT_NO_LAZY_FETCH: "1",
+});
+
+const SAFE_GIT_CONFIG = [
+  "-c", "protocol.allow=never",
+  "-c", "core.fsmonitor=false",
+  "-c", "maintenance.auto=false",
+] as const;
+
+function runGit(executable: string, args: readonly string[]): Promise<Uint8Array> {
   return new Promise((resolve, reject) => {
-    execFile("git", [...args], {
+    execFile(executable, [...SAFE_GIT_CONFIG, ...args], {
       encoding: "buffer",
       maxBuffer: 16 * 1024 * 1024,
       windowsHide: true,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" },
+      env: MINIMAL_GIT_ENVIRONMENT,
     }, (error, stdout, stderr) => {
       if (error) {
         const detail = Buffer.from(stderr).toString("utf8").trim();
@@ -78,11 +104,36 @@ function validRelativePath(value: string): void {
 }
 
 export class ExecGitReader implements GitReader {
+  private readonly gitExecutable: string;
+
+  constructor(options: { gitExecutable?: string } = {}) {
+    this.gitExecutable = options.gitExecutable ?? "/usr/bin/git";
+    if (!isAbsolute(this.gitExecutable)) throw new Error("an absolute Git executable path is required");
+  }
+
+  private run(args: readonly string[]): Promise<Uint8Array> {
+    return runGit(this.gitExecutable, args);
+  }
+
+  async repositoryIdentity(repositoryPath: string): Promise<{ device: number; inode: number }> {
+    validRepositoryPath(repositoryPath);
+    const handle = await open(repositoryPath, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try {
+      const metadata = await handle.stat();
+      if (!metadata.isDirectory() || !Number.isSafeInteger(metadata.dev) || !Number.isSafeInteger(metadata.ino)) {
+        throw new Error("trusted repository filesystem identity is unavailable");
+      }
+      return { device: metadata.dev, inode: metadata.ino };
+    } finally {
+      await handle.close();
+    }
+  }
+
   async commitExists(repositoryPath: string, commitSha: string): Promise<boolean> {
     validRepositoryPath(repositoryPath);
     validObjectName(commitSha, "Git commit");
     try {
-      await runGit(["-C", repositoryPath, "cat-file", "-e", `${commitSha}^{commit}`]);
+      await this.run(["-C", repositoryPath, "cat-file", "-e", `${commitSha}^{commit}`]);
       return true;
     } catch (error) {
       const cause = (error as Error & { cause?: { code?: string | number } }).cause;
@@ -95,7 +146,7 @@ export class ExecGitReader implements GitReader {
     validRepositoryPath(repositoryPath);
     validObjectName(commitSha, "Git commit");
     validRelativePath(relativePath);
-    return runGit(["-C", repositoryPath, "show", `${commitSha}:${relativePath}`]);
+    return this.run(["-C", repositoryPath, "show", `${commitSha}:${relativePath}`]);
   }
 
   async isAncestor(repositoryPath: string, ancestor: string, descendant: string): Promise<boolean> {
@@ -103,7 +154,7 @@ export class ExecGitReader implements GitReader {
     validObjectName(ancestor, "Git ancestor");
     validObjectName(descendant, "Git descendant");
     try {
-      await runGit(["-C", repositoryPath, "merge-base", "--is-ancestor", ancestor, descendant]);
+      await this.run(["-C", repositoryPath, "merge-base", "--is-ancestor", ancestor, descendant]);
       return true;
     } catch (error) {
       const cause = (error as Error & { cause?: { code?: string | number } }).cause;
@@ -115,7 +166,7 @@ export class ExecGitReader implements GitReader {
   async remoteUrl(repositoryPath: string, remoteName: string): Promise<string> {
     validRepositoryPath(repositoryPath);
     if (remoteName !== "origin") throw new Error("only the configured origin remote may be verified");
-    const bytes = await runGit(["-C", repositoryPath, "remote", "get-url", remoteName]);
+    const bytes = await this.run(["-C", repositoryPath, "remote", "get-url", remoteName]);
     return Buffer.from(bytes).toString("utf8").trim();
   }
 }
@@ -226,6 +277,13 @@ function sha256(bytes: Uint8Array): `0x${string}` {
   return `0x${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
+async function assertTrustedRepositoryIdentity(git: GitReader, trusted: TrustedRepository): Promise<void> {
+  const identity = await git.repositoryIdentity(trusted.repositoryPath);
+  if (identity.device !== trusted.repositoryDevice || identity.inode !== trusted.repositoryInode) {
+    throw new Error("trusted repository checkout filesystem identity changed during verification");
+  }
+}
+
 async function verifyRepositorySnapshot(input: {
   event: RepositoryControlEvent;
   challengeFile: Uint8Array;
@@ -252,22 +310,31 @@ async function verifyRepositorySnapshot(input: {
   if (occurredAt < observedAt) throw new Error("repository event occurred before the forge observation");
   if (occurredAt > now.getTime() || observedAt > now.getTime()) throw new Error("repository evidence is dated in the future");
 
+  await assertTrustedRepositoryIdentity(git, trusted);
   const origin = normalizeRepositoryUrl(await git.remoteUrl(trusted.repositoryPath, "origin"));
+  await assertTrustedRepositoryIdentity(git, trusted);
   if (origin !== trusted.repositoryUrl || origin !== event.challenge.repositoryUrl || origin !== event.forgeObservation.repositoryUrl) {
     throw new Error("trusted checkout origin does not match signed repository URL");
   }
   if (!await git.commitExists(trusted.repositoryPath, event.challenge.artifactCommitSha)) throw new Error("artifact commit is absent");
+  await assertTrustedRepositoryIdentity(git, trusted);
   if (!await git.commitExists(trusted.repositoryPath, event.forgeObservation.proofCommitSha)) throw new Error("proof commit is absent");
+  await assertTrustedRepositoryIdentity(git, trusted);
   if (!await git.commitExists(trusted.repositoryPath, trusted.trustedRef)) throw new Error("configured trusted ref is absent");
+  await assertTrustedRepositoryIdentity(git, trusted);
   if (!await git.isAncestor(trusted.repositoryPath, event.challenge.artifactCommitSha, event.forgeObservation.proofCommitSha)) {
     throw new Error("proof commit does not descend from artifact commit");
   }
+  await assertTrustedRepositoryIdentity(git, trusted);
   if (!await git.isAncestor(trusted.repositoryPath, event.forgeObservation.proofCommitSha, trusted.trustedRef)) {
     throw new Error("proof commit is not reachable from the configured trusted ref");
   }
+  await assertTrustedRepositoryIdentity(git, trusted);
   const artifact = await git.readBlob(trusted.repositoryPath, event.challenge.artifactCommitSha, event.challenge.artifactPath);
+  await assertTrustedRepositoryIdentity(git, trusted);
   if (sha256(artifact) !== event.subject.artifactHash) throw new Error("registered artifact hash does not match exact Git bytes");
   const challengeBlob = await git.readBlob(trusted.repositoryPath, event.forgeObservation.proofCommitSha, event.challenge.challengePath);
+  await assertTrustedRepositoryIdentity(git, trusted);
   if (!Buffer.from(challengeBlob).equals(Buffer.from(input.challengeFile))) throw new Error("committed challenge bytes do not match the signed challenge file");
 }
 

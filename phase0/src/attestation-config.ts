@@ -10,14 +10,20 @@ export interface LocalCheckoutMapV1 {
   checkouts: Record<string, string>;
 }
 
+export interface PinnedLocalCheckout {
+  repositoryPath: string;
+  device: number;
+  inode: number;
+}
+
 interface FileMetadata {
   isFile(): boolean;
   isDirectory(): boolean;
   isSymbolicLink(): boolean;
   mode: number;
   uid: number;
-  dev?: number;
-  ino?: number;
+  dev: number;
+  ino: number;
 }
 
 interface SecureReadHandle {
@@ -83,7 +89,7 @@ export async function loadLocalCheckoutMap(input: {
   phase0Root: string;
   referencedCheckoutKeys: readonly string[];
   fs?: AttestationConfigFileSystem;
-}): Promise<Readonly<Record<string, string>>> {
+}): Promise<Readonly<Record<string, PinnedLocalCheckout>>> {
   const fs = input.fs ?? NODE_FS;
   if (!isAbsolute(input.phase0Root)) throw new Error("phase0Root must be an absolute canonical path");
   let canonicalRoot: string;
@@ -139,7 +145,7 @@ export async function loadLocalCheckoutMap(input: {
     throw new Error("repository snapshot mapping keys must exactly match tracked repository trust");
   }
 
-  const result: Record<string, string> = {};
+  const result: Record<string, PinnedLocalCheckout> = {};
   for (const key of actual) {
     const checkoutPath = checkouts[key];
     if (typeof checkoutPath !== "string" || !isAbsolute(checkoutPath) || resolve(checkoutPath) !== checkoutPath) {
@@ -159,11 +165,19 @@ export async function loadLocalCheckoutMap(input: {
       if (checkoutMetadata.isSymbolicLink() || !checkoutMetadata.isDirectory()) throw new Error(`checkout ${key} must be a directory`);
       if (checkoutMetadata.uid !== fs.currentUid()) throw new Error(`checkout ${key} must be owned by the current user`);
       if ((checkoutMetadata.mode & 0o022) !== 0) throw new Error(`checkout ${key} must not be group- or world-writable`);
+      if (!Number.isSafeInteger(checkoutMetadata.dev) || checkoutMetadata.dev < 0
+          || !Number.isSafeInteger(checkoutMetadata.ino) || checkoutMetadata.ino <= 0) {
+        throw new Error(`checkout ${key} filesystem identity is unavailable`);
+      }
       if (await fs.realpath(checkoutPath) !== checkoutPath) throw new Error(`checkout ${key} changed during validation`);
+      result[key] = deepFreeze({
+        repositoryPath: checkoutPath,
+        device: checkoutMetadata.dev,
+        inode: checkoutMetadata.ino,
+      });
     } finally {
       await checkoutHandle.close();
     }
-    result[key] = checkoutPath;
   }
   return deepFreeze(result);
 }
@@ -222,7 +236,7 @@ export function parseRepositoryTrustConfig(value: unknown): RepositoryTrustConfi
 
 export function createTrustedRepositoryResolver(input: {
   trustConfig: unknown;
-  checkoutPaths: Readonly<Record<string, string>>;
+  checkoutPaths: Readonly<Record<string, PinnedLocalCheckout>>;
 }): TrustedRepositoryResolver {
   const config = parseRepositoryTrustConfig(input.trustConfig);
   const configuredKeys = config.repositories.map((entry) => entry.checkoutKey).sort();
@@ -234,7 +248,9 @@ export function createTrustedRepositoryResolver(input: {
     const repository: TrustedRepository = deepFreeze({
       repositoryId: entry.repositoryId,
       repositoryUrl: entry.repositoryUrl,
-      repositoryPath: input.checkoutPaths[entry.checkoutKey],
+      repositoryPath: input.checkoutPaths[entry.checkoutKey].repositoryPath,
+      repositoryDevice: input.checkoutPaths[entry.checkoutKey].device,
+      repositoryInode: input.checkoutPaths[entry.checkoutKey].inode,
       trustedRef: entry.trustedRef,
       permittedForgeSignerIds: [...entry.permittedForgeSignerIds],
     });

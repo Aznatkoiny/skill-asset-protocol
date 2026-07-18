@@ -146,6 +146,7 @@ test("production repository command fails before Git for missing/insecure mappin
 
   let gitCalls = 0;
   const failIfCalled: GitReader = {
+    repositoryIdentity: async () => { gitCalls += 1; throw new Error("Git must not run"); },
     commitExists: async () => { gitCalls += 1; throw new Error("Git must not run"); },
     readBlob: async () => { gitCalls += 1; throw new Error("Git must not run"); },
     isAncestor: async () => { gitCalls += 1; throw new Error("Git must not run"); },

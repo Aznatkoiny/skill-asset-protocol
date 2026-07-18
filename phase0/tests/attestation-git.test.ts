@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, sign as signBytes } from "node:crypto";
-import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -106,7 +106,11 @@ async function fixture(t: test.TestContext) {
       permittedForgeSignerIds: ["forge-1"],
     }],
   };
-  const repositories = createTrustedRepositoryResolver({ trustConfig, checkoutPaths: { "demo-checkout": root } });
+  const rootMetadata = await stat(root);
+  const repositories = createTrustedRepositoryResolver({
+    trustConfig,
+    checkoutPaths: { "demo-checkout": { repositoryPath: root, device: rootMetadata.dev, inode: rootMetadata.ino } },
+  });
   const forgeSigners = { "forge-1": forge.publicKey.export({ type: "spki", format: "pem" }).toString() };
   return { root, artifactCommit, proofCommit, subject, challenge, challengeFile, forgeObservation, repositories, forgeSigners, trustConfig };
 }
@@ -153,6 +157,7 @@ test("resolver rejects claimant-selected repositories before Git runs", async (t
   const f = await fixture(t);
   let calls = 0;
   const gitReader = {
+    repositoryIdentity: async () => { calls += 1; return { device: 1, inode: 1 }; },
     commitExists: async () => { calls += 1; return true; },
     readBlob: async () => { calls += 1; return new Uint8Array(); },
     isAncestor: async () => { calls += 1; return true; },
@@ -181,7 +186,10 @@ test("local checkout mapping requires exact owner-only canonical configuration",
   await writeFile(mappingPath, `${JSON.stringify({ schemaVersion: 1, checkouts: { "demo-checkout": f.root } })}\n`, { mode: 0o600 });
   await chmod(mappingPath, 0o600);
   const loaded = await loadLocalCheckoutMap({ env: {}, phase0Root: canonicalPhase0Root, referencedCheckoutKeys: ["demo-checkout"] });
-  assert.deepEqual(loaded, { "demo-checkout": f.root });
+  const checkoutMetadata = await stat(f.root);
+  assert.deepEqual(loaded, {
+    "demo-checkout": { repositoryPath: f.root, device: checkoutMetadata.dev, inode: checkoutMetadata.ino },
+  });
   assert.ok(Object.isFrozen(loaded));
 
   await chmod(mappingPath, 0o644);
@@ -205,4 +213,102 @@ test("checkout mapping rejects a symlink instead of following a swapped path", a
   await writeFile(target, '{"schemaVersion":1,"checkouts":{}}\n', { mode: 0o600 });
   await symlink(target, join(root, ".attestation-checkouts.local.json"));
   await assert.rejects(loadLocalCheckoutMap({ env: {}, phase0Root: root, referencedCheckoutKeys: [] }), /non-symlink regular file/);
+});
+
+test("Git verification ignores poisoned process environment, PATH, and replacement refs", async (t) => {
+  const f = await fixture(t);
+  await writeFile(join(f.root, "skills/demo/SKILL.md"), "tampered replacement bytes\n");
+  git(f.root, "add", "skills/demo/SKILL.md");
+  git(f.root, "commit", "-m", "replacement object not trusted");
+  const replacementCommit = git(f.root, "rev-parse", "HEAD");
+  git(f.root, "reset", "--hard", f.proofCommit);
+  git(f.root, "replace", f.artifactCommit, replacementCommit);
+  assert.match(git(f.root, "show", `${f.artifactCommit}:skills/demo/SKILL.md`), /tampered replacement bytes/);
+
+  const poisoned: Record<string, string> = {
+    PATH: "/definitely/not/a/git/path",
+    GIT_DIR: "/attacker/git-dir",
+    GIT_WORK_TREE: "/attacker/work-tree",
+    GIT_OBJECT_DIRECTORY: "/attacker/objects",
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: "/attacker/alternates",
+    GIT_NAMESPACE: "attacker",
+    GIT_CONFIG_GLOBAL: "/attacker/global-config",
+    GIT_CONFIG_SYSTEM: "/attacker/system-config",
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "core.sshCommand",
+    GIT_CONFIG_VALUE_0: "/attacker/command",
+  };
+  const prior = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(poisoned)) {
+    prior.set(key, process.env[key]);
+    process.env[key] = value;
+  }
+  try {
+    const event = await verifyRepositoryControl({
+      challengeFile: f.challengeFile,
+      forgeObservation: f.forgeObservation,
+      eventId: "repository-poisoned-env",
+      sequence: 1,
+      occurredAt: "2026-07-18T12:00:00.000Z",
+      now: new Date("2026-07-18T12:30:00.000Z"),
+      git: new ExecGitReader(),
+      repositories: f.repositories,
+      forgeSigners: f.forgeSigners,
+    });
+    assert.equal(event.subject.artifactHash, f.subject.artifactHash);
+  } finally {
+    for (const [key, value] of prior) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test("ExecGitReader requires an absolute verifier-controlled executable", () => {
+  assert.throws(() => new ExecGitReader({ gitExecutable: "git" }), /absolute Git executable/);
+});
+
+test("missing partial-clone objects fail without invoking a remote helper", async (t) => {
+  const f = await fixture(t);
+  const blobOid = git(f.root, "rev-parse", `${f.artifactCommit}:skills/demo/SKILL.md`);
+  const objectPath = join(f.root, ".git", "objects", blobOid.slice(0, 2), blobOid.slice(2));
+  await unlink(objectPath);
+  const marker = join(f.root, "remote-helper-invoked");
+  const helper = join(f.root, "remote-helper.sh");
+  await writeFile(helper, `#!/bin/sh\ntouch '${marker}'\nexit 1\n`, { mode: 0o700 });
+  await chmod(helper, 0o700);
+  git(f.root, "config", "extensions.partialClone", "origin");
+  git(f.root, "config", "remote.origin.promisor", "true");
+  git(f.root, "config", "remote.origin.partialclonefilter", "blob:none");
+  git(f.root, "remote", "set-url", "origin", `ext::${helper}`);
+  await assert.rejects(new ExecGitReader().readBlob(f.root, f.artifactCommit, "skills/demo/SKILL.md"), /offline Git verification failed/);
+  await assert.rejects(realpath(marker), /ENOENT/);
+});
+
+test("repository verification fails if checkout device/inode changes between Git operations", async (t) => {
+  const f = await fixture(t);
+  const delegate = new ExecGitReader();
+  let identityChecks = 0;
+  const changingIdentity = {
+    repositoryIdentity: async (path: string) => {
+      identityChecks += 1;
+      const identity = await delegate.repositoryIdentity(path);
+      return identityChecks === 1 ? identity : { ...identity, inode: identity.inode + 1 };
+    },
+    commitExists: delegate.commitExists.bind(delegate),
+    readBlob: delegate.readBlob.bind(delegate),
+    isAncestor: delegate.isAncestor.bind(delegate),
+    remoteUrl: delegate.remoteUrl.bind(delegate),
+  };
+  await assert.rejects(verifyRepositoryControl({
+    challengeFile: f.challengeFile,
+    forgeObservation: f.forgeObservation,
+    eventId: "repository-identity-drift",
+    sequence: 1,
+    occurredAt: "2026-07-18T12:00:00.000Z",
+    now: new Date("2026-07-18T12:30:00.000Z"),
+    git: changingIdentity,
+    repositories: f.repositories,
+    forgeSigners: f.forgeSigners,
+  }), /filesystem identity changed/);
 });
