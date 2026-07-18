@@ -7,9 +7,6 @@
   "scripts": {
     "check": "node --import tsx src/index.ts check",
     "demo": "node --import tsx src/index.ts demo",
-    "create-collection": "node --import tsx src/index.ts create-collection",
-    "register-skill": "node --import tsx src/index.ts register-skill",
-    "register-derivative": "node --import tsx src/index.ts register-derivative",
     "test": "node --import tsx --test tests/*.test.ts",
     "typecheck": "tsc --noEmit"
   },

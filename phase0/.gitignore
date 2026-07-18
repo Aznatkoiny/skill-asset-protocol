@@ -8,3 +8,4 @@ pending-transactions.json
 pending-transactions.json.*.tmp
 pending-transactions.json.lock
 pending-transactions.json.lock.*.claim
+registrations.json.*.tmp

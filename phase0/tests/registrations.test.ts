@@ -13,6 +13,7 @@ import {
 
 const WALLET = "0x00000000000000000000000000000000000000aa" as const;
 const SPG = "0x00000000000000000000000000000000000000bb" as const;
+const LICENSE_TEMPLATE = "0x00000000000000000000000000000000000000cc" as const;
 const TX_HASH = `0x${"1".repeat(64)}` as const;
 const METADATA_HASH = `0x${"2".repeat(64)}` as const;
 
@@ -25,6 +26,7 @@ function proof(stage: "root" | "child" | "grandchild", ipId: `0x${string}`): Reg
     tokenId: stage === "root" ? "1" : stage === "child" ? "2" : "3",
     txHash: TX_HASH,
     licenseTermsId: "7",
+    licenseTemplate: LICENSE_TEMPLATE,
     parentIpIds: [],
     defaultMintingFee: stage === "root" ? "1000000000000000" : null,
     maxMintingFee: stage === "root" ? null : "123",
@@ -65,6 +67,58 @@ test("filesystem store returns the honest not-run schema when the artifact is ab
   assert.deepEqual(manifest, createEmptyRegistrationManifest());
 });
 
+test("manifest save resolves only after file and directory fsync", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "phase0-durable-manifest-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const events: string[] = [];
+  const store = new FileRegistrationStore(join(directory, "registrations.json"), {
+    afterTempSync: () => { events.push("temp-fsync"); },
+    afterRename: () => { events.push("rename"); },
+    afterDirectorySync: () => { events.push("directory-fsync"); },
+  });
+  await store.save(createEmptyRegistrationManifest());
+  events.push("resolved");
+  assert.deepEqual(events, ["temp-fsync", "rename", "directory-fsync", "resolved"]);
+  assert.deepEqual(await readdir(directory), ["registrations.json"]);
+});
+
+test("crash after temp fsync preserves the previous complete manifest", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "phase0-durable-manifest-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, "registrations.json");
+  const previous = createEmptyRegistrationManifest();
+  await new FileRegistrationStore(path).save(previous);
+  const previousBytes = await readFile(path);
+  const next = createEmptyRegistrationManifest();
+  next.wallet = WALLET;
+  next.spgNftContract = SPG;
+  next.collectionTxHash = TX_HASH;
+  next.status = "partial";
+  const crashing = new FileRegistrationStore(path, {
+    afterTempSync: () => { throw new Error("simulated crash after temp fsync"); },
+  });
+  await assert.rejects(crashing.save(next), /simulated crash/);
+  assert.deepEqual(await readFile(path), previousBytes);
+  assert.deepEqual(await readdir(directory), ["registrations.json"]);
+});
+
+test("rename interruption exposes only a parseable complete manifest", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "phase0-durable-manifest-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, "registrations.json");
+  const next = createEmptyRegistrationManifest();
+  next.wallet = WALLET;
+  next.spgNftContract = SPG;
+  next.collectionTxHash = TX_HASH;
+  next.status = "partial";
+  const crashing = new FileRegistrationStore(path, {
+    afterRename: () => { throw new Error("simulated crash before directory fsync"); },
+  });
+  await assert.rejects(crashing.save(next), /simulated crash/);
+  assert.deepEqual(await new FileRegistrationStore(path).load(), next);
+  assert.deepEqual(await readdir(directory), ["registrations.json"]);
+});
+
 test("manifest parser rejects truthy malformed proofs instead of treating them as resumable", () => {
   const manifest = createEmptyRegistrationManifest();
   manifest.status = "partial";
@@ -97,4 +151,17 @@ test("manifest parser enforces status and exact Derivative parent edges", () => 
   manifest.registrations.child.parentIpIds = [rootId];
   manifest.registrations.grandchild = null;
   assert.throws(() => parseRegistrationManifest(manifest), /complete.*grandchild/i);
+});
+
+test("manifest parser requires an event-derived license template on every proof", () => {
+  const manifest = createEmptyRegistrationManifest();
+  manifest.status = "partial";
+  manifest.wallet = WALLET;
+  manifest.spgNftContract = SPG;
+  manifest.collectionTxHash = TX_HASH;
+  const root = proof("root", "0x0000000000000000000000000000000000000001");
+  delete (root as Partial<RegistrationProof>).licenseTemplate;
+  manifest.registrations.root = root;
+
+  assert.throws(() => parseRegistrationManifest(manifest), /licenseTemplate/i);
 });
