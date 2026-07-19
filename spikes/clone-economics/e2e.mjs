@@ -17,6 +17,7 @@ globalThis.fetch = async () => {
 };
 
 const { runExperiment } = await import('./src/experiment.mjs');
+const { treeSnapshot } = await import('./src/tree-snapshot.mjs');
 
 let checks = 0;
 function ok(condition, label) {
@@ -35,6 +36,8 @@ const targetPath = path.resolve(here, '../../.claude/skills/optimizing-claude-co
 const referencePath = path.resolve(here, '../../.claude/skills/optimizing-claude-code-prompts/references/claude-code-prompting-guide.md');
 const targetText = fs.readFileSync(targetPath, 'utf8');
 const referenceText = fs.readFileSync(referencePath, 'utf8');
+const retainedRuns = path.join(here, 'runs');
+const runsBefore = treeSnapshot(retainedRuns);
 const outputA = fs.mkdtempSync(path.join(os.tmpdir(), 'clone-economics-a-'));
 const outputB = fs.mkdtempSync(path.join(os.tmpdir(), 'clone-economics-b-'));
 
@@ -50,7 +53,9 @@ const config = {
 console.log('\nClone-economics e2e — MOCK_LLM=1, network disabled\n');
 try {
   const first = await runExperiment({ ...config, outputDir: outputA });
+  eq(treeSnapshot(retainedRuns), runsBefore, 'first mock scenario preserves retained run bytes');
   const second = await runExperiment({ ...config, outputDir: outputB });
+  eq(treeSnapshot(retainedRuns), runsBefore, 'repeat mock scenario preserves retained run bytes');
   const report = first.report;
 
   eq(report.mode, 'mock', 'mock mode recorded');
@@ -108,6 +113,7 @@ try {
   eq(report.fidelity.rubricVersion, 'contract-v1', 'versioned deterministic rubric recorded');
   eq(report.fidelity.target.absoluteScore, 1, 'known literal target score');
   eq(report.fidelity.clone.absoluteScore, 0.9, 'known literal good-clone score');
+  eq(report.benchmark.verdict, 'VALID_BENCHMARK', 'passing target admits interpretation');
   ok(report.fidelity.clone.passedThreshold && report.fidelity.clone.criticalGatePass, 'good clone clears 0.80 and critical gates');
   eq(report.fidelity.retention, 0.9, 'clone/target retention secondary metric');
   eq(report.fidelity.badClone.absoluteScore, 0.2, 'known literal bad-clone score');
@@ -155,20 +161,22 @@ try {
   ok(!first.markdownReport.split('\n').some((line) => /[ \t]+$/.test(line)), 'Markdown report contains no trailing whitespace');
   eq(fs.readFileSync(first.outputFiles.json, 'utf8'), fs.readFileSync(second.outputFiles.json, 'utf8'), 'two JSON report runs are byte-identical');
   eq(fs.readFileSync(first.outputFiles.markdown, 'utf8'), fs.readFileSync(second.outputFiles.markdown, 'utf8'), 'two Markdown report runs are byte-identical');
-  ok(!fs.existsSync(path.join(here, 'runs')), 'e2e leaves no run artifacts in the tree');
-
   const unknownTranscript = JSON.parse(fs.readFileSync(path.join(here, 'fixtures/mock-transcript.json'), 'utf8'));
   unknownTranscript.usageProfiles.distill.inputTokens = null;
   unknownTranscript.usageProfiles.distill.costUsd = null;
   for (const outputs of Object.values(unknownTranscript.heldoutOutputs)) outputs.target = 'Wrong [placeholder]???';
   const unknown = await runExperiment({ ...config, outputDir: outputA, mockTranscript: unknownTranscript });
+  eq(treeSnapshot(retainedRuns), runsBefore, 'invalid-target scenario preserves retained run bytes');
   eq(unknown.report.economics.distillationProviderUsd, null, 'missing provider usage keeps D unknown, never zero');
   eq(unknown.report.economics.attackerBuildUsd, null, 'unknown D propagates to B');
   eq(unknown.report.economics.distillationToAcquisition, null, 'unknown D propagates to D/A');
   eq(unknown.report.economics.buildToAcquisition, null, 'unknown B propagates to B/A');
   eq(unknown.report.usage.normalized.inputTokens, null, 'missing raw input usage keeps normalized input total unknown');
   eq(unknown.report.usage.normalized.providerCostUsd, null, 'missing request cost keeps normalized provider total unknown');
-  eq(unknown.report.fidelity.retention, null, 'zero target score makes retention undefined');
+  eq(unknown.report.benchmark.verdict, 'INVALID_BENCHMARK_TARGET_FAILED', 'failed target invalidates benchmark');
+  eq(unknown.report.fidelity.retention, null, 'invalid target suppresses retention');
+  eq(unknown.report.economics.breakEvenInvocations, null, 'invalid target suppresses break-even');
+  ok(unknown.markdownReport.includes('Clone quality, fidelity defense, moat, and break-even conclusions are suppressed'), 'invalid report states suppression');
   ok(unknown.markdownReport.includes('unknown'), 'Markdown renders unknown values without crashing');
 
   const replayTranscript = JSON.parse(fs.readFileSync(path.join(here, 'fixtures/mock-transcript.json'), 'utf8'));
@@ -209,6 +217,7 @@ try {
     outputDir: outputA,
     adapter: missingUsageReplayAdapter,
   });
+  eq(treeSnapshot(retainedRuns), runsBefore, 'missing-usage replay preserves retained run bytes');
   ok(missingLiveUsage.report.evidenceLabel.includes('measured where returned; unknown otherwise'), 'live summary labels incomplete usage as measured where returned and unknown otherwise');
   ok(missingLiveUsage.report.economics.evidenceLabel.includes('measured where returned; unknown otherwise'), 'live economics labels incomplete cost as measured where returned and unknown otherwise');
   ok(missingLiveUsage.report.usage.evidenceLabel.includes('measured where returned; unknown otherwise'), 'live usage labels incomplete fields as measured where returned and unknown otherwise');
@@ -234,6 +243,7 @@ try {
   checks += 1;
   await assert.rejects(runExperiment(liveConfig), /ALLOW_LIVE_LLM=1/, 'explicit live opt-in blocks a fully configured run');
   console.log('  ✓ explicit live opt-in blocks a fully configured run');
+  eq(treeSnapshot(retainedRuns), runsBefore, 'live opt-in rejection preserves retained run bytes');
   eq(networkAttempts, 0, 'opt-in rejection occurs before fetch');
 
   process.env.ALLOW_LIVE_LLM = '1';
@@ -244,6 +254,7 @@ try {
     'configured input-token bound aborts before fetch',
   );
   console.log('  ✓ configured input-token bound aborts before fetch');
+  eq(treeSnapshot(retainedRuns), runsBefore, 'input-bound rejection preserves retained run bytes');
   eq(networkAttempts, 0, 'input-bound rejection occurs before fetch');
   process.env.MOCK_LLM = '1';
   process.env.ALLOW_LIVE_LLM = '0';

@@ -1,0 +1,192 @@
+[
+  {
+    "schemaVersion": 1,
+    "settlementId": "settlement-001-self",
+    "invocationId": "invocation-001",
+    "skillId": "ledger-recon",
+    "creatorWallet": "0x1111111111111111111111111111111111111111",
+    "payeeWallet": "0x2222222222222222222222222222222222222222",
+    "payerWallet": "0x1111111111111111111111111111111111111111",
+    "untrustedPayerClaims": {
+      "beneficiaryId": "claimed-otherco",
+      "payerClusterId": "claimed-independent-self",
+      "relationship": "independent"
+    },
+    "grossAtomic": "250000",
+    "refundedAtomic": "0",
+    "recycledAtomic": "0",
+    "outcome": "succeeded",
+    "settledAt": "2026-07-17T00:00:01.000Z"
+  },
+  {
+    "schemaVersion": 1,
+    "settlementId": "settlement-002-linked",
+    "invocationId": "invocation-002",
+    "skillId": "ledger-recon",
+    "creatorWallet": "0x1111111111111111111111111111111111111111",
+    "payeeWallet": "0x2222222222222222222222222222222222222222",
+    "payerWallet": "0x3333333333333333333333333333333333333333",
+    "untrustedPayerClaims": {
+      "beneficiaryId": "claimed-thirdco",
+      "payerClusterId": "claimed-independent-linked",
+      "relationship": "independent"
+    },
+    "grossAtomic": "250000",
+    "refundedAtomic": "0",
+    "recycledAtomic": "0",
+    "outcome": "succeeded",
+    "settledAt": "2026-07-17T00:00:02.000Z"
+  },
+  {
+    "schemaVersion": 1,
+    "settlementId": "settlement-003-otherco-a",
+    "invocationId": "invocation-003",
+    "skillId": "ledger-recon",
+    "creatorWallet": "0x1111111111111111111111111111111111111111",
+    "payeeWallet": "0x2222222222222222222222222222222222222222",
+    "payerWallet": "0x4444444444444444444444444444444444444444",
+    "untrustedPayerClaims": {
+      "beneficiaryId": "otherco",
+      "payerClusterId": "cluster-otherco",
+      "relationship": "independent"
+    },
+    "grossAtomic": "250000",
+    "refundedAtomic": "0",
+    "recycledAtomic": "0",
+    "outcome": "succeeded",
+    "settledAt": "2026-07-17T00:00:03.000Z"
+  },
+  {
+    "schemaVersion": 1,
+    "settlementId": "settlement-004-otherco-b",
+    "invocationId": "invocation-004",
+    "skillId": "ledger-recon",
+    "creatorWallet": "0x1111111111111111111111111111111111111111",
+    "payeeWallet": "0x2222222222222222222222222222222222222222",
+    "payerWallet": "0x5555555555555555555555555555555555555555",
+    "untrustedPayerClaims": {
+      "beneficiaryId": "invented-beneficiary",
+      "payerClusterId": "invented-cluster",
+      "relationship": "independent"
+    },
+    "grossAtomic": "250000",
+    "refundedAtomic": "0",
+    "recycledAtomic": "0",
+    "outcome": "succeeded",
+    "settledAt": "2026-07-17T00:00:04.000Z"
+  },
+  {
+    "schemaVersion": 1,
+    "settlementId": "settlement-005-failed",
+    "invocationId": "invocation-005",
+    "skillId": "ledger-recon",
+    "creatorWallet": "0x1111111111111111111111111111111111111111",
+    "payeeWallet": "0x2222222222222222222222222222222222222222",
+    "payerWallet": "0x6666666666666666666666666666666666666666",
+    "untrustedPayerClaims": {
+      "beneficiaryId": "failedco",
+      "payerClusterId": "cluster-failedco",
+      "relationship": "independent"
+    },
+    "grossAtomic": "250000",
+    "refundedAtomic": "0",
+    "recycledAtomic": "0",
+    "outcome": "failed",
+    "settledAt": "2026-07-17T00:00:05.000Z"
+  },
+  {
+    "schemaVersion": 1,
+    "settlementId": "settlement-006-unresolved",
+    "invocationId": "invocation-006",
+    "skillId": "ledger-recon",
+    "creatorWallet": "0x1111111111111111111111111111111111111111",
+    "payeeWallet": "0x2222222222222222222222222222222222222222",
+    "payerWallet": "0x7777777777777777777777777777777777777777",
+    "untrustedPayerClaims": {
+      "beneficiaryId": "unresolvedco",
+      "payerClusterId": "cluster-unresolvedco",
+      "relationship": "independent"
+    },
+    "grossAtomic": "250000",
+    "refundedAtomic": "0",
+    "recycledAtomic": "0",
+    "outcome": "unresolved",
+    "settledAt": "2026-07-17T00:00:06.000Z"
+  },
+  {
+    "schemaVersion": 1,
+    "settlementId": "settlement-007-refunded",
+    "invocationId": "invocation-007",
+    "skillId": "ledger-recon",
+    "creatorWallet": "0x1111111111111111111111111111111111111111",
+    "payeeWallet": "0x2222222222222222222222222222222222222222",
+    "payerWallet": "0x8888888888888888888888888888888888888888",
+    "untrustedPayerClaims": {
+      "beneficiaryId": "refundco",
+      "payerClusterId": "cluster-refundco",
+      "relationship": "independent"
+    },
+    "grossAtomic": "250000",
+    "refundedAtomic": "250000",
+    "recycledAtomic": "0",
+    "outcome": "succeeded",
+    "settledAt": "2026-07-17T00:00:07.000Z"
+  },
+  {
+    "schemaVersion": 1,
+    "settlementId": "settlement-008-recycled",
+    "invocationId": "invocation-008",
+    "skillId": "ledger-recon",
+    "creatorWallet": "0x1111111111111111111111111111111111111111",
+    "payeeWallet": "0x2222222222222222222222222222222222222222",
+    "payerWallet": "0x9999999999999999999999999999999999999999",
+    "untrustedPayerClaims": {
+      "beneficiaryId": "recycleco",
+      "payerClusterId": "cluster-recycleco",
+      "relationship": "independent"
+    },
+    "grossAtomic": "250000",
+    "refundedAtomic": "0",
+    "recycledAtomic": "250000",
+    "outcome": "succeeded",
+    "settledAt": "2026-07-17T00:00:08.000Z"
+  },
+  {
+    "schemaVersion": 1,
+    "settlementId": "settlement-009-unknown",
+    "invocationId": "invocation-009",
+    "skillId": "ledger-recon",
+    "creatorWallet": "0x1111111111111111111111111111111111111111",
+    "payeeWallet": "0x2222222222222222222222222222222222222222",
+    "payerWallet": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "untrustedPayerClaims": {
+      "beneficiaryId": "spoofed-independent",
+      "payerClusterId": "spoofed-unique-cluster",
+      "relationship": "independent"
+    },
+    "grossAtomic": "250000",
+    "refundedAtomic": "0",
+    "recycledAtomic": "0",
+    "outcome": "succeeded",
+    "settledAt": "2026-07-17T00:00:09.000Z"
+  },
+  {
+    "schemaVersion": 1,
+    "settlementId": "settlement-010-thirdco",
+    "invocationId": "invocation-010",
+    "skillId": "ledger-recon",
+    "creatorWallet": "0x1111111111111111111111111111111111111111",
+    "payeeWallet": "0x2222222222222222222222222222222222222222",
+    "payerWallet": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "untrustedPayerClaims": {
+      "beneficiaryId": "thirdco",
+      "payerClusterId": "cluster-thirdco",
+      "relationship": "independent"
+    },
+    "grossAtomic": "250000",
+    "refundedAtomic": "0",
+    "recycledAtomic": "0",
+    "outcome": "succeeded",
+    "settledAt": "2026-07-17T00:00:10.000Z"
+  }
+]

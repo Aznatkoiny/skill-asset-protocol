@@ -18,6 +18,32 @@
 // on this file compiling.
 
 const PROXY = process.env.PI_WIELDER_PROXY ?? "http://localhost:8402";
+const HOSTED_SKILL_ID = "optimizing-claude-code-prompts";
+const HOSTED_SKILL_PATH = `/invoke/${encodeURIComponent(HOSTED_SKILL_ID)}`;
+
+const displayUsdc = (amountAtomic: string) => {
+  const padded = BigInt(amountAtomic).toString().padStart(7, "0");
+  const value = `${padded.slice(0, -6)}.${padded.slice(-6)}`.replace(/0+$/, "").replace(/\.$/, "");
+  return `$${value}`;
+};
+
+type SignedInvocationReceipt = {
+  receipt: {
+    quote: { amountAtomic: string };
+    payment: { state: "settled" | "refunded"; txHash: string };
+    execution: { state: "succeeded" | "failed" | "cancelled" };
+    accounting: {
+      allocationState: "finalized" | "pending_cogs_reconciliation";
+      protocolFeeAtomic?: string;
+      holderCredits: { recipientId: string; amountAtomic: string }[];
+      ancestorCredits: { recipientId: string; amountAtomic: string }[];
+    };
+  };
+  receiptHash: string;
+  signature: string;
+  algorithm: "Ed25519";
+  keyId: string;
+};
 
 // Minimal structural type for the documented extension surface, so this file
 // stands alone without pi's type package.
@@ -44,7 +70,7 @@ export default function activate(pi: Pi) {
         reasoning: false,
         input: ["text"],
         // pi tracks per-token cost; ours is flat per-call and lands on the
-        // /ledger — zeros here so pi's meter doesn't double-count.
+        // /ledger receipt view — zeros here so pi's meter doesn't double-count.
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: 200_000,
         maxTokens: 8_192,
@@ -55,7 +81,7 @@ export default function activate(pi: Pi) {
         reasoning: false,
         input: ["text"],
         // pi tracks per-token cost; ours is flat per-call and lands on the
-        // /ledger — zeros here so pi's meter doesn't double-count.
+        // /ledger receipt view — zeros here so pi's meter doesn't double-count.
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: 128_000,
         maxTokens: 8_192,
@@ -69,40 +95,42 @@ export default function activate(pi: Pi) {
     description:
       "Invoke the hosted, x402-paid skill 'optimizing-claude-code-prompts'. " +
       "Send a rough prompt/request as `input`; returns the optimized prompt. " +
-      "Costs testnet USDC per call; the payment, royalty split, and ledger " +
-      "entry are handled by the local paying proxy.",
+      "Costs testnet USDC per call; payment and the pinned Collar receipt view " +
+      "are handled by the local paying proxy.",
     parameters: {
       type: "object",
       properties: {
-        skillId: {
-          type: "string",
-          description: "Hosted skill id",
-          default: "optimizing-claude-code-prompts",
-        },
         input: { type: "string", description: "The rough request to optimize" },
       },
       required: ["input"],
     },
-    async execute(args: { skillId?: string; input: string }) {
-      const skillId = args.skillId ?? "optimizing-claude-code-prompts";
-      const res = await fetch(`${PROXY}/invoke/${skillId}`, {
+    async execute(args: { input: string }) {
+      const res = await fetch(`${PROXY}${HOSTED_SKILL_PATH}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ input: args.input }),
       });
-      if (!res.ok) return `invoke_skill failed (HTTP ${res.status}): ${await res.text()}`;
+      if (!res.ok) return `invoke_skill failed (HTTP ${res.status})`;
       const { output, receipt } = (await res.json()) as {
         output: string;
-        receipt: { txHash: string; amountUSDC: number; splits: { party: string; amountUSDC: number }[] };
+        receipt: SignedInvocationReceipt;
       };
-      const split = receipt.splits.map((s) => `${s.party} $${s.amountUSDC}`).join(" / ");
-      return `${output}\n\n[paid $${receipt.amountUSDC} · tx ${receipt.txHash.slice(0, 10)}… · split ${split}]`;
+      const invocation = receipt.receipt;
+      const accounting = invocation.accounting;
+      const claims = accounting.allocationState === "finalized" && accounting.protocolFeeAtomic
+        ? [
+            ...accounting.holderCredits.map((credit) => `${credit.recipientId} ${displayUsdc(credit.amountAtomic)}`),
+            ...accounting.ancestorCredits.map((credit) => `${credit.recipientId} ${displayUsdc(credit.amountAtomic)}`),
+            `treasury ${displayUsdc(accounting.protocolFeeAtomic)}`,
+          ].join(" / ")
+        : "full gross held for accounting reconciliation";
+      return `${output}\n\n[${invocation.execution.state} · paid ${displayUsdc(invocation.quote.amountAtomic)} · tx ${invocation.payment.txHash.slice(0, 10)}… · ${claims} · receipt ${receipt.receiptHash.slice(0, 10)}…]`;
     },
   });
 
-  // --- /ledger: the unified session meter, rendered by the proxy -----------
+  // --- /ledger: the session-local receipt view rendered by the proxy -------
   pi.registerCommand("ledger", {
-    description: "Show this session's unified x402 ledger (inference + skills)",
+    description: "Show this session's local x402 receipt view (inference + Skills)",
     async handler() {
       const res = await fetch(`${PROXY}/ledger`);
       return res.ok ? await res.text() : `ledger unavailable (HTTP ${res.status}) — is the proxy running?`;

@@ -6,6 +6,14 @@ synthesizer, adversarially cross-checked) run 2026-07-15 against the question:
 adoptable protocol like MCP/A2A?" All external facts are dated; re-verify
 before publication — this space moves week to week.*
 
+> **2026-07-17 accounting amendment:** The dated strategy below originally
+> treated gross settled volume and payer-wallet counts as sufficient ranking
+> signals. The implemented spike now uses the settlement-verifiable metric
+> contract in this amendment. Settlement establishes that value moved; it does
+> not establish independent demand, usefulness, authorship, originality, or
+> safety. Where the dated research narrative conflicts with this amendment,
+> this amendment controls public registry output.
+
 ## Verdict
 
 The question splits in two, with opposite answers.
@@ -33,8 +41,9 @@ playbook applied to the Collar/ledger side.
 
 **The version of the founder's idea that survives both:** a **settlement-gated
 registry** — a thin index over the ledger + provenance graph Phases 0–1 build
-anyway. A skill is listed the moment its first x402 payment settles; ranked by
-30-day settled volume and unique payers (unfakeable); auto-delisted when idle.
+anyway. A Skill becomes allow-listed after its first successful,
+unrefunded, unrecycled settlement, but remains ineligible for public ranking
+until classifier-verified independent use clears the amendment gate below.
 No submission, no curation, no hosting decisions, no tradeable instruments.
 This passes ADR-0007's own optionality test ("nearly free" when mechanics are
 shared, 0007:61-63) because it is a read API over shared mechanics — provided
@@ -70,6 +79,36 @@ just not there yet."
 Timing gift: the **x402 Foundation formally launched under the Linux
 Foundation on 2026-07-14** (40 members; Visa, Mastercard, Amex, Stripe,
 Ripple premier). Building on x402 now inherits that legitimacy for free.
+
+## 2026-07-17 public registry metric contract
+
+The registry consumes `SettlementMetricEventV1` records with required
+settlement, Invocation, Skill, Creator/payee/payer wallet, gross/refund/recycle,
+outcome, and UTC timestamp fields. Payer-supplied Beneficiary, relationship,
+and cluster claims are retained only as audit warnings; they never determine a
+public metric.
+
+An operator-controlled `VerifiedBillingRegistryV1` classifies payer ownership.
+Self-payment is derived before registry lookup. Direct reviewed entries classify
+a payer as Creator-linked or independent and bind it to one Beneficiary and
+billing-owner cluster; absent entries are unknown. This is explicit operator
+trust, not proof of ultimate beneficial ownership.
+
+Public output reports these fields separately: total settlements, successful
+Invocations, settled failures, unresolved settlements, refunded settlements,
+unique payer wallets, unique independent Beneficiaries, refund-adjusted net,
+independent net, independence confidence, registry status, and counts for
+`self_payment`, `linked_wallet`, `failed_invocation`,
+`unresolved_settlement`, `refunded`, `recycled_value`, `sybil_cluster`, and
+`unknown_relationship`.
+
+Only successful, unrefunded, unrecycled settlements classified as independent
+contribute to independent net. Events are ordered by settlement time and ID;
+only the first accepted event in a billing-owner cluster can count. The first
+registry stays allow-listed until at least two classifier-verified successful
+independent Beneficiaries in distinct accepted clusters have positive
+independent net. Eligible Skills sort by independent net, independent
+Beneficiaries, successful Invocations, then Skill identifier.
 
 ## The adoption evidence: MCP vs A2A
 
@@ -114,22 +153,27 @@ co-held claim — which is KC1.**
 5. **Mid-size ecosystem before giants**: gateway operators, OpenClaw/ClawHub
    maintainers, Smithery, Story devs — the campaign's week-of-living-in-replies
    already targets exactly these. Platforms ratify; they are not the ask.
-6. **Listing = proof of settlement** (the Coinbase Bazaar mechanic): the
+6. **Listing = settlement-verifiable movement** (the Coinbase Bazaar mechanic): the
    anti-skills.sh. Their telemetry listing produced ~895k mostly-noise
-   entries; settlement-gating produces a small index where every entry is
-   provably alive and paid.
+   entries; settlement-gating produces a smaller index while the verified
+   billing classifier and exclusions keep self-funded, linked, refunded,
+   failed, unresolved, recycled, repeated-cluster, and unknown activity out of
+   independent metrics.
 7. **Discovery as an MCP server**: search → quote → pay (x402) → invoke in one
    agent tool-loop. x402 Bazaar, Nevermined, and MCP Hive all converged on MCP
    as the surface agents actually touch.
-8. **Publish unfakeable telemetry, ranked by the hierarchy that predicted
-   MCP-vs-A2A**: settled tx + unique payers → active collared skills → SDK
-   pulls → stars. Matches the campaign's existing metric doctrine.
+8. **Publish settlement-verifiable telemetry under the amendment contract**:
+   report movement, outcomes, refunds, payer-wallet count, classifier-verified
+   independent Beneficiaries, net amounts, confidence, status, and exclusions
+   as separate fields. Never collapse them into a demand or quality claim.
 9. **Sell attribution as security simultaneously**: signed immutable skill
    definitions + derivation graphs answer the documented registry
    supply-chain wound (Unit 42: five malicious ClawHub skills incl. macOS
    infostealers, 2026-02..05; Trail of Bits reportedly bypassed skills.sh's
-   Snyk scanning via prompt injection). Buyers get supply-chain safety, authors
-   get the claim substrate — same primitive, two pitches.
+   Snyk scanning via prompt injection). Buyers get wallet-attested registration
+   and declared ancestry; authorship evidence and safety review are separate
+   statuses. Creators get the claim substrate — the same primitive supports two
+   distinct, explicitly bounded pitches.
 10. **Donate late, like MCP and x402**: foundation paperwork before usage is
     pure distraction for a solo founder; revisit only on a credible fork
     threat.
@@ -141,7 +185,7 @@ co-held claim — which is KC1.**
 | Week 0 (now) | Execute the slipped launch — verified 2026-07-15 via `gh`: repo still private vs Day 0 = 07-14 — with a re-anchored Day 0 and design-partner conversations as metric #1; **instantiate KC7's monthly platform review with a named owner** (mandated PRD:647, currently uninstantiated) | — |
 | Weeks 1–2 | Neutral GitHub org; package the adoption kit; finish pi-wielder as reference Wielder | Cheap, parallel |
 | Weeks 2–6 | Land the two named adopters: the KC1 LOI + one x402 gateway; first settled mainnet payment through a collared skill, provenance on Story | The KC1 LOI is the hard gate for everything downstream |
-| Weeks 6–10 | Ship **the Skill Asset Protocol registry** as an MCP server with proof-of-settlement listing + public telemetry dashboard | Only after organic supply exists; named registry, never marketplace |
+| Weeks 6–10 | Ship **the Skill Asset Protocol registry** as an MCP server with settlement-verifiable listing + public telemetry dashboard | Only after organic supply exists; named registry, never marketplace |
 | Months 3–4 | Attribution overlay on existing free registries (signed authorship + derivation records keyed to GitHub owner/repo); court ClawHub/Smithery — their malware problem is the sales wedge | — |
 | Months 4–6+ | Phase-1 build per PRD | KC1 LOI signed + paying closed-mode deployment |
 

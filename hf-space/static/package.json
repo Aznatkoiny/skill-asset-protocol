@@ -1,0 +1,12 @@
+{
+  "name": "skill-asset-protocol-static-space",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test-demo-logic.mjs test-index-smoke.mjs"
+  },
+  "devDependencies": {
+    "linkedom": "0.18.12"
+  }
+}

@@ -28,7 +28,10 @@ Five posts for the launch of the Skill Asset Protocol / neverhandedover.com.
 >
 > I've spent the last months building the alternative: infrastructure that meters each use of a skill and splits the revenue to a claim the author holds jointly with the employer. Think Carta, but for AI work artifacts.
 >
-> It's live at neverhandedover.com, and the site is the demo. Reading is free. Running the hosted skill costs a quarter in play money on a public test network — and you get the output, never the skill. That one sentence is the whole architecture.
+> It's live at neverhandedover.com, and the site is the demo. Reading is free.
+> Running the hosted Skill costs a quarter in play money on a public test network
+> — the artifact file is not directly returned; model-output extraction remains
+> an adversarial runtime risk. That boundary is the architecture.
 >
 > What I have not proven: that employers will buy this. That's written on the site too, because a launch post that only lists what works is an ad, not evidence.
 >
@@ -46,43 +49,47 @@ Launch day, Tuesday–Thursday ~8:30am ET; pin to profile and leave it pinned th
 
 ---
 
-## Post 2 — The clone story: "$1.58 to steal my own product"
+## Post 2 — Clone-economics benchmark: publication blocked
+
+> **PUBLICATION BLOCKED — INVALID BENCHMARK.** The 2026-07-12 target scored
+> 0.400 and failed its own critical gates, so clone quality, resistance to output imitation, and
+> break-even conclusions are suppressed. Acquisition was modeled at $1.50; no
+> x402 acquisition payments settled. Unblock only after
+> `spikes/clone-economics` produces a valid N=100 result with committed normalized
+> evidence and three live-adapter-confirmed independent distillation seeds.
 
 **Target audience:** business readers broadly — the moat lesson travels beyond the ICP.
 
 ### Post text
 
-> Last week I paid $1.58 to steal my own product.
+> We ran a six-example clone-economics pilot against our own hosted Skill.
 >
-> The product is a hosted AI skill — expertise packaged as software, metered per use. You send a request, you get the output. You never see the skill itself.
+> The provider calls were live. The acquisition price was not: six examples at
+> $0.25 each contributed a modeled $1.50, no x402 acquisition payments settled,
+> and the measured distillation-provider cost was about $0.03. The resulting
+> $1.58 attacker-build figure is therefore a modeled lower bound that excludes
+> labor and several failed setup attempts, not money paid for six Invocations.
 >
-> The obvious attack: buy enough outputs, train a copycat on them, stop paying. So I ran the attack on myself.
+> More importantly, the benchmark target failed its own acceptance gate. That
+> invalidates any conclusion about whether the clone failed, whether fidelity is
+> a defense, or where break-even lands. We preserved the run as historical
+> evidence and blocked this post rather than promote an answer the evaluator
+> could not support.
 >
-> Six paid runs. $1.58 total (play money on a public test network, but the ratios are what matter). The distillation step — turning those outputs into a working clone — cost three cents.
->
-> The copying was over 40x cheaper than the buying, and the buying was under two dollars.
->
-> Then the clone failed. All six held-out fidelity checks. Zero passes. It resembled my skill the way a wax figure resembles a person.
->
-> Here's the uncomfortable math anyway. I modeled the break-even: if a clone ever DOES pass, it pays for itself in 8 invocations. Eight. Cost is not a moat. It never was — not for skills, not for playbooks, not for anything made of text.
->
-> Honest caveat: six samples is a small test. Whether a clone passes at 600 or 6,000 samples is unknown, and the published write-up says so instead of pretending otherwise.
->
-> The business lesson survives the caveat. If your defense is "copying is expensive," you don't have a defense. What held up wasn't price — it was fidelity (the parts of a skill that never show up in any single output) and the fact that a live skill keeps evolving while a clone is a photograph of it.
->
-> That's true of your company's internal expertise too, whether or not you ever touch my product.
->
-> Full numbers and method in the first comment.
+> The next admissible result requires at least 30 held-out fixtures and a
+> preregistered N=6/25/50/100 sweep with three live-adapter-confirmed independent
+> distillation seeds.
+> No high-N result exists yet.
 
 ### First comment
 
-> The clone-attack harness, raw numbers, and all six fidelity gates are in the open-source repo: https://github.com/Aznatkoiny/skill-asset-protocol
+> The clone-attack harness, historical numbers, and invalid benchmark target are in the open-source repo: https://github.com/Aznatkoiny/skill-asset-protocol
 >
-> The skill it failed to clone is live (testnet, play money): https://neverhandedover.com
+> The hosted Skill used by the pilot is live (testnet, play money): https://neverhandedover.com
 
 ### Posting context
 
-2–4 days after Post 1, mid-week morning; this hook stands alone, so it's the best post of the five for reaching past the existing network.
+Do not publish until the gate above is satisfied and a human approves revised copy.
 
 ---
 
@@ -170,23 +177,38 @@ Week 2–3, mid-week; resonates with founders and diligence-minded operators, so
 
 > How we went from research question to a live paid endpoint — in three phases.
 >
-> The question: if authored AI skills are assets, can you meter their use and split compensation per invocation, without ever shipping the skill file to the caller?
+> The question: if authored AI Skills are assets, can you meter their use and split
+> compensation per Invocation while not directly returning the artifact file and
+> treating model-output extraction as an adversarial runtime risk?
 >
 > Phase 1 — research. Before product code, a findings document: what's real, what's vapor, what's unmeasured. x402, the HTTP 402 payment standard now under the Linux Foundation, turned out to be very real — ~75M transactions in the last 30 days. Story Protocol handles provenance. Several things we assumed were solved were not, and we wrote that down too.
 >
 > Phase 2 — adversarial review. We red-teamed our own PRD. This is where the Education mode died (free re-authoring beats every royalty rate — one page of arithmetic) and where the kill-criteria were written. The red-team output ships in the repo as a first-class artifact, not a postmortem.
 >
-> Phase 3 — the live endpoint. The manifesto site IS the system. POST without payment and you get an actual HTTP 402. Pay $0.25 in testnet USDC — play money, deliberately — and the hosted skill runs and streams you the output. Never the skill.
+> Phase 3 — the live endpoint. The manifesto site IS the system. POST without
+> payment and you get an actual HTTP 402. Pay $0.25 in testnet USDC — play money,
+> deliberately — and the hosted Skill runs and streams you the output. The
+> artifact file is not directly returned; model-output extraction remains an
+> adversarial runtime risk.
 >
-> Numbers from the working demo on Base Sepolia (July 12; distribution re-measured July 15 across 48 settled calls and two model providers), one wallet paying per model call AND per skill invocation:
+> Numbers from the first working demo on Base Sepolia (2026-07-12; testnet,
+> play money), one wallet paying per model call AND per Skill Invocation:
 >
-> — Ledger: $0.041 for the model's planning call, $0.25 for the skill invocation
-> — Split: $0.24375 credited to the creator, $0.00625 to the treasury
-> — On-chain balances reconciled to the cent
-> — Payment overhead: p50 731ms / p95 1206ms per call (n=48 settled calls; the first run's n=1 read was ~781ms)
+> — Ledger (testnet USDC, play money): $0.041 for the model's planning call,
+> $0.25 for the Skill Invocation
+> — First instrumented payment-overhead read: ~781 ms (n=1, 2026-07-12;
+> Base Sepolia testnet, play money)
 > — Hosted-agent cold start: ~2.5s to first token
 >
-> That 731ms median is honest and it isn't free. Neither is the cold start. Both are in the docs, because you'd find them in your first hour anyway.
+> The aggregate testnet USDC payment to the seller `payTo` address reconciled
+> on-chain. The Creator/treasury amounts were off-chain reference-ledger credits;
+> they were not separate on-chain transfers.
+>
+> The 2026-07-15 overhead distribution is historical but not reproducible from a
+> clean checkout because normalized per-call samples were not retained. Its sample
+> count, p50, and p95 are quarantined from publication; see
+> `spikes/pi-wielder/evidence/2026-07-15-overhead/manifest.json`. No replacement
+> measurement has been run.
 >
 > Everything is Apache-2.0: the collar that holds the sole API key, the metering ledger, the clone-attack harness we ran against ourselves, the kill-criteria, the not-validated list.
 >

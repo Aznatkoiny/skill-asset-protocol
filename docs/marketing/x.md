@@ -22,7 +22,9 @@ We published a manifesto that is also a paid API.
 
 POST to it without paying and you get HTTP 402.
 
-Pay $0.25 in testnet USDC (play money) and it runs the skill and sends back the output. You never get the skill.
+Pay $0.25 in testnet USDC (play money) and it runs the Skill and sends back the
+output. The artifact file is not directly returned; model-output extraction
+remains an adversarial runtime risk.
 
 https://neverhandedover.com
 
@@ -43,28 +45,30 @@ The compensation and attribution layer is the product. A marketplace is future o
 **4/**
 Receipts from the live demo (Base Sepolia, 2026-07-12 — testnet, play money):
 
-One wallet paid per model call AND per skill invocation, over x402.
+One wallet paid per model call AND per Skill Invocation, over x402.
 
-claude/plan $0.041 · skill $0.25 → creator $0.24375 / treasury $0.00625
+claude/plan $0.041 · Skill $0.25 → Creator $0.24375 / treasury $0.00625
+(testnet USDC, play money)
 
-On-chain balances reconciled to the cent.
+The aggregate testnet USDC payment to the seller `payTo` address reconciled
+on-chain. The Creator/treasury amounts were off-chain reference-ledger credits;
+they were not separate on-chain transfers.
 
 **5/**
-The overhead of paying per call, measured across 48 settled calls:
+The 2026-07-15 overhead distribution is historical but not reproducible from a
+clean checkout because normalized per-call samples were not retained. Its sample
+count, p50, and p95 are quarantined from publication; see
+`spikes/pi-wielder/evidence/2026-07-15-overhead/manifest.json`. No replacement
+measurement has been run.
 
-· payment adds p50 731ms / p95 1206ms per call (n=48 settled calls)
-· hosted-agent cold start: ~2.5s to first token (separate n=3 measurement)
-
-Not free. Not prohibitive. Numbers you can build against.
+The hosted-agent cold start was ~2.5s to first token in a separate n=3
+measurement.
 
 **6/**
-We attacked our own skill before launch.
-
-$1.58 bought a clone distilled from its own outputs (the distillation step itself: $0.03).
-
-The clone failed all 6 held-out fidelity gates.
-
-Cost protects nothing. Fidelity and live evolution are the defense.
+The historical N=6 run used a modeled $1.50 acquisition cost and measured about
+$0.03 of distillation-provider cost; no acquisition payment settled. Its target
+failed the benchmark, so clone quality, resistance to output imitation, and break-even are
+unknown. Publication remains blocked pending a valid preregistered N=100 run.
 
 **7/**
 We published kill-criteria before launch and already used them on ourselves.
@@ -96,53 +100,19 @@ If you author skills, this is about who gets credited and compensated for them.
 
 ---
 
-## 2. Clone-attack thread (7 tweets)
+## 2. Clone-attack thread — publication blocked
 
-**1/**
-We paid $1.58 to steal our own product.
+> **PUBLICATION BLOCKED — INVALID BENCHMARK.** The 2026-07-12 target scored
+> 0.400 and failed its own critical gates, so clone quality, resistance to output imitation, and
+> break-even conclusions are suppressed. Acquisition was modeled at $1.50; no
+> x402 acquisition payments settled. Unblock only after
+> `spikes/clone-economics` produces a valid N=100 result with committed normalized
+> evidence and three live-adapter-confirmed independent distillation seeds.
 
-Here's the experiment, the numbers, and the uncomfortable conclusion about what actually protects an AI skill.
-
-**2/**
-Setup: our skill is a paid endpoint. $0.25 per invocation in testnet USDC (play money), output only — the skill itself never crosses the wire.
-
-The obvious attack: pay it, collect outputs, distill a clone, stop paying.
-
-So we ran that attack against ourselves. N=6.
-
-**3/**
-The bill:
-
-· total attack cost: $1.58
-· the distillation step itself: $0.03
-
-Three cents. The expensive part was buying our own outputs to distill from. If you think per-call pricing is a moat, that's the number that should bother you.
-
-**4/**
-The result: the clone failed all 6 held-out fidelity gates.
-
-Every single one.
-
-It resembled our skill the way a photo of a bridge resembles a bridge. You can look at it. You can't drive across it.
-
-**5/**
-We also modeled the case where a clone eventually passes the gates: break-even lands at 8 invocations.
-
-Eight. If price is your only defense, anyone who can afford 8 calls can afford the attack.
-
-**6/**
-The conclusion we're publishing: cost protects nothing.
-
-What holds up:
-
-· fidelity — held-out gates a clone has to pass, not resemble
-· live evolution — a skill that keeps changing is a moving target for distillation
-
-**7/**
-The honest caveat: N=6 is small. High-N behavior is unknown — someone patient, with hundreds of outputs, might distill a passing clone. We don't know yet.
-
-The experiment is public so someone can prove us wrong:
-github.com/Aznatkoiny/skill-asset-protocol
+The historical N=6 run used a modeled $1.50 acquisition cost and measured about
+$0.03 of distillation-provider cost; no acquisition payment settled. Its target
+failed the benchmark, so clone quality, resistance to output imitation, and break-even are
+unknown. Publication remains blocked pending a valid preregistered N=100 run.
 
 ---
 
@@ -161,42 +131,56 @@ Client POSTs with no payment. Server answers HTTP 402 Payment Required, with the
 The status code finally has a job.
 
 **3/**
-Step 2 — the signature.
+Step 2 — authorization.
 
-The client signs an EIP-3009 transferWithAuthorization for the exact amount. Off-chain signature, no gas from the buyer, no custody handoff — just signed authorization to move $0.25 of testnet USDC.
+The Wielder-side proxy validates the 402 offer and signs an EIP-3009
+transferWithAuthorization for the exact permitted amount. The retry carries that
+signed `X-PAYMENT` authorization, not a transaction hash.
 
 **4/**
-Step 3 — settlement.
+Step 3 — seller-side settlement.
 
-The signed authorization goes to an x402 facilitator, which settles it on-chain. x402 is a Linux Foundation standard; the rails did ~75M transactions in the last 30 days.
-
-We didn't build payment infrastructure. We built on it.
+The Collar's x402 paywall sends the signed authorization to the facilitator. The
+facilitator verifies and settles on Base Sepolia before the hosted Skill runs. A
+settlement transaction hash is evidence returned after settlement; it is not the
+credential carried by the initial retry.
 
 **5/**
-Step 4 — the credential.
+Step 4 — execution and receipt.
 
-The settlement txHash IS the credential. The client retries the POST carrying it; the server verifies settlement on-chain and executes.
-
-No API keys. No accounts. The receipt is the auth.
+After settlement, the Collar executes the hosted Skill and returns output plus a
+receipt. The artifact file is not directly returned. Model-output extraction
+remains an adversarial runtime risk, so this is not a secrecy guarantee.
 
 **6/**
-Step 5 — output only.
+Step 5 — the hosted-output boundary.
 
-The server runs the hosted skill and sends back the result. The skill artifact never crosses the wire.
+The server runs the hosted Skill and sends back the result. The artifact file is
+not directly returned; model-output extraction remains an adversarial runtime risk.
 
-That's the design constraint the whole protocol hangs on: metered use, never handover.
+That's the bounded design constraint: metered hosted use without directly
+returning the artifact file, while extraction remains an adversarial risk.
 
 **7/**
-All of the server side fits in a ~150-line proxy we call the Wielder: enforce 402, verify settlement, run the hosted skill, split revenue to the ledger.
-
-150 lines, because the rails already exist.
+The Wielder is the wallet plus paying client proxy. The Collar is seller-side: it
+holds the platform key, enforces the payment gate, runs the hosted Skill, and
+writes the seller ledger. The demo's Wielder ledger is a receipt view, not the
+authoritative compensation ledger.
 
 **8/**
-Measured (Base Sepolia, 2026-07-12 + 07-15, testnet):
+The first instrumented payment-overhead read was ~781 ms (n=1, 2026-07-12;
+Base Sepolia testnet, play money). Cold start was ~2.5s to first token in a
+separate n=3 measurement.
 
-· payment overhead p50 731ms / p95 1206ms (n=48 settled calls)
-· cold start ~2.5s to first token
-· $0.25/invocation → creator $0.24375 / treasury $0.00625, reconciled on-chain to the cent
+The 2026-07-15 overhead distribution is historical but not reproducible from a
+clean checkout because normalized per-call samples were not retained. Its sample
+count, p50, and p95 are quarantined from publication; see
+`spikes/pi-wielder/evidence/2026-07-15-overhead/manifest.json`. No replacement
+measurement has been run.
+
+The aggregate testnet USDC payment to the seller `payTo` address reconciled
+on-chain. The Creator/treasury amounts were off-chain reference-ledger credits;
+they were not separate on-chain transfers.
 
 Code, Apache-2.0:
 github.com/Aznatkoiny/skill-asset-protocol
@@ -223,7 +207,9 @@ Daily routine, 30–45 minutes:
 **Where the conversations are (saved searches to build):**
 
 - **x402 ecosystem** — searches: "x402", "HTTP 402", "402 Payment Required", "facilitator". This is the home crowd; the how-it-works thread is written for them.
-- **Base builders** — searches: "Base Sepolia", "onchain agents", Base ecosystem hashtags. They care about the on-chain ledger reconciling to the cent.
+- **Base builders** — searches: "Base Sepolia", "onchain agents", Base ecosystem
+  hashtags. They care about the aggregate seller `payTo` transfer reconciling
+  on-chain while Creator/treasury credits remain off-chain.
 - **Story Protocol / provenance** — searches: "Story Protocol", "IP provenance", "attribution onchain". They care about the authorship thesis.
 - **Claude Code community** — searches: "Claude Code skills", "Claude plugins", "agent skills". These are the authors the protocol exists for. This is the most important room.
 - **Agent-payments discourse** — searches: "agents paying agents", "agentic payments", "machine-to-machine payments", "pay per call". Broadest, noisiest; only reply where we have a measurement.
@@ -232,10 +218,17 @@ Daily routine, 30–45 minutes:
 question asked, never pitch.
 
 Good (someone asks whether x402 latency is workable):
-> We measured it across 48 settled calls on Base Sepolia: p50 731ms / p95 1206ms of payment overhead per call; cold start to first token on a hosted agent is ~2.5s (n=3). Fine for per-task pricing, painful inside a tight loop.
+> The 2026-07-15 overhead distribution is historical but not reproducible from a
+> clean checkout because normalized per-call samples were not retained. Its sample
+> count, p50, and p95 are quarantined from publication; see
+> `spikes/pi-wielder/evidence/2026-07-15-overhead/manifest.json`. No replacement
+> measurement has been run.
 
 Good (someone claims per-call pricing stops people cloning your agent):
-> We tested that against our own skill. $1.58 total to distill a clone from its outputs — the distillation step cost $0.03. The clone failed our 6 fidelity gates, but cost was never the thing protecting it. N=6, so high-N is still an open question.
+> The historical N=6 run used a modeled $1.50 acquisition cost and measured about
+> $0.03 of distillation-provider cost; no acquisition payment settled. Its target
+> failed the benchmark, so clone quality, resistance to output imitation, and break-even are
+> unknown. Publication remains blocked pending a valid preregistered N=100 run.
 
 Good (Claude Code author asks who owns the skills they write at work):
 > Under standard work-for-hire, the default is 100/0 — employer gets the artifact, author gets salary. We've been building infrastructure to meter use and split per invocation instead. Happy to share the numbers if useful.
@@ -247,7 +240,11 @@ Bad (any variation of): "Great point! We're building exactly this — check out 
 Single tweets, not threads. One screenshot-sized artifact per day:
 
 - Day 8: screenshot of the raw HTTP 402 response from the manifesto endpoint.
-- Day 9: the ledger line — claude/plan $0.041 · skill $0.25 → creator $0.24375 / treasury $0.00625 — with the note that it reconciled on-chain to the cent (testnet, play money).
+- Day 9: the ledger line — claude/plan $0.041 · Skill $0.25 → Creator $0.24375 /
+  treasury $0.00625 (testnet USDC, play money). The aggregate testnet USDC
+  payment to the seller `payTo` address reconciled on-chain. The Creator/treasury
+  amounts were off-chain reference-ledger credits; they were not separate
+  on-chain transfers.
 - Day 10: the "What we have NOT validated" page, screenshotted.
 - Day 11: the kill-criteria arithmetic that killed our education mode.
 - Day 12: the ~150-line Wielder proxy, as a code screenshot.
@@ -255,8 +252,13 @@ Single tweets, not threads. One screenshot-sized artifact per day:
 
 **New artifacts (added 2026-07-15; slots per the revamped calendar in `2026-07-13-campaign-plan.md` §2; verify character counts at post time):**
 
-- **The n=48 overhead distribution** — artifact: the distribution decomposition from `spikes/pi-wielder/README.md`.
-  > x402 payment overhead, measured across 48 settled calls on Base Sepolia (testnet, play money), two model providers, real facilitator: p50 731ms · p95 1206ms. The facilitator verify+settle leg is the whole story (p50 729ms); the 402 roundtrip + signature add ~2ms. Wallet reconciled on-chain to the cent.
+- **Historical overhead distribution — quarantined (2026-07-15)** — artifact:
+  the tombstone from `spikes/pi-wielder/README.md`.
+  > The 2026-07-15 overhead distribution is historical but not reproducible from a
+  > clean checkout because normalized per-call samples were not retained. Its sample
+  > count, p50, and p95 are quarantined from publication; see
+  > `spikes/pi-wielder/evidence/2026-07-15-overhead/manifest.json`. No replacement
+  > measurement has been run.
 - **The pay-then-fail receipt** — artifact: the ten-500s ledger excerpt.
   > We paid $0.87 in testnet USDC (play money) for ten HTTP 500s. Pay-first-then-run means a seller bug after settlement is the buyer's loss — x402 v1 has no refund path. Our bug, our dime. Fixed it, published the receipt. If you're building on 402 rails, design for pay-then-fail.
 - **The settled-but-rejected reconciliation** — artifact: the balance-reconciliation lines.
@@ -272,7 +274,9 @@ Reply routine continues daily throughout. The ratio stays lopsided: for every or
 - **Day 0, first reply under the thread:** the ecosystem tag reply (see below).
 - **Day 0, hours 1–3:** live in the replies. Every substantive response gets a substantive answer. This window decides whether the thread travels.
 - **Day 2:** How-it-works thread. Quote or link the pinned launch thread from the last tweet.
-- **Day 4–5:** Clone-attack thread.
+- **Day 4–5:** **BLOCKED:** do not publish clone-economics copy. The N=6 target
+  failed its own acceptance gate; the required valid N=100 evidence bundle does
+  not exist.
 - **Between threads:** the standalone tweets (section 5), one at a time, as spacers. Never two threads within 48 hours.
 
 ### Tag strategy
@@ -305,14 +309,15 @@ Most manifestos ask for your agreement. Ours asks for a quarter. (A testnet quar
 https://neverhandedover.com
 
 **C.**
-We paid $1.58 to clone our own skill. The clone failed all 6 fidelity gates.
-
-Cost protects nothing. Fidelity and live evolution do.
+The historical N=6 run used a modeled $1.50 acquisition cost and measured about
+$0.03 of distillation-provider cost; no acquisition payment settled. Its target
+failed the benchmark, so clone quality, resistance to output imitation, and break-even are
+unknown. Publication remains blocked pending a valid preregistered N=100 run.
 
 **D.**
-Output crosses the wire. The skill never does.
+The artifact file is not directly returned. Extraction risk remains.
 
-That single constraint is the whole protocol.
+That bounded claim is the protocol's hosted-delivery constraint.
 
 **E.**
 The most useful page we published is the list of things we haven't proven. It's shorter than the manifesto and it was harder to write.

@@ -1,0 +1,455 @@
+export const USDC_DECIMALS = 6;
+export const ATOMIC_PER_USDC = 10n ** BigInt(USDC_DECIMALS);
+export const BPS_DENOMINATOR = 10_000n;
+export const ROYALTY_ALLOCATION_POLICY = 'lrp-per-hop-v1';
+
+const MAX_ANCESTRY_DEPTH = 32;
+const MAX_REACHABLE_SKILLS = 128;
+const MAX_DISTRIBUTION_VISITS = 1_024;
+
+export class MoneyInputError extends RangeError {
+  constructor(code, message) {
+    super(message);
+    this.name = 'MoneyInputError';
+    this.code = code;
+  }
+}
+
+function fail(code, message) {
+  throw new MoneyInputError(code, message);
+}
+
+export function assertAtomic(value, label = 'amountAtomic') {
+  if (typeof value !== 'bigint') fail('ATOMIC_TYPE', `${label} must be a bigint`);
+  if (value < 0n) fail('ATOMIC_NEGATIVE', `${label} must be non-negative`);
+  return value;
+}
+
+export function assertBps(value, label = 'bps') {
+  if (!Number.isSafeInteger(value)) fail('BPS_INTEGER', `${label} must be a safe integer`);
+  if (value < 0 || value > 10_000) {
+    fail('BPS_RANGE', `${label} must be between 0 and 10000`);
+  }
+  return BigInt(value);
+}
+
+export function parseUsdc(value, label = 'USDC amount') {
+  if (typeof value !== 'string') fail('DISPLAY_TYPE', `${label} must be a decimal string`);
+  const text = value.trim();
+  const match = /^(0|[1-9]\d*)(?:\.(\d{1,6}))?$/.exec(text);
+  if (!match) {
+    fail(
+      'DISPLAY_FORMAT',
+      `${label} must be a non-negative decimal with at most six fractional digits`,
+    );
+  }
+  const whole = BigInt(match[1]);
+  const fraction = BigInt((match[2] ?? '').padEnd(USDC_DECIMALS, '0') || '0');
+  return whole * ATOMIC_PER_USDC + fraction;
+}
+
+export function formatUsdc(value) {
+  const atomic = assertAtomic(value);
+  const whole = atomic / ATOMIC_PER_USDC;
+  const fraction = String(atomic % ATOMIC_PER_USDC).padStart(USDC_DECIMALS, '0');
+  return `${whole}.${fraction}`;
+}
+
+export function floorBps(amountAtomic, bps) {
+  return (assertAtomic(amountAtomic) * assertBps(bps)) / BPS_DENOMINATOR;
+}
+
+function weightToBigInt(value, label) {
+  if (typeof value === 'bigint') {
+    if (value < 0n) fail('WEIGHT_NEGATIVE', `${label} must be non-negative`);
+    return value;
+  }
+  if (!Number.isSafeInteger(value) || value < 0) {
+    fail('WEIGHT_INTEGER', `${label} must be a non-negative safe integer or bigint`);
+  }
+  return BigInt(value);
+}
+
+function compareKeys(left, right) {
+  if (left.key < right.key) return -1;
+  if (left.key > right.key) return 1;
+  return 0;
+}
+
+export function allocateByWeights(amountAtomic, shares) {
+  const amount = assertAtomic(amountAtomic);
+  if (!Array.isArray(shares) || shares.length === 0) {
+    fail('ALLOCATIONS_EMPTY', 'shares must contain at least one allocation');
+  }
+
+  const seen = new Set();
+  const rows = shares.map((share, index) => {
+    const key = String(share?.key ?? '');
+    if (!key) fail('ALLOCATION_KEY', `shares[${index}].key must be non-empty`);
+    if (seen.has(key)) fail('ALLOCATION_DUPLICATE', `duplicate allocation key '${key}'`);
+    seen.add(key);
+    return { key, weight: weightToBigInt(share.weight, `shares[${index}].weight`) };
+  }).sort(compareKeys);
+
+  const totalWeight = rows.reduce((sum, row) => sum + row.weight, 0n);
+  if (totalWeight === 0n) {
+    fail('WEIGHTS_ZERO', 'at least one allocation weight must be positive');
+  }
+
+  const allocations = rows.map((row) => ({
+    key: row.key,
+    weight: row.weight,
+    amountAtomic: (amount * row.weight) / totalWeight,
+  }));
+  let remainder = amount - allocations.reduce((sum, row) => sum + row.amountAtomic, 0n);
+  for (const row of allocations) {
+    if (remainder === 0n) break;
+    if (row.weight === 0n) continue;
+    row.amountAtomic += 1n;
+    remainder -= 1n;
+  }
+  if (remainder !== 0n) {
+    throw new Error('internal invariant: weighted remainder was not exhausted');
+  }
+  return allocations.map(({ key, amountAtomic: allocated }) => ({
+    key,
+    amountAtomic: allocated,
+  }));
+}
+
+export function allocateByBps(amountAtomic, shares) {
+  if (!Array.isArray(shares) || shares.length === 0) {
+    fail('ALLOCATIONS_EMPTY', 'shares must contain at least one allocation');
+  }
+  const normalized = shares.map((share, index) => ({
+    key: share?.key,
+    weight: assertBps(share?.bps, `shares[${index}].bps`),
+  }));
+  const total = normalized.reduce((sum, row) => sum + row.weight, 0n);
+  if (total !== BPS_DENOMINATOR) {
+    fail('BPS_TOTAL', `basis-point allocations must sum to 10000 (got ${total})`);
+  }
+  return allocateByWeights(amountAtomic, normalized);
+}
+
+export function allocateRoyaltyGraph({
+  royaltyPoolAtomic,
+  leafSkillId,
+  skills,
+  allocationPolicy = ROYALTY_ALLOCATION_POLICY,
+}) {
+  const pool = assertAtomic(royaltyPoolAtomic, 'royaltyPoolAtomic');
+  if (allocationPolicy !== ROYALTY_ALLOCATION_POLICY) {
+    fail(
+      'ALLOCATION_POLICY_UNSUPPORTED',
+      `unsupported royalty allocation policy '${String(allocationPolicy)}'; `
+        + `only '${ROYALTY_ALLOCATION_POLICY}' is implemented`,
+    );
+  }
+  if (!skills || typeof skills !== 'object' || Array.isArray(skills)) {
+    fail('SKILLS_TYPE', 'skills must be an object keyed by Skill identifier');
+  }
+
+  function requireSkill(skillId) {
+    if (!Object.hasOwn(skills, skillId) || !skills[skillId] || typeof skills[skillId] !== 'object') {
+      fail('SKILL_UNKNOWN', `unknown Skill '${skillId}'`);
+    }
+    return skills[skillId];
+  }
+
+  function normalizedNode(skillId) {
+    const skill = requireSkill(skillId);
+    if (!Array.isArray(skill.parentIds)) {
+      fail('PARENTS_TYPE', `Skill '${skillId}' parentIds must be an array`);
+    }
+    if (!Array.isArray(skill.holders)) {
+      fail('HOLDERS_TYPE', `Skill '${skillId}' holders must be an array`);
+    }
+    const parentIds = skill.parentIds.map(String).sort();
+    if (new Set(parentIds).size !== parentIds.length) {
+      fail('PARENT_DUPLICATE', `Skill '${skillId}' has a duplicate parent`);
+    }
+    assertBps(skill.inheritBps, `${skillId}.inheritBps`);
+    const inheritBps = skill.inheritBps;
+    const holders = skill.holders.map((holder) => ({
+      key: holder?.recipientId,
+      bps: holder?.bps,
+    }));
+    // Validate the complete claim table even if this traversal carries zero atomic units.
+    allocateByBps(0n, holders);
+    return { parentIds, inheritBps, holders };
+  }
+
+  const deepestValidatedDepth = new Map();
+  const validating = new Set();
+  const reachableNodes = new Set();
+  function validateReachable(skillId, depth) {
+    if (depth > MAX_ANCESTRY_DEPTH) {
+      fail('ANCESTRY_DEPTH', `Derivative ancestry exceeds maximum depth ${MAX_ANCESTRY_DEPTH}`);
+    }
+    if (validating.has(skillId)) {
+      fail('ANCESTRY_CYCLE', `ancestry cycle contains Skill '${skillId}'`);
+    }
+    const priorDepth = deepestValidatedDepth.get(skillId);
+    // A prior visit at an equal or greater depth had no more remaining depth budget.
+    if (priorDepth != null && priorDepth >= depth) return;
+
+    const node = normalizedNode(skillId);
+    reachableNodes.add(skillId);
+    if (reachableNodes.size > MAX_REACHABLE_SKILLS) {
+      fail(
+        'ANCESTRY_NODES',
+        `Derivative ancestry exceeds maximum ${MAX_REACHABLE_SKILLS} reachable Skills`,
+      );
+    }
+    validating.add(skillId);
+    for (const parentId of node.parentIds) validateReachable(parentId, depth + 1);
+    validating.delete(skillId);
+    deepestValidatedDepth.set(
+      skillId,
+      priorDepth == null || depth > priorDepth ? depth : priorDepth,
+    );
+  }
+
+  const leaf = String(leafSkillId ?? '');
+  validateReachable(leaf, 0);
+
+  const credits = [];
+  const visiting = new Set();
+  let distributionVisits = 0;
+  function distribute(skillId, amountAtomic, depth) {
+    distributionVisits += 1;
+    if (distributionVisits > MAX_DISTRIBUTION_VISITS) {
+      fail(
+        'ANCESTRY_VISITS',
+        `Derivative ancestry distribution exceeds maximum ${MAX_DISTRIBUTION_VISITS} visits`,
+      );
+    }
+    if (depth > MAX_ANCESTRY_DEPTH) {
+      fail('ANCESTRY_DEPTH', `Derivative ancestry exceeds maximum depth ${MAX_ANCESTRY_DEPTH}`);
+    }
+    if (visiting.has(skillId)) {
+      fail('ANCESTRY_CYCLE', `ancestry cycle contains Skill '${skillId}'`);
+    }
+    visiting.add(skillId);
+
+    const node = normalizedNode(skillId);
+    const ancestorPool = node.parentIds.length
+      ? floorBps(amountAtomic, node.inheritBps)
+      : 0n;
+    const ownPool = amountAtomic - ancestorPool;
+    const holderRows = allocateByBps(ownPool, node.holders);
+    for (const row of holderRows) {
+      credits.push({
+        recipientId: row.key,
+        viaSkillId: skillId,
+        depth,
+        kind: depth === 0 ? 'holder' : 'ancestor',
+        amountAtomic: row.amountAtomic,
+      });
+    }
+
+    if (node.parentIds.length && ancestorPool > 0n) {
+      const parentRows = allocateByWeights(
+        ancestorPool,
+        node.parentIds.map((parentId) => ({ key: parentId, weight: 1 })),
+      );
+      for (const row of parentRows) distribute(row.key, row.amountAtomic, depth + 1);
+    }
+    visiting.delete(skillId);
+  }
+
+  distribute(leaf, pool, 0);
+  const credited = credits.reduce((sum, credit) => sum + credit.amountAtomic, 0n);
+  if (credited !== pool) {
+    throw new Error(`internal invariant: credits ${credited} do not equal Royalty pool ${pool}`);
+  }
+  return {
+    allocationPolicy,
+    royaltyPoolAtomic: pool,
+    credits,
+    holderCredits: credits.filter((credit) => credit.kind === 'holder'),
+    ancestorCredits: credits.filter((credit) => credit.kind === 'ancestor'),
+  };
+}
+
+function requireCoveredGross(grossAtomic, components) {
+  const required = components.reduce((sum, component) => sum + component, 0n);
+  if (required > grossAtomic) {
+    fail(
+      'GROSS_INSUFFICIENT',
+      `gross ${grossAtomic} cannot cover costs and reserves ${required}`,
+    );
+  }
+  return grossAtomic - required;
+}
+
+function journalEntry(category, debitAccountId, creditAccountId, amountAtomic) {
+  return {
+    category,
+    debitAccountId,
+    creditAccountId,
+    amountAtomic: assertAtomic(amountAtomic),
+  };
+}
+
+export function allocateExternalGross({
+  grossAtomic,
+  executionCostAtomic,
+  settlementCostAtomic,
+  protocolFeeBps,
+  refundReserveAtomic,
+  leafSkillId,
+  skills,
+  allocationPolicy = ROYALTY_ALLOCATION_POLICY,
+}) {
+  const gross = assertAtomic(grossAtomic, 'grossAtomic');
+  const executionCost = assertAtomic(executionCostAtomic, 'executionCostAtomic');
+  const settlementCost = assertAtomic(settlementCostAtomic, 'settlementCostAtomic');
+  const refundReserve = assertAtomic(refundReserveAtomic, 'refundReserveAtomic');
+  const protocolFee = floorBps(gross, protocolFeeBps);
+  const royaltyPool = requireCoveredGross(
+    gross,
+    [executionCost, settlementCost, protocolFee, refundReserve],
+  );
+  const royalty = allocateRoyaltyGraph({
+    royaltyPoolAtomic: royaltyPool,
+    leafSkillId,
+    skills,
+    allocationPolicy,
+  });
+  const debitAccountId = 'wielder:external-gross';
+  const journalEntries = [
+    journalEntry('execution-cogs', debitAccountId, 'provider:execution', executionCost),
+    journalEntry('settlement-cogs', debitAccountId, 'provider:settlement', settlementCost),
+    journalEntry('protocol-fee', debitAccountId, 'protocol:treasury', protocolFee),
+    journalEntry('refund-reserve', debitAccountId, 'reserve:refund', refundReserve),
+    ...royalty.credits.map((credit) => journalEntry(
+      credit.kind === 'holder' ? 'royalty-holder' : 'royalty-ancestor',
+      debitAccountId,
+      `royalty:${credit.recipientId}`,
+      credit.amountAtomic,
+    )),
+  ];
+  return {
+    allocationPolicy: royalty.allocationPolicy,
+    grossAtomic: gross,
+    executionCostAtomic: executionCost,
+    settlementCostAtomic: settlementCost,
+    protocolFeeAtomic: protocolFee,
+    royaltyPoolAtomic: royaltyPool,
+    refundReserveAtomic: refundReserve,
+    credits: royalty.credits,
+    holderCredits: royalty.holderCredits,
+    ancestorCredits: royalty.ancestorCredits,
+    journalEntries,
+  };
+}
+
+export function allocateInternalGross({
+  grossAtomic,
+  executionCostAtomic,
+  protocolFeeAtomic,
+  refundReserveAtomic,
+  recipientId,
+  employerId,
+}) {
+  const gross = assertAtomic(grossAtomic, 'grossAtomic');
+  const executionCost = assertAtomic(executionCostAtomic, 'executionCostAtomic');
+  const protocolFee = assertAtomic(protocolFeeAtomic, 'protocolFeeAtomic');
+  const refundReserve = assertAtomic(refundReserveAtomic, 'refundReserveAtomic');
+  const invocationAward = requireCoveredGross(
+    gross,
+    [executionCost, protocolFee, refundReserve],
+  );
+  const recipient = String(recipientId ?? '');
+  if (!recipient) fail('RECIPIENT_REQUIRED', 'recipientId must be non-empty');
+  if (employerId != null && recipient === String(employerId)) {
+    fail(
+      'EMPLOYER_AWARD_RECIPIENT',
+      'employer cannot receive an employee Invocation award',
+    );
+  }
+  const debitAccountId = 'employer:invocation-gross';
+  return {
+    grossAtomic: gross,
+    executionCostAtomic: executionCost,
+    protocolFeeAtomic: protocolFee,
+    refundReserveAtomic: refundReserve,
+    invocationAwardAtomic: invocationAward,
+    awardCredit: { recipientId: recipient, amountAtomic: invocationAward },
+    journalEntries: [
+      journalEntry('execution-cogs', debitAccountId, 'provider:execution', executionCost),
+      journalEntry('protocol-fee', debitAccountId, 'protocol:treasury', protocolFee),
+      journalEntry('refund-reserve', debitAccountId, 'reserve:refund', refundReserve),
+      journalEntry(
+        'invocation-award',
+        debitAccountId,
+        `employee:${recipient}`,
+        invocationAward,
+      ),
+    ],
+  };
+}
+
+export function allocateInternalFailureGross({ executionCostAtomic }) {
+  const executionCost = assertAtomic(executionCostAtomic, 'executionCostAtomic');
+  const debitAccountId = 'employer:invocation-gross';
+  return {
+    grossAtomic: executionCost,
+    executionCostAtomic: executionCost,
+    journalEntries: [
+      journalEntry('execution-cogs', debitAccountId, 'provider:execution', executionCost),
+    ],
+  };
+}
+
+function sameInternalJournalEntry(actual, expected) {
+  if (!actual || typeof actual !== 'object' || Array.isArray(actual)) return false;
+  const keys = Object.keys(actual).sort();
+  const expectedKeys = ['amountAtomic', 'category', 'creditAccountId', 'debitAccountId'];
+  if (keys.length !== expectedKeys.length
+      || keys.some((key, index) => key !== expectedKeys[index])) return false;
+  return actual.category === expected.category
+    && actual.debitAccountId === expected.debitAccountId
+    && actual.creditAccountId === expected.creditAccountId
+    && actual.amountAtomic === expected.amountAtomic;
+}
+
+export function validateInternalJournalEntries(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    fail('INTERNAL_JOURNAL_INPUT', 'internal journal validation input must be an object');
+  }
+  let expected;
+  if (input.kind === 'succeeded') {
+    expected = allocateInternalGross({
+      grossAtomic: input.grossAtomic,
+      executionCostAtomic: input.executionCostAtomic,
+      protocolFeeAtomic: input.protocolFeeAtomic,
+      refundReserveAtomic: input.refundReserveAtomic,
+      recipientId: input.recipientId,
+      employerId: input.employerId,
+    });
+  } else if (input.kind === 'failed_after_start') {
+    const allocation = allocateInternalFailureGross({
+      executionCostAtomic: input.executionCostAtomic,
+    });
+    if (assertAtomic(input.grossAtomic, 'grossAtomic') !== allocation.grossAtomic) {
+      fail('INTERNAL_JOURNAL_GROSS', 'known failure gross must equal exact execution COGS');
+    }
+    expected = allocation;
+  } else {
+    fail('INTERNAL_JOURNAL_KIND', 'unsupported internal journal validation kind');
+  }
+  if (!Array.isArray(input.journalEntries)
+      || input.journalEntries.length !== expected.journalEntries.length
+      || input.journalEntries.some((entry, index) => (
+        !sameInternalJournalEntry(entry, expected.journalEntries[index])
+      ))) {
+    fail(
+      'INTERNAL_JOURNAL_MISMATCH',
+      'internal journal entries do not match shared kernel allocation',
+    );
+  }
+  return input.journalEntries;
+}

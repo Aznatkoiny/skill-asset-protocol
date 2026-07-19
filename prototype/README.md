@@ -1,7 +1,24 @@
 # Prototype — settlement loop economics
 
 > **Throwaway.** This exists to answer one question, then be deleted or absorbed.
-> `settlement-engine.mjs` is the keeper (pure logic); `settlement-tui.mjs` is the disposable shell.
+> `settlement-engine.mjs` and `settlement-tui.mjs` are historical prototype consumers.
+
+## Accounting kernel status
+
+`atomic-money.mjs` is the tested accounting source for new work. It accepts USDC at
+the display boundary, converts it to six-decimal atomic `bigint` values, and proves
+exact gross and Royalty-pool conservation under deterministic remainder allocation.
+
+The only implemented ancestry allocation policy is the explicitly named
+`lrp-per-hop-v1`, an LRP-like relative split applied once per Derivative hop. LAP
+(whole-ancestry absolute allocation) remains unimplemented and deferred; callers
+must not infer LAP semantics from this spike.
+
+`settlement-engine.mjs` and its TUI are historical prototype consumers that still use
+display-number state. Do not use them for new receipts or public allocation figures.
+The Collar and employer-budget plans migrate their runtime consumers to
+`atomic-money.mjs`; historical results remain labeled as historical rather than being
+silently recomputed.
 
 ## The question
 

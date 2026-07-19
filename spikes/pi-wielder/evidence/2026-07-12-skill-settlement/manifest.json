@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "evidenceId": "base-sepolia-skill-settlement-2026-07-12",
+  "evidenceStatus": "historical_transaction_receipt_verified",
+  "network": {
+    "name": "base-sepolia",
+    "chainId": 84532
+  },
+  "transaction": {
+    "txHash": "0xaf1ba2fe508ee9d6bfe0823e25a05fc8b05c8dbac007b40b7d36dbbe447af522",
+    "status": "success",
+    "blockNumber": 44053992,
+    "blockHash": "0x7aad94c78a3c7a4eda90c70b510bd1f27a8b44d2c135d98a95473a561d48f56f",
+    "blockTimestamp": "2026-07-12T17:11:12.000Z",
+    "to": "0x036cbd53842c5426634e7929541ec2318f3dcf7e"
+  },
+  "usdcTransfer": {
+    "from": "0xdddf065692ae373266a921f028ba6666a583053f",
+    "to": "0x25005dfac23d4bc45c801eaeb6c8b5a2bab0f189",
+    "amountAtomic": "250000"
+  },
+  "verification": {
+    "method": "eth_getTransactionReceipt",
+    "rpc": "https://sepolia.base.org",
+    "verifiedOn": "2026-07-17",
+    "repositorySourceCommit": "69e7c6c17ba92792e1e0a8fee15fc90efc998c84",
+    "repositorySourcePath": "spikes/pi-wielder/README.md"
+  },
+  "publication": {
+    "allowed": true,
+    "publicClaim": "One successful Base Sepolia USDC transfer transaction exists; the repository's 2026-07-12 historical run log labels it as the Skill-leg settlement.",
+    "doesNotProve": [
+      "current endpoint behavior",
+      "latency",
+      "Royalty-claim split correctness",
+      "Skill execution output",
+      "independent demand",
+      "production readiness"
+    ]
+  }
+}

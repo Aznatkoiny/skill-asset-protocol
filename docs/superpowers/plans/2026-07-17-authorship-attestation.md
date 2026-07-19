@@ -787,9 +787,11 @@ Expected: tests/typecheck PASS; status command returns JSON with an empty `regis
 
 - [ ] **Step 6: Confirm no chain write or protected-corpus edit entered the slice**
 
-Run: `git diff --exit-code -- CONTEXT.md docs/PRD.md docs/adr && ! rg -n 'authored by|proves? (originality|safety)|safe Skill' phase0/src phase0/README.md`
+Run: `git diff --exit-code -- CONTEXT.md docs/PRD.md docs/adr && ! rg -n -P '\bauthored by\b|(?<!not )\bproves? (?:originality|safety)\b|\bsafe Skill\b' phase0/src phase0/README.md`
 
-Expected: exit 0 and no forbidden overclaim matches.
+Expected: exit 0 and no affirmative forbidden overclaim matches. Required negative
+disclaimers such as `does not prove originality` and `does not prove safety` remain
+allowed and visible.
 
 Run:
 

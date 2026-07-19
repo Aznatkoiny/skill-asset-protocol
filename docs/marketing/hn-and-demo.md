@@ -10,21 +10,29 @@ language anywhere.*
 
 ## 1. Show HN draft
 
+> **PUBLICATION BLOCKED — INVALID BENCHMARK.** The 2026-07-12 target scored
+> 0.400 and failed its own critical gates, so clone quality, resistance to output imitation, and
+> break-even conclusions are suppressed. Acquisition was modeled at $1.50; no
+> x402 acquisition payments settled. Unblock only after
+> `spikes/clone-economics` produces a valid N=100 result with committed normalized
+> evidence and three live-adapter-confirmed independent distillation seeds.
+
 ### Title options (pick one; all under 80 chars)
 
 1. `Show HN: A manifesto that is also a paid API endpoint (HTTP 402)`
-2. `Show HN: We paid $1.58 to clone our own AI skill. It failed all 6 gates`
+2. `Show HN: An invalid clone benchmark and the gate we added after it`
 3. `Show HN: Metering AI skills per invocation instead of handing them over`
 
 Recommendation: title 1. It describes the artifact, not the thesis, and the artifact is the
-novel thing. Title 2 is the fallback if a second submission is ever warranted — it leads with
-the result that is most likely to survive HN scrutiny, because it is us attacking ourselves.
+novel thing. Title 2 remains blocked with the clone-economics copy until the evidence gate
+above is satisfied and a human approves revised copy.
 
 ### Post text (submit as a text post with the URL, or as first comment — ~230 words)
 
 > https://neverhandedover.com is a manifesto that is literally a paid endpoint. POST to it
 > without payment and you get HTTP 402. Pay $0.25 in testnet USDC (play money, Base Sepolia)
-> and the hosted skill runs and streams you output. You never get the skill itself.
+> and the hosted Skill runs and streams you output. The artifact file is not directly
+> returned; model-output extraction remains an adversarial runtime risk.
 >
 > The thesis: authored AI skills (Claude Code skills, plugins, agent definitions) are work
 > artifacts, and work-for-hire's default split is 100/0 — employer gets everything, author
@@ -32,18 +40,29 @@ the result that is most likely to survive HN scrutiny, because it is us attackin
 > and splits the metered revenue to a co-held claim. Carta for AI work artifacts. The
 > marketplace angle is future optionality, not the product.
 >
-> What we measured (testnet, 2026-07-12): one wallet paid per model call AND per skill
-> invocation over x402. Ledger: claude/plan $0.041, skill $0.25 → creator $0.24375 /
-> treasury $0.00625, reconciled against on-chain balances to the cent. Payment overhead
-> p50 731ms / p95 1206ms per call (n=48 settled calls, both model providers);
-> hosted-agent cold start ~2.5s to first token.
+> What we measured (testnet, 2026-07-12): one wallet paid per model call AND per Skill
+> Invocation over x402. The first instrumented payment-overhead read was ~781 ms
+> (n=1, Base Sepolia testnet, play money); hosted-agent cold start was ~2.5s to
+> first token in a separate measurement. Ledger (testnet USDC, play money):
+> claude/plan $0.041, Skill $0.25 → Creator $0.24375 / treasury $0.00625.
 >
-> What we tried to break: we paid $1.58 to distill a clone of our own skill from its
-> outputs (distillation itself cost $0.03). The clone failed all 6 held-out fidelity gates —
-> but N=6, high-N behavior unknown. Modeled break-even if a clone ever passes: 8 invocations.
-> Cost protects nothing.
+> The aggregate testnet USDC payment to the seller `payTo` address reconciled
+> on-chain. The Creator/treasury amounts were off-chain reference-ledger credits;
+> they were not separate on-chain transfers.
 >
-> We also documented two live failure modes: 10 calls that settled then 500'd ($0.87 paid,
+> The 2026-07-15 overhead distribution is historical but not reproducible from a
+> clean checkout because normalized per-call samples were not retained. Its sample
+> count, p50, and p95 are quarantined from publication; see
+> `spikes/pi-wielder/evidence/2026-07-15-overhead/manifest.json`. No replacement
+> measurement has been run.
+>
+> The historical N=6 run used a modeled $1.50 acquisition cost and measured about
+> $0.03 of distillation-provider cost; no acquisition payment settled. Its target
+> failed the benchmark, so clone quality, resistance to output imitation, and break-even are
+> unknown. Publication remains blocked pending a valid preregistered N=100 run.
+>
+> We also documented two live failure modes: 10 calls that settled then 500'd ($0.87 of
+> testnet USDC play money paid,
 > no refund path in x402 v1 — our bug, published), and 1 of 50 that settled on-chain yet
 > returned 402 — that one caught only by cent-exact wallet reconciliation.
 >
@@ -53,9 +72,9 @@ the result that is most likely to survive HN scrutiny, because it is us attackin
 > Code (Apache-2.0): https://github.com/Aznatkoiny/skill-asset-protocol — the end-to-end
 > demo runs offline with zero API keys and zero funds.
 
-Notes on register: no adjectives doing sales work, every claim has a number, and the two
-weakest points (N=6, no demand evidence) are volunteered before anyone finds them. On HN
-the honesty ledger IS the pitch.
+Notes on register: no adjectives doing sales work, every claim has a number, and the invalid
+clone benchmark plus lack of demand evidence are volunteered before anyone finds them. On
+HN the honesty ledger IS the pitch.
 
 ### First-hour comment strategy: the 5 hardest questions, with prepared answers
 
@@ -85,15 +104,21 @@ Post these as replies, verbatim or trimmed. Never argue tone; concede fast and l
 > Stripe's card-and-account rails can't do machine-to-machine 25-cent calls without an
 > onboarding relationship (Stripe itself now ships an x402 integration).
 > Provenance: fork ancestry lives on a neutral registry (Story Protocol) that neither
-> employer nor employee administers. And the receipts in the demo are publicly auditable —
-> that's how we reconciled the ledger to the cent. We're explicit in the docs that the
-> idealized atomic loop does not compose (wrong chain, wrong token, wrong primitive) and
-> settlement is two-leg and eventually consistent.
+> employer nor employee administers.
+>
+> The aggregate testnet USDC payment to the seller `payTo` address reconciled
+> on-chain. The Creator/treasury amounts were off-chain reference-ledger credits;
+> they were not separate on-chain transfers.
+>
+> We're explicit in the docs that the idealized atomic loop does not compose
+> (wrong chain, wrong token, wrong primitive) and settlement is two-leg and
+> eventually consistent.
 
 **Q3. "A skill is a markdown file. Prompts are worthless; the model does the work."**
 
 > A skill is plaintext and trivially copyable — that's the first ADR in the repo, not a
-> gotcha. We don't sell secrecy: the wielder gets output only, but the host sees the skill in
+> gotcha. We don't sell secrecy: the artifact file is not directly returned and
+> model-output extraction remains an adversarial runtime risk; the host sees the Skill in
 > plaintext, and in the intra-org mode the employer already possesses it. What's for sale is
 > attribution and metered compensation, the way Carta doesn't make cap tables secret. On
 > "worthless": some skills are — each frontier model release absorbs packaged prompting, so a
@@ -103,14 +128,10 @@ Post these as replies, verbatim or trimmed. Never argue tone; concede fast and l
 
 **Q4. "Anyone can distill your skill from its own outputs for pennies. Your economics are dead."**
 
-> We ran exactly that attack on ourselves before launch and published it. Total cost $1.58,
-> and the distillation step itself was $0.03; modeled break-even is 8 invocations if a clone
-> ever passes. So yes: cost protects nothing, and we say so in those words. What we observed
-> is that the clone failed all 6 held-out fidelity gates, and a synthetic evolution pass
-> doubled the target–clone gap in one revision — fidelity and live evolution are the only
-> defenses we've seen work. Big caveat we volunteer: N=6, high-N behavior unknown, we won't
-> cite it as resolved. And in the intra-org frame the employer already has the file, so
-> clone-resistance isn't what's being sold there — attribution is.
+> The historical N=6 run used a modeled $1.50 acquisition cost and measured about
+> $0.03 of distillation-provider cost; no acquisition payment settled. Its target
+> failed the benchmark, so clone quality, resistance to output imitation, and break-even are
+> unknown. Publication remains blocked pending a valid preregistered N=100 run.
 
 **Q5. "Who would actually pay for this?"**
 
@@ -134,8 +155,9 @@ monitored monthly; platforms won't ship 409A-structured co-held comp instruments
 
 ## 2. Demo clip script (45–60s screen recording, no voiceover, big captions)
 
-One continuous story: read → blocked → pay → output → receipt → split → thesis. Captions in
-a large mono face, bottom third, one sentence max. Terminal at large font size (18pt+).
+One continuous story: read → blocked → pay → output → receipt → off-chain split credits →
+thesis. Captions in a large mono face, bottom third, one sentence max. Terminal at large
+font size (18pt+).
 Target total: **57s**.
 
 | # | Sec | On screen | Caption text |
@@ -143,17 +165,18 @@ Target total: **57s**.
 | 1 | 0–6 (6s) | Slow scroll of neverhandedover.com — the manifesto text, ending on the URL bar | `This manifesto is a paid API endpoint.` |
 | 2 | 6–13 (7s) | Terminal: `curl -X POST https://neverhandedover.com/...` → response renders, `HTTP/1.1 402 Payment Required` highlighted | `POST without payment → HTTP 402.` |
 | 3 | 13–21 (8s) | Same terminal: client retries with x402 payment; a `$0.25` testnet USDC payment line and settle confirmation appear | `Pay $0.25 — testnet USDC. Play money.` |
-| 4 | 21–31 (10s) | Skill output streams into the terminal, token by token (real speed; ~2.5s pause to first token left in — it is honest and reads as live) | `You get the output. Never the skill.` |
+| 4 | 21–31 (10s) | Skill output streams into the terminal, token by token (real speed; ~2.5s pause to first token left in — it is honest and reads as live) | `The artifact file is not directly returned. Extraction risk remains.` |
 | 5 | 31–40 (9s) | Browser: the transaction on sepolia.basescan.org — highlight the transfer to the payTo address, cursor circles the amount | `Every invocation is an on-chain receipt.` |
-| 6 | 40–49 (9s) | The ledger, zoomed on one line: `claude/plan $0.041 · skill $0.25 → creator $0.24375 / treasury $0.00625` — then a second frame: on-chain balances matching | `Metered, split, reconciled to the cent.` |
-| 7 | 49–57 (8s) | Cut to black. Two lines of text, then URLs fade in: `neverhandedover.com` / `github.com/Aznatkoiny/skill-asset-protocol` | `The artifact was never handed over.` (line 2, smaller: `Testnet demo. Open source, Apache-2.0.`) |
+| 6 | 40–49 (9s) | BaseScan, zoomed on the aggregate testnet USDC transfer to the seller `payTo` address; then the off-chain reference-ledger Creator/treasury credits | `Seller payment on-chain. Split credits off-chain.` |
+| 7 | 49–57 (8s) | Cut to black. Two lines of text, then URLs fade in: `neverhandedover.com` / `github.com/Aznatkoiny/skill-asset-protocol` | `The artifact file is not directly returned. Extraction risk remains.` (line 2, smaller: `Testnet demo. Open source, Apache-2.0.`) |
 
 Production notes:
 - No music required; if any, something metronomic and quiet.
 - Shots 2–4 are one unbroken terminal take — do not cut between 402 and output; the
   no-cut is the proof.
-- Keep real latency visible (the ~731ms-median payment beat, the ~2.5s cold start). Speeding it up
-  would be the only dishonest frame in the clip.
+- If the 2026-07-12 take is used, keep its ~781 ms instrumented payment beat
+  (n=1, Base Sepolia testnet, play money) and the ~2.5s cold start visible. Do not
+  caption it with the quarantined 2026-07-15 distribution.
 - Shot 6's caption carries the compliance load with shot 3: "testnet / play money" must be
   on screen in both the payment shot and the closing card.
 - Export 1080p or better; the basescan and ledger text must be legible on a phone.
@@ -222,13 +245,14 @@ Phase-0 window, we do not build Phase 1 on spec.
 > private — its repo link 404'd for readers from Monday until the flip on Wed 07-15. No
 > pre-flight was logged and this table was not started on time; the rows below are
 > reconstructed from verifiable sources, with "not logged" where nothing was recorded.
-> Day 0's ~$0.328 of gateway-debugging spend is not logged per-call; on-chain receipts
+> Day 0's ~$0.328 of testnet USDC play-money gateway-debugging spend is not logged
+> per-call; on-chain receipts
 > are pullable from basescan retroactively. All on-chain invocations to date are our own
 > wallet (self-traffic): unique external payers = 0.
 
 | Day | Date | Demo invocations (count / unique payers) | Repo stars / forks / clones | Conversations started | Critiques we couldn't answer |
 |---|---|---|---|---|---|
-| — | Sun 07-12 | 3 / 1 (self — first real-network run: 2 model legs + 1 skill, $0.332, reconciled on-chain) | n/a (repo private) | 0 | 0 |
-| 0 | Mon 07-13 | self only, ~$0.328 (gateway debugging; not logged per-call) | n/a (repo private — Post 1 link 404) | not logged | not logged |
+| — | Sun 2026-07-12 | 3 / 1 (self — first real-network run: 2 model legs + 1 Skill, $0.332 of testnet USDC play money; aggregate seller payment reconciled on-chain) | n/a (repo private) | 0 | 0 |
+| 0 | Mon 07-13 | self only, ~$0.328 of testnet USDC play money (gateway debugging; not logged per-call) | n/a (repo private — Post 1 link 404) | not logged | not logged |
 | 1 | Tue 07-14 | 0 | n/a (repo private) | not logged | not logged |
-| 2 | Wed 07-15 | 57 settlements / 1 payer (all self): 1 smoke + 7 pi session + 48 bench + 1 settled-but-rejected; $3.211 total, wallet 19.340 → 16.129 reconciled to the cent | flip today — baseline 0 / 0 / 0; first insights readable tomorrow | fill at EOD | fill at EOD |
+| 2 | Wed 2026-07-15 | Self-traffic only. The overhead batch's sample count and distribution are quarantined under the historical tombstone; separate retained events include 1 smoke, 7 pi-session calls, and 1 settled-but-rejected call. Aggregate wallet reconciliation is not normalized latency evidence. | flip today — baseline 0 / 0 / 0; first insights readable tomorrow | fill at EOD | fill at EOD |

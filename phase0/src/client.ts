@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { createPublicClient, defineChain, http } from "viem";
+import { createPublicClient, createWalletClient, defineChain, http } from "viem";
 import { privateKeyToAccount, type Account } from "viem/accounts";
 import { StoryClient, type StoryConfig } from "@story-protocol/core-sdk";
 
@@ -37,4 +37,12 @@ export function getClient(): StoryClient {
 // viem public client (read path: balances, etc.)
 export function getPublicClient() {
   return createPublicClient({ chain: aeneidChain, transport: http(RPC) });
+}
+
+export function getWalletClient() {
+  return createWalletClient({
+    account: getAccount(),
+    chain: aeneidChain,
+    transport: http(RPC),
+  });
 }

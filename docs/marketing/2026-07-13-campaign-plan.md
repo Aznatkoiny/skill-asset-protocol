@@ -33,7 +33,7 @@ they only quote names they've seen show up usefully.
 
 **Show HN is the neutral-ground, high-leverage event — deliberately not Day 0.**
 HN is where the claims get stress-tested by strangers with no reason to be kind, and where
-the honesty ledger (kill-criteria, "What we have NOT validated", the failed clone attack) is
+the honesty ledger (kill-criteria, "What we have NOT validated", the invalid clone benchmark) is
 worth the most. We go there only after the demo is battle-tested: a week of live paid
 invocations, the fresh-machine clone-and-run verified again the night before, and the five
 prepared answers (`hn-and-demo.md` §1) open in a tab. HN lands Day 9.
@@ -74,10 +74,14 @@ verified live, LinkedIn Post 1 out — no X thread, no HN.
 >
 > **Acknowledged kit overrides:** (a) x.md §4's "week 1 = reply only, post nothing
 > original" is compressed — Post 1 already broke broadcast silence on 07-13, so the
-> artifact cadence starts today; (b) Post 2's context prefers mid-week *morning* —
-> afternoon-after-the-flip beats morning-before-the-flip, so it ships this afternoon;
+> artifact cadence starts today; (b) Post 2's historical context preferred mid-week
+> *morning*, but that scheduled action is now blocked by the evidence override below;
 > (c) the launch thread's reply history is 8 calendar days / 6 active reply days
 > (weekends rest) — start the reply routine today without fail.
+
+> **2026-07-17 evidence override:** all clone-economics publication steps below
+> are historical schedule entries and are blocked. A calendar date never
+> overrides an evidence gate.
 
 ### Revamped calendar (Day 2 = Wed 07-15 → HN)
 
@@ -85,12 +89,12 @@ verified live, LinkedIn Post 1 out — no X thread, no HN.
 |---|---|---|
 | 0 | Mon 07-13 | *(done)* LinkedIn Post 1 out, pinned. Repo flip did NOT happen — slip recorded. |
 | 1 | Tue 07-14 | *(done)* Silent. x402 Foundation launches under the Linux Foundation — this week's reply-routine entry point. |
-| **2** | **Wed 07-15 (today)** | ① **Repo public FIRST** (pre-flight passed; verify from a logged-out browser after the flip). ② Reply to any Post-1 comments that hit the 404 — factual correction in a reply, never silent. ③ **LinkedIn Post 2** (clone story) this afternoon — 2 days after Post 1; repo link in first comment now resolves. ④ **X artifact #1**: the raw 402 from the LIVE endpoint (`docs/marketing/artifacts/raw-402-response-live.txt` — production URL + "output only, never the skill" in the payload); tweet text below. ⑤ Reply routine starts (x402-Foundation news as the entry; measured numbers, never a pitch). ⑥ Metrics table started (`hn-and-demo.md` §3 daily log). |
-| 3 | Thu 07-16 | X artifact #2: the ledger line reconciled on-chain to the cent (testnet, play money). Replies. |
+| **2** | **Wed 07-15 (today)** | ① **Repo public FIRST** (pre-flight passed; verify from a logged-out browser after the flip). ② Reply to any Post-1 comments that hit the 404 — factual correction in a reply, never silent. ③ **BLOCKED:** do not publish clone-economics copy. The N=6 target failed its own acceptance gate; the required valid N=100 evidence bundle does not exist. ④ **X artifact #1**: the raw 402 from the LIVE endpoint (`docs/marketing/artifacts/raw-402-response-live.txt` — production URL + its original absolute description in the payload; see the historical-wire note below); tweet text below. ⑤ Reply routine starts (x402-Foundation news as the entry; measured numbers, never a pitch). ⑥ Metrics table started (`hn-and-demo.md` §3 daily log). |
+| 3 | Thu 07-16 | X artifact #2: the aggregate seller `payTo` transfer reconciled on-chain; the Creator/treasury credits remained off-chain (testnet, play money). Replies. |
 | 4 | Fri 07-17 | X artifact #3: "What we have NOT validated" page, screenshotted. Light day. |
 | 5–6 | Sat–Sun 07-18/19 | **Rest days** (Sun: optional 15 min of replies if a good conversation is live). |
 | 7 | Mon 07-20 | X artifact #4: the kill-criteria arithmetic that killed education mode. Replies. |
-| 8 | Tue 07-21 | **LinkedIn Post 3** (design-partner ask) ~8:30am ET + targeted reshares. X artifact #5: the n=48 overhead distribution (new artifact, x.md §4). |
+| 8 | Tue 07-21 | **LinkedIn Post 3** (design-partner ask) ~8:30am ET + targeted reshares. **BLOCKED:** do not publish the historical overhead distribution; use the 2026-07-15 quarantine status below. |
 | 9 | Wed 07-22 | **Record the demo clip** (`hn-and-demo.md` §2) — one week of live traffic since the flip; verify basescan links. X artifact #6: pay-then-fail receipt. Prep ecosystem tag reply; hand-verify org @handles. |
 | 10 | Thu 07-23 | **X launch thread** (x.md §1, amended numbers) late morning, demo clip on tweet 1, pin, ecosystem tag reply first. Hours 1–3 live in replies. |
 | 11 | Fri 07-24 | Thread aftercare. X spacer: the pi session ledger (single tweet — 48h thread spacing holds). |
@@ -98,13 +102,33 @@ verified live, LinkedIn Post 1 out — no X thread, no HN.
 | 14 | Mon 07-27 | X spacer: ~150-line Wielder proxy screenshot. Evening: **HN pre-flight** (re-run fresh-machine test, live 402 + paid invocation, five prepared answers open). |
 | 15 | **Tue 07-28** | **LinkedIn Post 5** ~8:00am ET, cross-linked from the repo README. **Show HN** 8:30–10:00am ET (title 1, §1 text as first comment, runbook cadence). **X how-it-works thread** mid-morning (≥48h after launch thread ✓). *(Post 5's context prefers Thursday; staying paired with HN day matters more — if HN slips, both move to Thu 07-30.)* |
 | 16 | Wed 07-29 | HN aftercare (hourly sweeps; log unanswerable critiques as corpus defects). X spacer: settled-but-rejected reconciliation — the honesty artifact while HN eyes are on the account. |
-| 17 | Thu 07-30 | **X clone-attack thread** (≥48h after how-it-works ✓; may reference HN). **LinkedIn Post 4** (kill-criteria). **Day-7-after-launch-thread review**: count conversations that could become a design-partner LOI — the one derived number that matters. |
+| 17 | Thu 07-30 | **BLOCKED:** do not publish clone-economics copy. The N=6 target failed its own acceptance gate; the required valid N=100 evidence bundle does not exist. **LinkedIn Post 4** (kill-criteria). **Day-7-after-launch-thread review**: count conversations that could become a design-partner LOI — the one derived number that matters. |
+
+**Historical overhead artifact status:**
+
+The 2026-07-15 overhead distribution is historical but not reproducible from a
+clean checkout because normalized per-call samples were not retained. Its sample
+count, p50, and p95 are quarantined from publication; see
+`spikes/pi-wielder/evidence/2026-07-15-overhead/manifest.json`. No replacement
+measurement has been run.
+
+**Accounting boundary for ledger artifacts:**
+
+The aggregate testnet USDC payment to the seller `payTo` address reconciled
+on-chain. The Creator/treasury amounts were off-chain reference-ledger credits;
+they were not separate on-chain transfers.
 
 Constraint check: repo flip before anything that links to it ✓ · ≥48h between threads (07-23 / 07-28 / 07-30) ✓ · launch thread + HN on Tue/Thu ✓ · weekends rest ✓ · demo clip after a week of live traffic ✓.
 
 **Today's X artifact #1 tweet** (attach the live-endpoint 402 capture; ~250 chars, verify at post time; single tweet, no thread, no link — the artifact is the content):
 
-> POST to a paid endpoint without paying and this is the reply: HTTP 402, with the terms machine-readable in the body — amount, network, asset, payTo. No API key, no account; the settlement receipt becomes the auth. Base Sepolia testnet — play money.
+The captured response preserves its original absolute description as historical
+wire evidence. Do not reuse that description as current marketing copy.
+
+> POST to a paid endpoint without paying and this is the reply: HTTP 402, with
+> machine-readable terms — amount, network, asset, payTo. The retry carries a
+> signed `X-PAYMENT` authorization; the settlement transaction hash is evidence
+> returned afterward, not the retry credential. Base Sepolia testnet — play money.
 
 **Standing daily items (every non-rest day, not repeated in the table):**
 
@@ -123,7 +147,7 @@ Constraint check: repo flip before anything that links to it ✓ · ≥48h betwe
 | **−1** | Mon 07-13 (today) | Pre-flight checklist from `hn-and-demo.md` §3: LICENSE, README offline-e2e story, secrets scan, fresh-machine clone-and-run with zero keys/funds, live 402 check, both domains serving, compliance pass on every queued post. If the fresh-machine test fails, Day 0 slips — nothing else changes. |
 | **0** | Tue 07-14 | **Repo public first** (runbook step 1), verify clone-and-run from a logged-out browser. **LinkedIn Post 1** ("Never handed over", `linkedin.md`) at ~8:30am ET, link in first comment, pin to profile. X: replies only. Log day-0 measurements. |
 | **1** | Wed 07-15 | X build-in-public artifact #1: screenshot of the raw HTTP 402 response (`x.md` §4, week-2 list). Single tweet, no thread. |
-| **2** | Thu 07-16 | **LinkedIn Post 2** (clone story, "$1.58 to steal my own product") — 2 days after Post 1, mid-week per its posting context. X artifact #2: the ledger line, reconciled on-chain to the cent (testnet, play money). |
+| **2** | Thu 07-16 | **BLOCKED:** do not publish clone-economics copy. The N=6 target failed its own acceptance gate; the required valid N=100 evidence bundle does not exist. X artifact #2: the aggregate seller `payTo` transfer reconciled on-chain; the Creator/treasury credits remained off-chain (testnet, play money). |
 | **3** | Fri 07-17 | X artifact #3: the "What we have NOT validated" page, screenshotted. Light day otherwise. |
 | **4** | Sat 07-18 | **Rest day.** Nothing posted anywhere. No replies. |
 | **5** | Sun 07-19 | **Rest day** (light): optional 15 min of X replies if a good conversation is live; otherwise nothing. |
@@ -131,10 +155,10 @@ Constraint check: repo flip before anything that links to it ✓ · ≥48h betwe
 | **7** | Tue 07-21 | **LinkedIn Post 3** (retention / the design-partner ask) at ~8:30am ET, then reshare to specific VP Eng / Head of People contacts with one-line personal notes per its posting context. **X launch thread** (`x.md` §1) late morning, demo clip attached to tweet 1 (per runbook step 3), pin it, ecosystem tag reply as the first reply. Hours 1–3: live in the X replies — this window decides whether the thread travels. |
 | **8** | Wed 07-22 | X spacer: the ~150-line Wielder proxy code screenshot (`x.md` §4 artifact list) — a natural bridge to tomorrow's technical thread. Evening: **HN pre-flight** — re-run the fresh-machine test, re-verify the live 402 and a paid invocation, open the five prepared answers (`hn-and-demo.md` §1) in a tab. |
 | **9** | Thu 07-23 | **LinkedIn Post 5** (build story — the technical post HN readers will arrive at) at ~8:00am ET, cross-linked from the repo README. **Show HN** at 8:30–10:00am ET: submit neverhandedover.com with title 1, §1 text as immediate first comment. Responding cadence per runbook step 5 (hour 1: every substantive comment within ~15 min; then 30-min sweeps; then hourly). **X how-it-works thread** (`x.md` §3) mid-morning — written for the same technical crowd, 48h after the launch thread, quoting the pinned thread from its last tweet. End of day: link the best critical HN thread from the site/X ("the hardest question we got today"). |
-| **10** | Fri 07-24 | HN aftercare: hourly sweeps while the thread is warm; log any critique we couldn't answer as a corpus defect. X spacer: one standalone from `x.md` §5 (suggest D — "Output crosses the wire. The skill never does."). |
+| **10** | Fri 07-24 | HN aftercare: hourly sweeps while the thread is warm; log any critique we couldn't answer as a corpus defect. X spacer: one standalone from `x.md` §5 (suggest D — "The artifact file is not directly returned. Extraction risk remains."). |
 | **11** | Sat 07-25 | **Rest day.** Nothing posted. |
 | **12** | Sun 07-26 | **Rest day** (light): optional HN/X reply sweep only if threads are still live. |
-| **13** | Mon 07-27 | **X clone-attack thread** (`x.md` §2) — pushed past the weekend to keep the ≥48h thread spacing; it can reference the HN discussion if cloning came up there. **LinkedIn Post 4** (kill-criteria / honesty post) — its context says week 2–3 mid-week and it's the let-it-sit-and-compound post, so sliding it to Wed 07-29 is equally fine. **Day-7-after-launch review:** count conversations that could become a design-partner LOI — the one derived number that matters (`hn-and-demo.md` §3). Remaining `x.md` §5 spacers (A, B, C, E, F) feed week 3+ as-needed. |
+| **13** | Mon 07-27 | **BLOCKED:** do not publish clone-economics copy. The N=6 target failed its own acceptance gate; the required valid N=100 evidence bundle does not exist. **LinkedIn Post 4** (kill-criteria / honesty post) — its context says week 2–3 mid-week and it's the let-it-sit-and-compound post, so sliding it to Wed 07-29 is equally fine. **Day-7-after-launch review:** count conversations that could become a design-partner LOI — the one derived number that matters (`hn-and-demo.md` §3). Remaining `x.md` §5 spacers (A, B, C, E, F) feed week 3+ as-needed. |
 
 Reconciliation note: `hn-and-demo.md` §3 sequences repo → LinkedIn → X thread → HN as one
 list. This plan keeps that ordering but stretches it across Days 0–9, per the inverted
@@ -153,8 +177,8 @@ factual error in a live post — correct it in a reply immediately, never silent
 
 **If HN turns hostile: engage the top critique honestly, never defensively.** Find the
 highest-voted critical comment and answer it first, conceding whatever is valid in the first
-sentence — the corpus was built for this (kill-criteria, the not-validated ledger, the failed
-clone attack). Use the five prepared answers in `hn-and-demo.md` §1 as the base; for the
+sentence — the corpus was built for this (kill-criteria, the not-validated ledger, the invalid
+clone benchmark). Use the five prepared answers in `hn-and-demo.md` §1 as the base; for the
 known secondary flak (GPT Store, x402-volume-is-bots, "Anthropic will ship this"), use the
 one-line stances at the end of that section. Reply to content, never to tone; do not chase
 every commenter; never ask for votes. If the thread dies anyway, the end-of-day job stands:

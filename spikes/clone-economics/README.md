@@ -86,36 +86,26 @@ auditable—not observations about a live model or market:
 - This spike does **not** validate the corpus-wide `~30x` statement. That refers
   to matched-quality serving cost and remains unmeasured here.
 
-## Measured results — first live run (claude-sonnet-4-6, 2026-07-12)
+## Historical live run — invalid benchmark (2026-07-12)
 
-Full report: `runs/live/report.{md,json}` (gitignored run artifacts; headline
-numbers reproduced here). Operator inputs: N=6, invocation price $0.25,
-pricing $3/$15 per M (operator-supplied), $5 hard cap.
+The sanitized normalized evidence is committed at
+`evidence/2026-07-12-n6-invalid/`. Provider execution and returned usage were
+measured; the $1.50 acquisition component was modeled and no x402 acquisition
+payment settled.
 
-**Fidelity: the clone FAILED.** All 6 held-out cases failed critical gates
-(clone 0.250 absolute vs target 0.400; retention 0.625; deliberately-bad
-control 0.167). A 6-pair distillation did not reproduce the skill's gated
-behaviors.
+The target scored 0.400 and failed its own critical gates. Therefore the run's
+verdict is `INVALID_BENCHMARK_TARGET_FAILED`: clone quality, fidelity defense,
+moat, retention, and break-even conclusions are suppressed. Four earlier setup
+attempts were described historically but did not retain normalized attempt
+records, so total attack cost is also incomplete.
 
-**Economics: cost is no defense.** Attacker build B=$1.58, of which
-distillation itself was $0.034 (D/A=0.023); modeled acquisition dominates.
-Break-even after **8 invocations** if a clone ever passes. The protection
-observed here is fidelity difficulty, not economics.
+Verify the retained bundle offline:
 
-**Staleness overlay (synthetic):** updated target 0.500 vs frozen clone
-0.250 — one revision doubled the gap; says nothing about calendar cadence.
+```bash
+node scripts/verify-bundle.mjs evidence/2026-07-12-n6-invalid
+```
 
-**Limitations (in addition to those above):**
-- **Small-N/small-H:** N≤6 training pairs and 6 held-out cases cannot locate
-  where fidelity saturates with N. Kill-criterion 4 concerns high-volume
-  skills (hundreds of paid pairs); a live result at this scale must NOT be
-  read as answering it. Larger fixture sets are required first.
-- It took five runs to get one measurement; four failed on output-format
-  handling, not capability: (1–2) the distillation prompt never specified
-  the SKILL.md format (model returned plain markdown) — fixed by stating the
-  public format in the prompt; (3) an over-eager fence extractor added during
-  fixing replaced a valid document with an embedded code block — fixed to
-  unwrap only whole-response fences; (4) the validator demanded an H1 heading
-  the skill format does not require — loosened to any heading level. Raw
-  distillation output is now dumped to `runs/<mode>/distilled-raw.txt` BEFORE
-  validation so failed runs keep their evidence.
+No high-N conclusion exists. Only a valid target plus the preregistered
+N=6/25/50/100 sweep, 30 held-out fixtures, and three live-adapter-confirmed,
+independent distillation seeds at N=100 can produce a publishable high-N
+result. Pair-order seeds alone do not establish independent model sampling.

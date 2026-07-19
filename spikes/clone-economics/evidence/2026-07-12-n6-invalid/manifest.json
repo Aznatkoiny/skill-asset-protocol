@@ -1,0 +1,72 @@
+{
+  "command": "historical live command not retained exactly",
+  "configuration": {
+    "acquisitionTreatment": "modeled",
+    "appliedDistillationSeeds": [
+      "not-recorded"
+    ],
+    "attemptCoverage": "successful fifth run only; four setup attempts have no normalized records",
+    "benchmarkVerdict": "INVALID_BENCHMARK_TARGET_FAILED",
+    "historicalRunDate": "2026-07-12",
+    "nValues": [
+      6
+    ],
+    "pairOrderSeeds": [
+      "not-recorded"
+    ],
+    "requestedDistillationSeeds": [
+      "not-recorded"
+    ],
+    "sourceTimestamp": "not-recorded"
+  },
+  "evidenceLabel": "HISTORICAL MIXED — INVALID BENCHMARK; acquisition MODELED",
+  "executionMode": "historical",
+  "experimentId": "2026-07-12-n6-invalid",
+  "files": {
+    "README.md": {
+      "bytes": 420,
+      "sha256": "2537c49266760dc5b1c20fa83f5dd38d1afae7a46a5a07c30bcaf0223685d52a"
+    },
+    "report.md": {
+      "bytes": 473,
+      "sha256": "c951d64edb45126386353adf0c9053817bbe4fcc58938a320f381a0ba463a44f"
+    },
+    "samples.jsonl": {
+      "bytes": 19091,
+      "sha256": "beda15ac63f136e9ff413662d978ee89b005d4bdf09d4505bdee8e9faf4dffdd"
+    },
+    "summary.json": {
+      "bytes": 629,
+      "sha256": "7124543f9bf16569308c69e93d6bae73973853ba025b49655e3b444b1ce15f1f"
+    }
+  },
+  "gitCommit": "historical-source-not-recorded",
+  "gitDirty": null,
+  "liveBudget": null,
+  "model": "claude-sonnet-4-6",
+  "modelProvider": "Anthropic",
+  "readmeInputs": {
+    "bundlePath": "evidence/2026-07-12-n6-invalid"
+  },
+  "recordedAtUtc": null,
+  "reportInputs": {
+    "evidenceLabel": "HISTORICAL MIXED — INVALID BENCHMARK; acquisition MODELED",
+    "limitations": [
+      "ACQUISITION_MODELED",
+      "HISTORICAL_ATTEMPTS_INCOMPLETE"
+    ],
+    "suppressionReason": "INVALID_BENCHMARK_TARGET_FAILED",
+    "verdict": "INVALID_BENCHMARK_TARGET_FAILED"
+  },
+  "runtime": {
+    "arch": "arm64",
+    "node": "v22.22.0",
+    "platform": "darwin"
+  },
+  "schemaVersion": 1,
+  "sourceEvidence": {
+    "bytes": 76631,
+    "kind": "legacy-report-json",
+    "sha256": "0554779988164651bfe6b037c8b16054e009ee6bac76e61c90af331ac6e85212"
+  }
+}

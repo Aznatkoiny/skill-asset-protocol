@@ -1,0 +1,33 @@
+{
+  "acquisition": {
+    "evidence": [
+      "MODELED"
+    ],
+    "modeledUsd": 1.5
+  },
+  "attemptedSamples": 29,
+  "failedSamples": 0,
+  "fidelity": {
+    "bad-clone": {
+      "criticalGatePass": false,
+      "meanScore": 0.166666666667,
+      "scoredSamples": 6
+    },
+    "clone": {
+      "criticalGatePass": false,
+      "meanScore": 0.25,
+      "scoredSamples": 8
+    },
+    "target": {
+      "criticalGatePass": false,
+      "meanScore": 0.425,
+      "scoredSamples": 8
+    }
+  },
+  "latencyMs": {
+    "p50": 13784.64254099998,
+    "p95": 26304.560541999992
+  },
+  "providerCostUsd": 0.555654,
+  "successfulSamples": 29
+}

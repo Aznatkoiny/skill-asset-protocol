@@ -1,10 +1,11 @@
 {
   "name": "prototype",
   "version": "1.0.0",
-  "description": "> **Throwaway.** This exists to answer one question, then be deleted or absorbed. > `settlement-engine.mjs` is the keeper (pure logic); `settlement-tui.mjs` is the disposable shell.",
+  "description": "Offline settlement-economics spikes and exact atomic-money allocation kernel.",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test tests/*.test.mjs",
+    "test:fork-economics": "node spike-fork-economics.mjs"
   },
   "keywords": [],
   "author": "",

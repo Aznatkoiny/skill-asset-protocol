@@ -1,0 +1,11 @@
+{
+  "name": "registry-ranking-spike",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Offline settlement-verifiable registry ranking spike.",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "report": "node src/report.mjs fixtures/settlements.json fixtures/verified-billing-registry.json"
+  }
+}

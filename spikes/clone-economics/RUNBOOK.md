@@ -10,7 +10,7 @@ No live run was executed while building this spike. The procedure below is for
 an operator who deliberately chooses to spend model credits and supplies a
 current pricing snapshot.
 
-## 1. Supply every live input
+## 1. Supply every bounded single-run live input
 
 Copy `.env.example` to `.env`, fill it locally, then export it into the shell.
 The CLI does not silently load `.env`.
@@ -21,7 +21,7 @@ source .env
 set +a
 ```
 
-Required live fields:
+Required bounded single-run live fields:
 
 - `ALLOW_LIVE_LLM=1` and `MOCK_LLM=0` — explicit opt-in and non-mock mode.
 - `ANTHROPIC_API_KEY` — never print it or commit `.env`.
@@ -47,7 +47,7 @@ maximum exceeds `MAX_RUN_COST_USD`.
 During a run it also enforces cumulative measured provider spend. If a provider
 response omits usage, that request's cost is `null`, never `$0`.
 
-## 2. Run once
+## 2. Run one bounded experiment
 
 ```bash
 npm run real
@@ -65,25 +65,77 @@ The command writes ignored artifacts to `runs/live/report.json` and
 - Check raw usage, normalized tokens, pricing snapshot, every request latency,
   sequential build time, and the parallel-acquisition lower bound.
 
-## 3. N sweep
+## 3. High-N sweep: preflight first
 
-Run separate, capped experiments at the fixed supported sizes; keep model,
-pricing, max tokens, repository inventory, and heldout set unchanged:
+The preregistration is `fixtures/sweep-v1.json`: N=6,25,50,100; 30 held-out
+fixtures; pair-order seeds 1701, 1702, and 1703; and distinct requested
+distillation seeds 2701, 2702, and 2703. Pair-order seeds control only local
+acquisition ordering. A high-N result is publishable only if a live adapter
+reports all three requested distillation seeds as independently applied. The
+current Anthropic adapter reports seed support as `unsupported`, so it may
+produce explicitly uncontrolled evidence but cannot produce clone-fidelity,
+defensibility, moat, break-even, or economics conclusions.
 
 ```bash
-N=2 npm run real
-N=4 npm run real
-N=6 npm run real
+npm run fixtures:check
+npm run sweep:preflight
+npm run sweep:mock
 ```
 
-Move or rename each ignored report between runs if you want to retain it. Plot:
+These commands use no key, network, x402 payment, or provider spend.
 
-- clone absolute score and critical-gate pass versus N;
-- `D/A` and `B/A` versus N;
-- break-even Invocations where `P - cloneServingCost > 0`;
-- sequential build time and the parallel-acquisition lower bound.
+## 4. Human-authorized live gate
 
-## 4. Interpretation discipline
+The committed `fixtures/live-budget-v1.json` and
+`fixtures/live-economics-v1.json` intentionally start with
+`approvalStatus: "not_approved"` and null values. Before a live run, a human
+must:
+
+1. Verify the provider's current official pricing. In the budget snapshot,
+   replace every null with the selected model, decimal-string prices,
+   timestamped HTTPS source, and token caps, then set `approvalStatus` to
+   `approved`.
+2. Review and explicitly supply all four economic inputs in the economics
+   snapshot: Invocation price, clone serving cost, deployment cost, and labor
+   cost. Set its `approvalStatus` to `approved`.
+3. Review the 1,713-call conservative request count from
+   `npm run sweep:preflight`, then commit both approved snapshots and the
+   unchanged `fixtures/sweep-v1.json`.
+
+The sweep ignores environment-based model, pricing, token-cap, and economic
+values. The committed files are its only execution contract.
+
+Run `npm run sweep:preflight` again from that exact commit. It prints a
+`live authorization: sha256:...` digest over the complete sweep config,
+approved budget snapshot, and approved economics snapshot, plus the
+conservative maximum cost. After reviewing the printed contract, the human
+explicitly approves a maximum at or above the conservative estimate and copies
+that exact digest:
+
+```bash
+export APPROVE_LIVE_SWEEP_SHA256='sha256:<exact digest printed by preflight>'
+export MAX_SWEEP_COST_USD="$HUMAN_APPROVED_MAX_SWEEP_COST_USD"
+export ALLOW_LIVE_LLM=1
+```
+
+Any change to N values, either seed family, model, prices, token caps,
+economic inputs, or either approval snapshot changes the digest and
+invalidates the old authorization.
+
+Then, and only then, the operator may run:
+
+```bash
+npm run sweep:live
+```
+
+The command writes raw private output only under ignored `runs/` and writes a
+sanitized candidate bundle to a new dated directory selected by its generated
+experiment identifier under `evidence/`. Never overwrite a historical bundle.
+Review and verify the candidate before staging; do not publish automatically.
+An `unsupported` distillation-seed result remains useful only as
+`stochastic_uncontrolled` evidence and must retain all conclusion suppressions.
+
+## 5. Interpretation discipline
 
 - `A=N×P` is **MODELED** paid-pair acquisition. The target provider's own model
   cost is reported separately and not added again to A.

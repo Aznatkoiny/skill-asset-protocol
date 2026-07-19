@@ -6,6 +6,11 @@
   "description": "Throwaway offline-first harness for Skill clone economics and staleness.",
   "scripts": {
     "e2e": "MOCK_LLM=1 ALLOW_LIVE_LLM=0 node e2e.mjs",
+    "test": "node --test tests/*.test.mjs && npm run e2e",
+    "fixtures:check": "node scripts/generate-fixtures.mjs --check",
+    "sweep:preflight": "node sweep.mjs --preflight",
+    "sweep:mock": "MOCK_LLM=1 ALLOW_LIVE_LLM=0 node sweep.mjs --mock",
+    "sweep:live": "MOCK_LLM=0 node sweep.mjs --live",
     "run": "MOCK_LLM=1 node run.mjs",
     "real": "MOCK_LLM=0 node run.mjs --live"
   }
