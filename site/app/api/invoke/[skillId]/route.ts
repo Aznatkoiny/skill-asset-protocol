@@ -24,6 +24,7 @@ import { NextResponse } from 'next/server';
 import { SKILL_CONTENT } from './skill-content';
 
 export const runtime = 'nodejs';
+export const maxDuration = 60;
 
 // --- x402 v1 / Base Sepolia constants (mirror x402-seller.mjs) ---------------
 const X402_VERSION = 1;
@@ -37,6 +38,11 @@ const SPLIT = { creator: 0.24375, treasury: 0.00625 }; // 97.5 / 2.5 of $0.25
 
 const KNOWN_SKILL_ID = 'optimizing-claude-code-prompts';
 const DEFAULT_FACILITATOR = 'https://x402.org/facilitator';
+const EVM_ADDRESS = /^0x[a-fA-F0-9]{40}$/;
+const MAX_INPUT_CHARS = 4_000;
+const MAX_REQUEST_BYTES = 16_384;
+const FACILITATOR_TIMEOUT_MS = 10_000;
+const ANTHROPIC_TIMEOUT_MS = 45_000;
 
 const jsonToB64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64');
 const b64ToJson = <T>(s: string): T => JSON.parse(Buffer.from(s, 'base64').toString('utf8')) as T;
@@ -62,6 +68,7 @@ async function postJson(url: string, body: unknown): Promise<unknown> {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(FACILITATOR_TIMEOUT_MS),
   });
   return res.json().catch(() => null);
 }
@@ -75,11 +82,18 @@ export async function POST(
     return NextResponse.json({ error: `unknown skill: ${skillId}` }, { status: 404 });
   }
 
+  if (process.env.ENABLE_PAID_PROOF !== 'true') {
+    return NextResponse.json(
+      { error: 'paid proof invocation is disabled for this deployment' },
+      { status: 503 },
+    );
+  }
+
   // -- config: fail honestly BEFORE taking anyone's money -----------------------
   const payTo = process.env.PAY_TO_ADDRESS;
-  if (!payTo) {
+  if (!payTo || !EVM_ADDRESS.test(payTo) || /^0x0{40}$/i.test(payTo)) {
     return NextResponse.json(
-      { error: 'seller misconfigured: PAY_TO_ADDRESS is not set' },
+      { error: 'seller misconfigured: PAY_TO_ADDRESS must be a nonzero EVM address' },
       { status: 500 },
     );
   }
@@ -93,6 +107,14 @@ export async function POST(
   const facilitatorUrl = process.env.FACILITATOR_URL || DEFAULT_FACILITATOR;
 
   // -- input: validate before challenging (don't charge for an unrunnable call) --
+  const contentLength = Number(req.headers.get('content-length') ?? '0');
+  if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BYTES) {
+    return NextResponse.json(
+      { error: `request body exceeds ${MAX_REQUEST_BYTES} bytes` },
+      { status: 413 },
+    );
+  }
+
   let input = '';
   try {
     const body = (await req.json()) as { input?: unknown };
@@ -104,6 +126,12 @@ export async function POST(
     return NextResponse.json(
       { error: 'request body must be JSON: { "input": "<your rough prompt>" }' },
       { status: 400 },
+    );
+  }
+  if (input.length > MAX_INPUT_CHARS) {
+    return NextResponse.json(
+      { error: `input must be ${MAX_INPUT_CHARS} characters or fewer` },
+      { status: 413 },
     );
   }
 
@@ -205,6 +233,7 @@ export async function POST(
         system: SKILL_CONTENT, // the protected asset stays server-side
         messages: [{ role: 'user', content: input }],
       }),
+      signal: AbortSignal.timeout(ANTHROPIC_TIMEOUT_MS),
     });
 
     if (!anthropicRes.ok) {

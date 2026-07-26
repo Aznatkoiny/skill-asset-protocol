@@ -1,36 +1,76 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Skill Asset Protocol site
 
-## Getting Started
+The site has two deliberately separate paths:
 
-First, run the development server:
+- `/` is the employer-facing product preview and deterministic attribution
+  sandbox. It needs no account, wallet, API key, network call, or payment.
+- `/proof` preserves the original manifesto and optional Base Sepolia x402
+  invocation proof.
+
+## Local product preview
+
+Use Node 22. The production dependency graph and image optimizer are verified
+against that major.
 
 ```bash
+npm ci
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open <http://localhost:3000>. The full seeded sandbox works with no environment
+file and never calls the payment or model API.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+The sample organization, people, Invocations, outcome evidence, and provisional
+reward are fictional. Refreshing or choosing **Restart sandbox** returns to the
+same deterministic fixture.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Optional configuration
 
-## Learn More
+Copy the template only when you need to change the pilot CTA or operate the
+testnet proof:
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+cp .env.example .env.local
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+| Variable | Required for `/` | Required for paid `/proof` invocation |
+|---|---:|---:|
+| `NEXT_PUBLIC_PILOT_CONTACT_URL` | No | No |
+| `ENABLE_PAID_PROOF=true` | No | Yes |
+| `PAY_TO_ADDRESS` | No | Yes |
+| `ANTHROPIC_API_KEY` | No | Yes |
+| `FACILITATOR_URL` | No | No (testnet default provided) |
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+The proof path uses testnet USDC only. Use a throwaway testnet wallet and never
+put a wallet private key in the site environment. Paid proof invocation is
+disabled by default because free testnet funds can still trigger real model
+spend. Keep it disabled until the deployment has persistent rate limiting and
+an Anthropic spend cap.
 
-## Deploy on Vercel
+## Verification
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+npm test
+npm run lint
+npm run build
+npm audit --omit=dev
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+`npm test` covers the sandbox fixture and transition guards with Node's built-in
+test runner. The build must pass without secrets because `/` is an offline
+product preview; the proof API validates its seller configuration at request
+time. The production audit is expected to report zero vulnerabilities. See the
+[dependency security audit](../docs/dependency-security-audit.md) for the
+remaining dev-only advisory and the intentionally pinned transitive fixes.
+
+## Relevant files
+
+| Path | Role |
+|---|---|
+| `app/page.tsx` | Employer-facing landing page composition |
+| `app/landing.module.css` | Industrial product-page design system |
+| `app/components/landing/AttributionSandbox.tsx` | Client-only sandbox UI |
+| `app/components/landing/sandbox-model.ts` | Deterministic fixture and reducer |
+| `app/components/InvokeControls.tsx` | Wallet/invocation client island on `/proof` |
+| `app/proof/page.tsx` | Preserved manifesto and x402 proof route |
+| `app/api/invoke/[skillId]/route.ts` | Optional testnet Collar endpoint |

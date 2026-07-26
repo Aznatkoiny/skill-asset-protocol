@@ -13,6 +13,19 @@ product. Every claim below is labeled measured, modeled, or hypothesis.
 [neverhandedover.com](https://neverhandedover.com)** (also at
 [skillassetprotocol.com](https://skillassetprotocol.com); source in [`site/`](site/)).
 
+## Run the website locally
+
+Use Node 22, then run from the repository root:
+
+```bash
+cd site
+npm ci
+npm run dev
+```
+
+Open <http://localhost:3000>. No environment file, wallet, or API key is needed
+for the employer-facing product sandbox.
+
 ## The demo result
 
 On 2026-07-12, one wallet paid per model call **and** per hosted-skill invocation over x402
@@ -45,6 +58,8 @@ All four proofs run with no API keys, no network payments, and no wallet. Where 
 
 - **`CONTEXT.md`** — the ubiquitous language: Skill, Creator, Wielder, Beneficiary, Collar,
   Invocation, Derivative, Royalty claim.
+- **`docs/product-onboarding-retention-and-monetization.md`** — a repo-grounded product review,
+  proposed employer-funded business model, validation gates, and prioritized roadmap.
 - **`docs/adr/`** — 8 decision records, including 0007 (the closed-mode compensation layer is
   the terminal product) and 0008 (the Wielder is a wallet, not a harness).
 - **`spikes/`** — pi-wielder (one wallet, two asset classes, unified ledger) and
