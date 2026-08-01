@@ -6,8 +6,8 @@
 
 **Architecture:** Build the new buyer control plane alongside the verified x402 v1 spike, using a local SQLite authority for policies, Spend Sessions, Spend Intents, budgets, approvals, payment attempts, outcomes, reconciliation, and signed receipts. A pure Policy Engine and one-time `AuthorizedPermit` capability sit in front of provider-neutral wallet adapters; a custom x402 v2 transport preserves the required persist-before-retry boundary that an automatic fetch wrapper cannot expose. After offline parity, cut the standalone Pi path over to the new loopback proxy while retaining the old Collar and payment suites as regression oracles.
 
-**Tech Stack:** Node.js 24.15+ for deterministic development and exact Node.js
-24.15.0 for the attested `cdp-testnet` release, ECMAScript modules, built-in
+**Tech Stack:** Node.js 24.18.1+ for deterministic development and exact Node.js
+24.18.1 for the attested `cdp-testnet` release, ECMAScript modules, built-in
 `node:sqlite`, Hono, built-in `node:test`, Ed25519/SHA-256 from `node:crypto`,
 `@coinbase/cdp-sdk` 1.54.0, `@x402/core` 2.19.0, `@x402/evm` 2.19.0, viem, Pi
 0.80.6; Base Sepolia and test USDC only.
@@ -95,6 +95,9 @@ prelaunch contract before it can claim `cdp-testnet` support.
   canonical JSON, hashes, identifiers, timestamps, and atomic-USDC strings.
 - `spikes/pi-wielder/src/kernel/secure-storage.mjs` — absolute path, owner, mode,
   symlink, database, WAL, SHM, key, and token checks.
+- `spikes/pi-wielder/src/kernel/trusted-path.mjs` — Linux live-mode descriptor walk
+  from the configured trusted ancestor, closed ownership policies, and stable
+  ancestor-chain metadata hashing.
 - `spikes/pi-wielder/src/kernel/authority-lock.mjs` — crash-released, process-lifetime
   single-writer exclusion shared by the daemon and offline bootstrap commands.
 - `spikes/pi-wielder/src/kernel/release-integrity.mjs` — closed privileged deployment
@@ -119,6 +122,8 @@ prelaunch contract before it can claim `cdp-testnet` support.
   denials, expiry, and pending-cap enforcement.
 - `spikes/pi-wielder/src/kernel/authorized-permit.mjs` — in-process, one-time,
   unforgeable signing capabilities.
+- `spikes/pi-wielder/src/kernel/authority-mutation-coordinator.mjs` — one shared
+  in-process FIFO lease for every live authority mutation and terminal receipt gap.
 - `spikes/pi-wielder/src/kernel/receipt-signing.mjs` — generic Ed25519 receipt
   primitives extracted without changing seller-journal behavior.
 - `spikes/pi-wielder/src/kernel/signed-receipts.mjs` — terminal buyer receipt
@@ -150,7 +155,8 @@ prelaunch contract before it can claim `cdp-testnet` support.
   approval, denial, unresolved, and receipt responses.
 - `spikes/pi-wielder/src/operator/auth.mjs` — owner-only token and authenticated local
   session handling.
-- `spikes/pi-wielder/src/operator/api.mjs` — loopback operator API.
+- `spikes/pi-wielder/src/operator/api.mjs` — narrow channel-aware operator API for
+  the Unix admin transport and authenticated socket-activated browser session.
 - `spikes/pi-wielder/src/operator/cli.mjs` — preflight, policy, approval, receipt,
   isolation/enrollment, session, reconciliation, and export commands.
 - `spikes/pi-wielder/src/operator/console.mjs` — local static console server.
@@ -161,8 +167,15 @@ prelaunch contract before it can claim `cdp-testnet` support.
   mode.
 - `spikes/pi-wielder/scripts/build-release-manifest.mjs` — privileged, exclusive
   manifest creation for a root-owned installed release.
+- `spikes/pi-wielder/scripts/render-systemd-units.mjs` — closed privileged rendering
+  of exact-path service/socket templates for the installed Linux release.
+- `spikes/pi-wielder/scripts/inspect-systemd-effective.mjs` — bounded PID1
+  introspection and canonical effective service/socket projection after daemon reload.
 - `spikes/pi-wielder/scripts/preflight-live-deployment.mjs` — root/service-manager
   prelaunch verification before dropping to the Kernel UID.
+- `spikes/pi-wielder/scripts/prelaunch-kernel-reader.mjs` — minimal privileged
+  trampoline that drops all groups/UID before dynamically loading the bounded
+  read-only authority/report checker.
 - `spikes/pi-wielder/deploy/systemd/wallet-kernel.service` and
   `wallet-kernel-console.socket` — hardened live-pilot service/socket activation units.
 - `spikes/pi-wielder/src/agent/auth.mjs` — digest-only active-enrollment auth and
@@ -172,8 +185,9 @@ prelaunch contract before it can claim `cdp-testnet` support.
   and Receipts shell.
 - `spikes/pi-wielder/operator-console/app.mjs` — authenticated local API client.
 - `spikes/pi-wielder/operator-console/styles.css` — self-contained local styles.
-- `spikes/pi-wielder/src/control-plane.mjs` — environment construction and loopback
-  process entrypoint.
+- `spikes/pi-wielder/src/control-plane.mjs` — environment construction and
+  channel-aware process entrypoint for Unix admin, inherited console, and agent
+  loopback transports.
 - `spikes/pi-wielder/src/config.mjs` — closed environment, route-map, policy-file,
   testnet-mode, and secret-presence validation without secret serialization.
 
@@ -188,6 +202,8 @@ Keep tests flat under `spikes/pi-wielder/tests/` so the existing
 Create reusable fixtures in `spikes/pi-wielder/tests/fixtures/`, a new
 `spikes/pi-wielder/spend-control-e2e.mjs`, and evidence builder/verifier scripts under
 `spikes/pi-wielder/scripts/`. Existing evidence directories are immutable.
+Create `.github/workflows/pi-wielder-systemd.yml` for the mandatory secret-free Linux
+service/socket integration gate.
 
 ### Modified files
 
@@ -372,12 +388,12 @@ From `spikes/pi-wielder`, run:
 ```bash
 npm install --save-exact @coinbase/cdp-sdk@1.54.0 @x402/core@2.19.0 @x402/evm@2.19.0
 npm install --save-dev --save-exact @earendil-works/pi-coding-agent@0.80.6
-npm pkg set engines.node=">=24.15.0"
+npm pkg set engines.node=">=24.18.1"
 ```
 
 Expected: `package.json` and `package-lock.json` contain exact dependency versions,
 the existing Hono/viem dependencies remain present, and the live release procedure
-later pins the attested Node executable to exactly `v24.15.0`.
+later pins the attested Node executable to exactly `v24.18.1`.
 
 - [ ] **Step 4: Implement canonical values and stable errors**
 
@@ -531,10 +547,12 @@ git commit -m "build: pin wallet kernel runtime"
 - Modify: `.gitignore`
 - Modify: `spikes/pi-wielder/.env.example:1-62`
 - Create: `spikes/pi-wielder/src/kernel/secure-storage.mjs`
+- Create: `spikes/pi-wielder/src/kernel/trusted-path.mjs`
 - Create: `spikes/pi-wielder/src/kernel/authority-lock.mjs`
 - Create: `spikes/pi-wielder/src/kernel/sqlite-schema.mjs`
 - Create: `spikes/pi-wielder/src/kernel/sqlite-store.mjs`
 - Create: `spikes/pi-wielder/tests/kernel-store.test.mjs`
+- Create: `spikes/pi-wielder/tests/kernel-trusted-path.test.mjs`
 - Create: `spikes/pi-wielder/tests/kernel-authority-lock.test.mjs`
 - Create: `spikes/pi-wielder/tests/fixtures/kernel-db-writer.mjs`
 - Create: `spikes/pi-wielder/tests/fixtures/kernel-lock-worker.mjs`
@@ -562,6 +580,7 @@ Append to `spikes/pi-wielder/.env.example`:
 WALLET_KERNEL_DB_FILE=
 WALLET_KERNEL_RECEIPT_KEY_FILE=
 WALLET_KERNEL_OPERATOR_TOKEN_FILE=
+WALLET_KERNEL_TRUSTED_ANCESTOR=
 WALLET_KERNEL_EXPECTED_AGENT_UID=
 WALLET_KERNEL_EXPECTED_AGENT_GID=
 WALLET_KERNEL_POLICY_FILE=
@@ -589,12 +608,18 @@ import { readPrivateInputFile } from '../src/kernel/secure-storage.mjs';
 function authority() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'wallet-kernel-'));
   fs.chmodSync(directory, 0o700);
-  return { directory, databasePath: path.join(directory, 'kernel.sqlite') };
+  const pathTrust = Object.freeze({
+    mode: 'deterministic',
+    trustedAncestor: directory,
+    kernelUid: process.getuid(),
+    agentUid: process.getuid(),
+  });
+  return { directory, databasePath: path.join(directory, 'kernel.sqlite'), pathTrust };
 }
 
 test('persistent store enables WAL, FULL sync, foreign keys, and schema v1', () => {
-  const { databasePath } = authority();
-  const store = openKernelStore({ filePath: databasePath });
+  const { databasePath, pathTrust } = authority();
+  const store = openKernelStore({ filePath: databasePath, pathTrust });
   assert.equal(store.pragma('journal_mode'), 'wal');
   assert.equal(store.pragma('synchronous'), 2);
   assert.equal(store.pragma('foreign_keys'), 1);
@@ -608,37 +633,39 @@ test('persistent store enables WAL, FULL sync, foreign keys, and schema v1', () 
 });
 
 test('persistent store rejects checkout, symlink, permissive, and wrong-owner-like paths', () => {
-  assert.throws(() => openKernelStore({ filePath: path.resolve('spikes/pi-wielder/kernel.sqlite') }),
+  const { directory, databasePath, pathTrust } = authority();
+  assert.throws(() => openKernelStore({
+    filePath: path.resolve('spikes/pi-wielder/kernel.sqlite'), pathTrust,
+  }),
     /outside the checkout/);
-  const { directory, databasePath } = authority();
   const target = path.join(directory, 'target.sqlite');
   fs.writeFileSync(target, '', { mode: 0o600 });
   fs.symlinkSync(target, databasePath);
-  assert.throws(() => openKernelStore({ filePath: databasePath }), /symlink/);
+  assert.throws(() => openKernelStore({ filePath: databasePath, pathTrust }), /symlink/);
   fs.unlinkSync(databasePath);
   fs.chmodSync(directory, 0o755);
-  assert.throws(() => openKernelStore({ filePath: databasePath }), /owner-only/);
+  assert.throws(() => openKernelStore({ filePath: databasePath, pathTrust }), /owner-only/);
 });
 
 test('pre-existing SQLite sidecars fail closed instead of being chmod-repaired', () => {
   for (const suffix of ['-wal', '-shm']) {
-    const { directory, databasePath } = authority();
+    const { directory, databasePath, pathTrust } = authority();
     fs.writeFileSync(`${databasePath}${suffix}`, '', { mode: 0o644 });
-    assert.throws(() => openKernelStore({ filePath: databasePath }), /owner-only/);
+    assert.throws(() => openKernelStore({ filePath: databasePath, pathTrust }), /owner-only/);
     fs.chmodSync(`${databasePath}${suffix}`, 0o600);
     fs.unlinkSync(`${databasePath}${suffix}`);
     fs.symlinkSync(path.join(directory, 'missing'), `${databasePath}${suffix}`);
-    assert.throws(() => openKernelStore({ filePath: databasePath }), /symlink/);
+    assert.throws(() => openKernelStore({ filePath: databasePath, pathTrust }), /symlink/);
   }
 });
 
 test('production policy and route inputs must be owner-only files outside the checkout', () => {
-  const { directory } = authority();
+  const { directory, pathTrust } = authority();
   const configPath = path.join(directory, 'policy.json');
   fs.writeFileSync(configPath, '{}\n', { mode: 0o600 });
-  assert.equal(readPrivateInputFile(configPath, 'Policy file').toString('utf8'), '{}\n');
+  assert.equal(readPrivateInputFile(configPath, 'Policy file', { pathTrust }).toString('utf8'), '{}\n');
   fs.chmodSync(configPath, 0o644);
-  assert.throws(() => readPrivateInputFile(configPath, 'Policy file'), /owner-only/);
+  assert.throws(() => readPrivateInputFile(configPath, 'Policy file', { pathTrust }), /owner-only/);
 });
 
 test('domain mutation and event hash append commit or roll back together', () => {
@@ -657,22 +684,22 @@ test('domain mutation and event hash append commit or roll back together', () =>
 });
 
 test('a newer unknown schema fails closed', () => {
-  const { databasePath } = authority();
-  const first = openKernelStore({ filePath: databasePath });
+  const { databasePath, pathTrust } = authority();
+  const first = openKernelStore({ filePath: databasePath, pathTrust });
   first.close();
   const raw = new DatabaseSync(databasePath);
   raw.exec('PRAGMA user_version = 99');
   raw.close();
-  assert.throws(() => openKernelStore({ filePath: databasePath }), /newer schema/);
+  assert.throws(() => openKernelStore({ filePath: databasePath, pathTrust }), /newer schema/);
 });
 
 test('one process owns the authority until its lifetime lock closes', async () => {
-  const { databasePath } = authority();
-  const owner = acquireAuthorityLock({ databasePath, role: 'kernel' });
-  assert.throws(() => acquireAuthorityLock({ databasePath, role: 'bootstrap' }),
+  const { databasePath, pathTrust } = authority();
+  const owner = acquireAuthorityLock({ databasePath, role: 'kernel', pathTrust });
+  assert.throws(() => acquireAuthorityLock({ databasePath, role: 'bootstrap', pathTrust }),
     (error) => error.code === 'AUTHORITY_BUSY');
   owner.close();
-  acquireAuthorityLock({ databasePath, role: 'bootstrap' }).close();
+  acquireAuthorityLock({ databasePath, role: 'bootstrap', pathTrust }).close();
 });
 ```
 
@@ -682,17 +709,61 @@ prove a new process acquires the same lock without deleting or trusting a PID fi
 SQLite's operating-system lock is the lease and is released by process death. Reject
 an in-checkout, symlinked, permissive, or wrong-owner-like derived lock database.
 
+In `kernel-trusted-path.test.mjs`, exercise the live path primitive independently.
+The only live implementation is Linux: it opens the configured trusted ancestor and
+each descendant directory by descriptor with `O_DIRECTORY | O_NOFOLLOW` (using the
+Linux `/proc/self/fd/<parent-fd>/<component>` open-at boundary), validates the opened
+descriptor with `fstat()`, and re-`fstat()`s the held chain before returning. The
+trusted ancestor must be root-owned with no group/other write bit. For Kernel-private
+targets, every intermediate owner is exactly root or the configured Kernel UID, no
+intermediate has group/other write, and the terminal parent is Kernel-owned `0700`.
+World/group-writable ancestors are rejected even when the sticky bit is set. Symlinks,
+dot components, path escape, device/inode changes, a non-Linux live host, and an
+unavailable `/proc/self/fd` boundary all fail closed. Deterministic tests may inject a
+same-UID synthetic trusted ancestor, but the result is explicitly `simulated` and is
+not accepted by `cdp-testnet`.
+
+The descriptor walk returns a canonical ordered projection of
+`(role, depth, device, inode, uid, gid, mode)` for the entire chain. Tests pause after
+each opened component and attempt symlink, rename, and directory-entry swaps from a
+dropped Pi UID both before and after validation; every attempt must receive
+`EACCES`/`EPERM`, and any injected privileged swap must be detected by the final
+descriptor recheck. Apply the same primitive to every live Kernel authority, policy,
+route, environment, report, evidence, operator-socket, and directional-handoff root,
+not merely to the SQLite parent. Release-tree validation applies the stricter
+root-only variant. No live filesystem consumer may fall back to `realpath()` plus an
+immediate-parent `lstat()`.
+
 - [ ] **Step 3: Run the store test and verify imports fail**
 
 Run:
 
 ```bash
-node --test spikes/pi-wielder/tests/kernel-store.test.mjs
+node --test spikes/pi-wielder/tests/kernel-store.test.mjs \
+  spikes/pi-wielder/tests/kernel-trusted-path.test.mjs
 ```
 
-Expected: FAIL with `ERR_MODULE_NOT_FOUND` for the store and authority-lock modules.
+Expected: FAIL with `ERR_MODULE_NOT_FOUND` for the store/trusted-path/authority-lock modules.
 
 - [ ] **Step 4: Implement secure persistent paths**
+
+Create `spikes/pi-wielder/src/kernel/trusted-path.mjs` with this exact live boundary:
+
+```text
+openTrustedParent({ mode, trustedAncestor, targetFile, kernelUid, agentUid,
+  terminalOwnerUid, terminalMode, role }) -> {
+    canonicalParentPath, ancestorMetadataHash,
+    openLeaf(flags, mode?), openSibling(suffix, flags),
+    openNamedLeaf(name, flags, mode?), linkNamedToLeaf(name), unlinkNamed(name),
+    fsyncParent(), revalidate(), close()
+  }
+```
+
+Every method rejects use after close and `close()` is idempotent. `openSibling()` is
+private to the exact `['', '-wal', '-shm']` SQLite suffix set; named methods accept
+only the private-temp grammar specified below. The guard holds every directory
+descriptor until `close()`, and `revalidate()` compares the full original fstat
+projection. It exposes no raw `/proc/self/fd` path to callers.
 
 Create `spikes/pi-wielder/src/kernel/secure-storage.mjs`:
 
@@ -701,6 +772,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { openTrustedParent } from './trusted-path.mjs';
 
 const CHECKOUT_ROOT = fs.realpathSync(fileURLToPath(new URL('../../../../', import.meta.url)));
 const NOFOLLOW = fs.constants.O_NOFOLLOW;
@@ -723,43 +795,54 @@ function assertOwner(stat, label) {
   }
 }
 
-function privateParent(filePath, label, checkoutRoot) {
+function privateParent(filePath, label, checkoutRoot, pathTrust) {
   if (!path.isAbsolute(filePath)) throw new Error(`${label} path must be absolute`);
   const lexicalParent = path.resolve(path.dirname(filePath));
-  const parent = fs.realpathSync(lexicalParent);
-  if (lexicalParent !== parent) throw new Error(`${label} directory must not use symlinks`);
-  if (inside(checkoutRoot, parent)) throw new Error(`${label} must be outside the checkout`);
-  const stat = fs.lstatSync(parent);
-  assertOwner(stat, `${label} directory`);
-  if (!stat.isDirectory() || (stat.mode & 0o077) !== 0) {
-    throw new Error(`${label} directory must be owner-only`);
-  }
-  return parent;
+  if (inside(checkoutRoot, lexicalParent)) throw new Error(`${label} must be outside the checkout`);
+  const guard = openTrustedParent({
+    ...pathTrust,
+    targetFile: filePath,
+    terminalOwnerUid: process.getuid(),
+    terminalMode: 0o700,
+  });
+  return guard;
 }
 
-export function preparePrivateFile(filePath, label, { checkoutRoot = CHECKOUT_ROOT } = {}) {
-  privateParent(filePath, label, checkoutRoot);
-  if (!fs.existsSync(filePath)) {
-    const descriptor = fs.openSync(filePath,
-      fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_EXCL | NOFOLLOW, 0o600);
-    fs.closeSync(descriptor);
+export function preparePrivateFile(filePath, label,
+  { checkoutRoot = CHECKOUT_ROOT, pathTrust } = {}) {
+  const guard = privateParent(filePath, label, checkoutRoot, pathTrust);
+  try {
+    try {
+      const created = guard.openLeaf(
+        fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_EXCL | NOFOLLOW, 0o600);
+      fs.closeSync(created);
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+    }
+    const descriptor = guard.openLeaf(fs.constants.O_RDONLY | NOFOLLOW);
+    try {
+      const stat = fs.fstatSync(descriptor);
+      assertOwner(stat, label);
+      if (!stat.isFile() || (stat.mode & 0o777) !== 0o600) {
+        throw new Error(`${label} must be an owner-only regular file`);
+      }
+      guard.revalidate();
+    } finally { fs.closeSync(descriptor); }
+    return filePath;
+  } finally {
+    guard.close();
   }
-  const stat = fs.lstatSync(filePath);
-  assertOwner(stat, label);
-  if (stat.isSymbolicLink()) throw new Error(`${label} must not be a symlink`);
-  if (!stat.isFile() || (stat.mode & 0o777) !== 0o600) {
-    throw new Error(`${label} must be an owner-only regular file`);
-  }
-  return filePath;
 }
 
 export function readPrivateInputFile(filePath, label, {
   checkoutRoot = CHECKOUT_ROOT,
   maximumBytes = 1_048_576,
+  pathTrust,
 } = {}) {
-  privateParent(filePath, label, checkoutRoot);
-  const descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | NOFOLLOW);
+  const guard = privateParent(filePath, label, checkoutRoot, pathTrust);
+  let descriptor;
   try {
+    descriptor = guard.openLeaf(fs.constants.O_RDONLY | NOFOLLOW);
     const stat = fs.fstatSync(descriptor);
     assertOwner(stat, label);
     if (!stat.isFile() || (stat.mode & 0o777) !== 0o600) {
@@ -768,48 +851,59 @@ export function readPrivateInputFile(filePath, label, {
     if (stat.size <= 0 || stat.size > maximumBytes) {
       throw new Error(`${label} size is outside the allowed boundary`);
     }
-    return fs.readFileSync(descriptor);
+    const bytes = fs.readFileSync(descriptor);
+    guard.revalidate();
+    return bytes;
   } finally {
-    fs.closeSync(descriptor);
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+    guard.close();
   }
 }
 
-export function preflightSqliteFiles(databasePath) {
+export function preflightSqliteFiles(databasePath, { pathTrust } = {}) {
+  const guard = privateParent(databasePath, 'Wallet Kernel database', CHECKOUT_ROOT, pathTrust);
   const existing = new Set();
-  for (const suffix of ['', '-wal', '-shm']) {
-    const target = `${databasePath}${suffix}`;
-    let stat;
-    try {
-      stat = fs.lstatSync(target);
-    } catch (error) {
-      if (error.code === 'ENOENT') continue;
-      throw error;
+  try {
+    for (const suffix of ['', '-wal', '-shm']) {
+      const target = `${databasePath}${suffix}`;
+      let descriptor;
+      try { descriptor = guard.openSibling(suffix, fs.constants.O_RDONLY | NOFOLLOW); }
+      catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+      try {
+        const stat = fs.fstatSync(descriptor);
+        if (!stat.isFile()) throw new Error(`SQLite ${suffix || 'database'} must be regular`);
+        assertOwner(stat, `SQLite ${suffix || 'database'}`);
+        if ((stat.mode & 0o777) !== 0o600) throw new Error(`SQLite ${suffix || 'database'} must be owner-only`);
+        existing.add(target);
+      } finally { fs.closeSync(descriptor); }
     }
-    if (stat.isSymbolicLink()) throw new Error(`SQLite ${suffix || 'database'} must not be a symlink`);
-    if (!stat.isFile()) throw new Error(`SQLite ${suffix || 'database'} must be regular`);
-    assertOwner(stat, `SQLite ${suffix || 'database'}`);
-    if ((stat.mode & 0o777) !== 0o600) throw new Error(`SQLite ${suffix || 'database'} must be owner-only`);
-    existing.add(target);
+    guard.revalidate();
+    return existing;
+  } finally {
+    guard.close();
   }
-  return existing;
 }
 
-export function secureNewSqliteSideFiles(databasePath, existing) {
-  for (const suffix of ['', '-wal', '-shm']) {
-    const target = `${databasePath}${suffix}`;
-    let descriptor;
-    try { descriptor = fs.openSync(target, fs.constants.O_RDONLY | NOFOLLOW); }
-    catch (error) { if (error.code === 'ENOENT') continue; throw error; }
-    try {
-      const stat = fs.fstatSync(descriptor);
-      if (!stat.isFile()) throw new Error(`SQLite ${suffix || 'database'} must be regular`);
-      assertOwner(stat, `SQLite ${suffix || 'database'}`);
-      if (!existing.has(target)) fs.fchmodSync(descriptor, 0o600);
-    } finally {
-      fs.closeSync(descriptor);
+export function secureNewSqliteSideFiles(databasePath, existing, { pathTrust } = {}) {
+  const guard = privateParent(databasePath, 'Wallet Kernel database', CHECKOUT_ROOT, pathTrust);
+  try {
+    for (const suffix of ['', '-wal', '-shm']) {
+      const target = `${databasePath}${suffix}`;
+      let descriptor;
+      try { descriptor = guard.openSibling(suffix, fs.constants.O_RDONLY | NOFOLLOW); }
+      catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+      try {
+        const stat = fs.fstatSync(descriptor);
+        if (!stat.isFile()) throw new Error(`SQLite ${suffix || 'database'} must be regular`);
+        assertOwner(stat, `SQLite ${suffix || 'database'}`);
+        if (!existing.has(target)) fs.fchmodSync(descriptor, 0o600);
+      } finally { fs.closeSync(descriptor); }
     }
+    guard.revalidate();
+  } finally {
+    guard.close();
   }
-  preflightSqliteFiles(databasePath);
+  preflightSqliteFiles(databasePath, { pathTrust });
 }
 
 export function loadOrInitializePrivateFile({
@@ -819,10 +913,11 @@ export function loadOrInitializePrivateFile({
   validateBytes,
   randomBytes = crypto.randomBytes,
   faultInjector = () => {},
+  pathTrust,
 }) {
-  const parent = privateParent(filePath, label, CHECKOUT_ROOT);
+  const guard = privateParent(filePath, label, CHECKOUT_ROOT, pathTrust);
   const readExisting = () => {
-    const descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | NOFOLLOW);
+    const descriptor = guard.openLeaf(fs.constants.O_RDONLY | NOFOLLOW);
     try {
       const stat = fs.fstatSync(descriptor);
       assertOwner(stat, label);
@@ -831,24 +926,23 @@ export function loadOrInitializePrivateFile({
       }
       const bytes = fs.readFileSync(descriptor);
       if (bytes.length === 0) throw new Error(`${label} must not be empty`);
+      guard.revalidate();
       return validateBytes(bytes);
     } finally {
       fs.closeSync(descriptor);
     }
   };
+  let bytes;
+  let temporaryName;
   try {
-    return readExisting();
-  } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
-  }
-  const bytes = Buffer.from(createBytes());
-  let temporary;
-  try {
+    try { return readExisting(); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    bytes = Buffer.from(createBytes());
     if (bytes.length === 0) throw new Error(`${label} initializer returned empty content`);
     validateBytes(bytes);
     const suffix = randomBytes(16).toString('hex');
-    temporary = path.join(parent, `.${path.basename(filePath)}.tmp-${process.pid}-${suffix}`);
-    const descriptor = fs.openSync(temporary,
+    temporaryName = `.${path.basename(filePath)}.tmp-${process.pid}-${suffix}`;
+    const descriptor = guard.openNamedLeaf(temporaryName,
       fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | NOFOLLOW, 0o600);
     try {
       fs.writeFileSync(descriptor, bytes);
@@ -861,25 +955,25 @@ export function loadOrInitializePrivateFile({
 
     try {
       // link() is Node's no-replace publish primitive: EEXIST means a racer won.
-      fs.linkSync(temporary, filePath);
+      guard.linkNamedToLeaf(temporaryName);
       faultInjector('after_private_publish');
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
     }
-    const parentDescriptor = fs.openSync(parent, fs.constants.O_RDONLY);
-    try {
-      fs.fsyncSync(parentDescriptor);
-      faultInjector('after_private_directory_fsync');
-    } finally {
-      fs.closeSync(parentDescriptor);
-    }
+    guard.fsyncParent();
+    faultInjector('after_private_directory_fsync');
     return readExisting();
   } finally {
-    bytes.fill(0);
-    if (temporary) {
-      try { fs.unlinkSync(temporary); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-      const cleanupDescriptor = fs.openSync(parent, fs.constants.O_RDONLY);
-      try { fs.fsyncSync(cleanupDescriptor); } finally { fs.closeSync(cleanupDescriptor); }
+    try {
+      if (bytes) bytes.fill(0);
+      if (temporaryName) {
+        try { guard.unlinkNamed(temporaryName); }
+        catch (error) { if (error.code !== 'ENOENT') throw error; }
+        guard.fsyncParent();
+      }
+      guard.revalidate();
+    } finally {
+      guard.close();
     }
   }
 }
@@ -888,6 +982,17 @@ export function loadOrInitializePrivateFile({
 Use `readPrivateInputFile()` for every policy and route read in bootstrap and daemon
 composition. Parse only the returned bounded bytes; never validate a path and reopen it
 later, and never retain raw configuration bytes after canonical validation.
+
+Import `openTrustedParent()` from `trusted-path.mjs`. Every file-backed public
+function above and `openKernelStore()` requires an explicit frozen `pathTrust` object;
+there is no permissive default. In live mode it contains the configured
+`trustedAncestor`, Kernel/Pi UID policy, and `mode: 'cdp-testnet'`. In deterministic
+tests it names the synthetic fixture ancestor and `mode: 'deterministic'`. The
+returned guard owns the full descriptor chain through each leaf
+`open(... | O_NOFOLLOW)` and final `fstat()`/parent fsync operation; its leaf/link/
+unlink methods resolve only through `/proc/self/fd`, validate bounded basenames, and
+never reopen an absolute path. Propagate the same
+object through SQLite sidecar creation and the authority-lock database.
 
 Use `loadOrInitializePrivateFile()` for the receipt key, operator token, and agent
 credential in Tasks 7, 13, and 14. The first two run only as the Kernel UID; the last
@@ -911,7 +1016,7 @@ no truncated final file.
 Create `authority-lock.mjs` with this exact public boundary:
 
 ```js
-export function acquireAuthorityLock({ databasePath, role }) {
+export function acquireAuthorityLock({ databasePath, role, pathTrust }) {
   // Return an idempotent close() handle, or throw KernelError('AUTHORITY_BUSY').
 }
 ```
@@ -931,9 +1036,11 @@ The running control plane must acquire role `kernel` before opening the authorit
 database, recovery, wallet initialization, or either listener, and hold it until
 admission stops, listeners close, the authority database closes, and finally the lock
 handle closes. All offline bootstrap commands acquire role `bootstrap` through this
-same module. The privileged service preflight acquires `prelaunch`, opens the main
-authority strictly read-only for its bounded enrollment/attestation lookup, performs no
-pragma/schema/event/write operation, closes it, then releases before the daemon starts.
+same module. Task 13's prelaunch child first drops to the exact Kernel UID/GID, then
+acquires `prelaunch`, opens the main authority strictly read-only for its bounded
+enrollment/attestation lookup, performs no pragma/schema/event/write operation, closes
+it, and releases before the root preflight exits and the daemon starts. The root parent
+never calls this module.
 Unit and fresh-process tests prove every pairwise Kernel/bootstrap/prelaunch contention,
 clean close; crash release; and that a contender
 can never mutate the main database before acquiring the lock.
@@ -1299,10 +1406,14 @@ import {
 } from './secure-storage.mjs';
 import { KERNEL_SCHEMA_VERSION, SCHEMA_V1_SQL } from './sqlite-schema.mjs';
 
-export function openKernelStore({ filePath, allowMemory = false, now = () => new Date().toISOString() }) {
+export function openKernelStore({ filePath, allowMemory = false, pathTrust,
+  now = () => new Date().toISOString() }) {
   if (filePath === ':memory:' && !allowMemory) throw new Error('in-memory authority requires explicit test injection');
-  const existing = filePath === ':memory:' ? new Set() : preflightSqliteFiles(filePath);
-  if (filePath !== ':memory:') preparePrivateFile(filePath, 'Wallet Kernel database');
+  const existing = filePath === ':memory:' ? new Set()
+    : preflightSqliteFiles(filePath, { pathTrust });
+  if (filePath !== ':memory:') {
+    preparePrivateFile(filePath, 'Wallet Kernel database', { pathTrust });
+  }
   const db = new DatabaseSync(filePath, { timeout: 5_000, readBigInts: true });
   db.exec('PRAGMA foreign_keys = ON; PRAGMA trusted_schema = OFF; PRAGMA synchronous = FULL;');
   if (filePath !== ':memory:') db.exec('PRAGMA journal_mode = WAL;');
@@ -1319,7 +1430,7 @@ export function openKernelStore({ filePath, allowMemory = false, now = () => new
       throw error;
     }
   }
-  if (filePath !== ':memory:') secureNewSqliteSideFiles(filePath, existing);
+  if (filePath !== ':memory:') secureNewSqliteSideFiles(filePath, existing, { pathTrust });
 
   const liveTransactions = new WeakSet();
   let transactionOpen = false;
@@ -1338,8 +1449,8 @@ export function openKernelStore({ filePath, allowMemory = false, now = () => new
       if (value && typeof value.then === 'function') {
         throw new Error('authority transactions must be synchronous');
       }
+      if (filePath !== ':memory:') preflightSqliteFiles(filePath, { pathTrust });
       db.exec('COMMIT');
-      if (filePath !== ':memory:') preflightSqliteFiles(filePath);
       return value;
     } catch (error) {
       if (db.isTransaction) db.exec('ROLLBACK');
@@ -1458,8 +1569,12 @@ Create `spikes/pi-wielder/tests/fixtures/kernel-db-writer.mjs`:
 ```js
 import { openKernelStore } from '../../src/kernel/sqlite-store.mjs';
 
-const [databasePath, claimId] = process.argv.slice(2);
-const store = openKernelStore({ filePath: databasePath });
+const [databasePath, trustedAncestor, claimId] = process.argv.slice(2);
+const pathTrust = Object.freeze({
+  mode: 'deterministic', trustedAncestor,
+  kernelUid: process.getuid(), agentUid: process.getuid(),
+});
+const store = openKernelStore({ filePath: databasePath, pathTrust });
 try {
   const outcome = store.transaction((token) => store.within(token,
     ({ db, appendEvent }) => {
@@ -1500,18 +1615,18 @@ function childResult(child) {
 }
 
 test('two processes serialize one conditional claim and one hash-chain event', async () => {
-  const { databasePath } = authority();
-  const initial = openKernelStore({ filePath: databasePath });
+  const { directory, databasePath, pathTrust } = authority();
+  const initial = openKernelStore({ filePath: databasePath, pathTrust });
   initial.close();
   const fixture = fileURLToPath(new URL('./fixtures/kernel-db-writer.mjs', import.meta.url));
   const children = ['a', 'b'].map((claimId) => spawn(
     process.execPath,
-    [fixture, databasePath, claimId],
+    [fixture, databasePath, directory, claimId],
     { stdio: ['ignore', 'pipe', 'pipe'] },
   ));
   assert.deepEqual((await Promise.all(children.map(childResult))).sort(),
     ['already_claimed', 'claimed']);
-  const reopened = openKernelStore({ filePath: databasePath });
+  const reopened = openKernelStore({ filePath: databasePath, pathTrust });
   assert.equal(reopened.verifyEventChain(), true);
   assert.equal(reopened.events().filter((event) => event.event_type === 'test.claimed').length, 1);
   reopened.close();
@@ -1522,6 +1637,7 @@ Run:
 
 ```bash
 node --test spikes/pi-wielder/tests/kernel-store.test.mjs \
+  spikes/pi-wielder/tests/kernel-trusted-path.test.mjs \
   spikes/pi-wielder/tests/kernel-authority-lock.test.mjs
 ```
 
@@ -1533,10 +1649,12 @@ contention, and crash release.
 ```bash
 git add .gitignore spikes/pi-wielder/.env.example \
   spikes/pi-wielder/src/kernel/secure-storage.mjs \
+  spikes/pi-wielder/src/kernel/trusted-path.mjs \
   spikes/pi-wielder/src/kernel/authority-lock.mjs \
   spikes/pi-wielder/src/kernel/sqlite-schema.mjs \
   spikes/pi-wielder/src/kernel/sqlite-store.mjs \
   spikes/pi-wielder/tests/kernel-store.test.mjs \
+  spikes/pi-wielder/tests/kernel-trusted-path.test.mjs \
   spikes/pi-wielder/tests/kernel-authority-lock.test.mjs \
   spikes/pi-wielder/tests/fixtures/kernel-db-writer.mjs \
   spikes/pi-wielder/tests/fixtures/kernel-lock-worker.mjs
@@ -1792,6 +1910,9 @@ export function createPolicyRepository(store) {
     active(),
     history(),
     get(id),
+    recordDecisionInTransaction(token, {
+      intentId, policyVersionId, evaluation, decidedAt,
+    }),
   };
 }
 ```
@@ -1805,6 +1926,18 @@ must reject `policy_blocked` before transport; an already signed/retrying attemp
 only finish or become unresolved under its persisted old binding. Return the exact
 blocked session IDs so the operator can transition them deliberately. Reapplying the
 identical active hash is an idempotent lookup, not a duplicate version or re-block.
+
+`recordDecisionInTransaction()` is the sole PolicyDecision writer. It accepts only
+Task 2's live opaque transaction token and starts no transaction. Through that token it
+reloads the exact immutable PolicyVersion and SpendIntent, requires the intent's
+persisted challenge hash to equal `evaluation.challengeHash`, requires the canonical
+PolicyVersion hash to equal `evaluation.policyHash`, validates the closed pure-engine
+result, inserts the immutable `policy_decisions` row, and appends its event. An exact
+replay returns the existing row; any different result for that intent is semantic
+corruption. Task 10 uses this scoped method in the same outer transaction that attaches
+the challenge. Its changed-challenge replacement aggregate may additionally create the
+next Approval through its own scoped repository method; no orchestrator writes
+`policy_decisions` directly.
 
 At this task boundary, test only policy persistence and session-state effects that now
 exist: applying a tighter same-wallet policy succeeds, becomes active, atomically marks
@@ -2040,7 +2173,9 @@ export function createIntentRepository({ store, idFactory, now, allowLoopbackHtt
     closeBoundSessionInTransaction,
     getSession,
     captureIntent,
+    captureIntentInTransaction,
     attachChallenge,
+    attachChallengeInTransaction,
     transition,
     transitionInTransaction,
     getIntent,
@@ -2065,6 +2200,15 @@ unauthenticated Pi header.
 `captureIntent()` reloads that exact triple as `active` inside its write transaction,
 copies `enrollment_hash` into the Spend Intent, and fails with `AGENT_REVOKED` before
 persisting if revocation won the serialization race.
+`captureIntentInTransaction(token, input)` and
+`attachChallengeInTransaction(token, input)` are the scoped forms used by Wallet
+Kernel aggregates. Each validates Task 2's live opaque token, starts no transaction,
+reloads the same authority rows through that token, and invokes the same internal
+implementation as its standalone wrapper. `captureIntent()` and `attachChallenge()`
+each own one transaction only by wrapping that shared scoped implementation. This
+allows a replacement intent, its challenge, its PolicyDecision, and its Approval to be
+created without nested transactions or duplicate SQL after an old changed-challenge
+aggregate has released its retry fingerprint in the same outer transaction.
 `transitionInTransaction(token, { intentId, expectedState, nextState, reasonCode })`
 is the scoped form used by Wallet Kernel aggregates; it conditionally changes exactly
 one legal state edge and appends the intent event through the live token without
@@ -2456,16 +2600,19 @@ const binding = Object.freeze({
 Assert `approve({ approvalId, expectedIntentHash: intentHash,
 operatorIdHash: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' })` persists only
 the stable operator hash and time,
-survives database reopen, and `consumeFor(binding)` changes `approved` to `consumed`
-exactly once. For every individual changed binding field, assert
+survives database reopen. In a caller-owned transaction that also inserts the exact
+matching reservation fixture, `consumeForInTransaction(token, binding)` changes
+`approved` to `consumed` exactly once; rolling back either write preserves both prior
+states. For every individual changed binding field, assert
 `APPROVAL_BINDING_MISMATCH` and no row/event mutation. Assert denial, expiry, an
 already-consumed approval, and an unknown approval never return authorization.
 An unconsumed approved row remains usable only before its immutable `expiresAt`;
-`consumeFor()` at or after expiry atomically changes it to `expired` and returns no
-authorization.
+inside Task 10's caller-owned aggregate, `consumeForInTransaction()` at or after
+expiry delegates to the scoped expiry transition and returns no authorization while
+the caller terminalizes the intent and writes its BuyerOutcome in that same token.
 
 At `maxPendingApprovals`, assert a new request is rejected atomically with
-`APPROVAL_CAPACITY`; after one denial or expiry sweep, exactly one slot becomes
+`APPROVAL_CAPACITY`; after one Task 10 aggregate denial or expiry, exactly one slot becomes
 available. A pending approval must be discoverable only via
 `findRetryable({ sessionId, intentHash })`, never from an agent-provided approval ID.
 
@@ -2524,14 +2671,19 @@ Create `approval-queue.mjs`:
 export function createApprovalQueue({ store, idFactory, now }) {
   return Object.freeze({
     request(binding),
+    requestInTransaction(token, binding),
     get(approvalId),
     list({ state, limit }),
     approve({ approvalId, expectedIntentHash, operatorIdHash }),
-    deny({ approvalId, expectedIntentHash, operatorIdHash, reasonCode }),
-    expireDue(),
+    listDue({ at, limit }),
     findRetryable({ sessionId, intentHash }),
-    consumeFor(binding),
     consumeForInTransaction(token, binding),
+    denyForIntentInTransaction(token, {
+      approvalId, intentId, expectedIntentHash, operatorIdHash, reasonCode,
+    }),
+    expireForIntentInTransaction(token, {
+      approvalId, intentId, expectedIntentHash, at,
+    }),
     cancelForIntentInTransaction(token, { intentId, reasonCode }),
   });
 }
@@ -2540,18 +2692,30 @@ export function createApprovalQueue({ store, idFactory, now }) {
 Every transition uses a conditional `UPDATE ... WHERE decision = ?` inside
 `BEGIN IMMEDIATE`, checks exactly one changed row, and appends the matching event. An
 exact duplicate request returns the existing record; a different binding for the same
-intent fails. `expireDue()` compares canonical timestamps using the injected clock,
-conditionally expires both `pending` and unconsumed `approved` rows, and returns the
-IDs it changed. `request(binding)` derives `expiresAt` as the minimum of the
+intent fails. `listDue()` is read-only, compares canonical timestamps against its
+explicit `at`, and returns bounded `(approvalId, intentId, intentHash)` candidates in
+stable order; it never mutates a row. `request(binding)` derives `expiresAt` as the minimum of the
 remaining local challenge lifetime and policy approval TTL; it never trusts an expiry
 supplied by an operator or Pi.
-Approve/deny additionally match `expectedIntentHash` in that same conditional
-transaction, so the operator's displayed confirmation is not a pre-transaction check.
+`requestInTransaction(token, binding)` is the scoped creation form: it validates the
+live opaque token, starts no transaction, reloads the exact PolicyDecision and intent
+binding, derives the same bounded expiry, and invokes the same internal implementation
+as `request()`. The standalone method owns one transaction only by wrapping this
+scoped implementation. Task 10 never calls the standalone method from an aggregate.
+Approve and the scoped denial additionally match `expectedIntentHash` in the same
+conditional transaction, so the operator's displayed confirmation is not a
+pre-transaction check.
 `consumeForInTransaction()` is the only approval-consumption path used by the Wallet
-Kernel's reserve/signing aggregate. `cancelForIntentInTransaction()` conditionally
-moves only `pending` or `approved` to `cancelled`, with exact reason
-`POLICY_SUPERSEDED` or `SESSION_CLOSED`, and appends its event through the live token;
-it never cancels a consumed approval. Both scoped methods start no transaction.
+Kernel's reserve/signing aggregate. `denyForIntentInTransaction()` moves only `pending`
+to `denied`; `expireForIntentInTransaction()` moves only a due `pending` or unconsumed
+`approved` row to `expired`. `cancelForIntentInTransaction()` moves only `pending` or
+`approved` to `cancelled`, with exact reason `POLICY_SUPERSEDED`, `SESSION_CLOSED`, or
+`APPROVAL_CHALLENGE_CHANGED`; the changed-challenge path therefore has the explicit
+legal approval state `cancelled`. Each scoped method checks the exact intent binding,
+appends its event through the live token, starts no transaction, and never changes a
+consumed approval. No public repository method can deny or expire an approval in a
+standalone transaction: Task 10 owns those aggregate mutations so approval state,
+terminal SpendIntent, and BuyerOutcome cannot split across a crash.
 
 - [ ] **Step 5: Implement the unforgeable in-process authority**
 
@@ -2642,8 +2806,10 @@ git commit -m "feat: add exact one-time spend approvals"
 
 **Files:**
 
+- Create: `spikes/pi-wielder/src/kernel/authority-mutation-coordinator.mjs`
 - Create: `spikes/pi-wielder/src/kernel/receipt-signing.mjs`
 - Create: `spikes/pi-wielder/src/kernel/signed-receipts.mjs`
+- Create: `spikes/pi-wielder/tests/kernel-authority-coordinator.test.mjs`
 - Create: `spikes/pi-wielder/tests/kernel-receipts.test.mjs`
 - Modify: `spikes/pi-wielder/src/invocation-journal.mjs:256-365`
 
@@ -2760,6 +2926,18 @@ CDP credential, payment signature header, payment payload, stack, or provider ex
 Refund and reconciliation receipts use revision `n + 1` and point
 `supersedesReceiptHash` to revision `n`.
 
+In `kernel-authority-coordinator.test.mjs`, queue labeled synchronous callbacks in
+call order and assert their entry/exit trace is exact FIFO even when an earlier callback
+throws. Close the injected admission gate while two callbacks are queued and prove
+each rechecks only when it reaches the head and performs zero callback writes. A
+callback that returns a Promise/thenable is an invariant violation: synchronously call
+the injected fail-stop callback with `AUTHORITY_COORDINATOR_ASYNC_CALLBACK`, release
+the slot, and ensure all followers fail the now-closed gate. Enqueue another mutation
+from a terminal callback's injected post-domain/pre-receipt fault hook without awaiting
+it; prove the follower does not enter until the terminal callback either commits its
+receipt or synchronously closes admission. Also assert the public object is frozen and
+exposes only `runExclusive(operation)`—no raw acquire, release, queue, or gate setter.
+
 - [ ] **Step 3: Extract generic signing without changing exports**
 
 Move the existing generic implementations of these functions to
@@ -2783,6 +2961,35 @@ existing key. Reopen and two-process-race tests prove both callers derive the sa
 ID and no initialization temp file remains.
 
 - [ ] **Step 4: Implement post-commit terminal receipt issuance**
+
+Create `authority-mutation-coordinator.mjs` with this exact surface:
+
+```text
+export function createAuthorityMutationCoordinator({
+  assertAdmissionOpen, markAuthorityUnhealthy,
+}) -> Object.freeze({
+  runExclusive(operation) -> Promise<result>,
+})
+```
+
+`runExclusive()` accepts exactly one function and queues calls in invocation order.
+When a call reaches the head, it synchronously invokes `assertAdmissionOpen()` before
+the operation; a closed gate rejects without invoking it. The operation itself must
+finish synchronously and may contain one or more synchronous SQLite transactions plus
+receipt projection/signing, but no `await`, fetch, timer, callback escape, listener
+work, or returned thenable. The coordinator automatically releases the slot on return
+or throw and advances exactly one follower. If the callback returns any thenable, call
+`markAuthorityUnhealthy('AUTHORITY_COORDINATOR_ASYNC_CALLBACK')` synchronously before
+release and reject the call. A callback may enqueue a follower but may not await it;
+that follower remains FIFO-blocked until the current callback releases. The module
+owns no database, resolver, listener, or public acquire/release primitive.
+
+Construct one instance per live authority process only in Task 14's composition root.
+The same object identity and same synchronous fail-stop callback are injected into the
+Wallet Kernel and Reconciler; live operator mutation routes call only those facades.
+Startup recovery and audited offline bootstrap instead run under Task 2's exclusive
+process-lifetime authority lock before live admission and never create a competing
+coordinator. No repository, adapter, or route may construct a private instance.
 
 Create `signed-receipts.mjs`:
 
@@ -2846,7 +3053,8 @@ shutdown, and reopen repairs the exact missing revision before serving.
 - [ ] **Step 5: Run Kernel and seller receipt suites**
 
 ```bash
-node --test spikes/pi-wielder/tests/kernel-receipts.test.mjs
+node --test spikes/pi-wielder/tests/kernel-authority-coordinator.test.mjs \
+  spikes/pi-wielder/tests/kernel-receipts.test.mjs
 npm run test:journal --prefix spikes/pi-wielder
 ```
 
@@ -2857,8 +3065,10 @@ byte-compatible.
 
 ```bash
 git add spikes/pi-wielder/src/kernel/receipt-signing.mjs \
+  spikes/pi-wielder/src/kernel/authority-mutation-coordinator.mjs \
   spikes/pi-wielder/src/kernel/signed-receipts.mjs \
   spikes/pi-wielder/src/invocation-journal.mjs \
+  spikes/pi-wielder/tests/kernel-authority-coordinator.test.mjs \
   spikes/pi-wielder/tests/kernel-receipts.test.mjs
 git commit -m "feat: sign terminal wallet kernel receipts"
 ```
@@ -3481,6 +3691,7 @@ clock, IDs, and fault injector:
 const kernel = createWalletKernel({
   store,
   policies,
+  enrollments,
   intents,
   budgets,
   approvals,
@@ -3488,6 +3699,8 @@ const kernel = createWalletKernel({
   permitAuthority,
   walletAdapter,
   transport,
+  authorityMutationCoordinator,
+  markAuthorityUnhealthy,
   now,
   faultInjector,
 });
@@ -3514,7 +3727,7 @@ results and durable side effects:
 | valid settlement then 2xx body timeout/overflow | `execution_unknown` | committed | 1 / 1 | signed |
 | typed pre-signer validation/account failure | `payment_failed` | released | 0 / 0 | signed |
 | signer throw/rejection/timeout or post-sign validation failure | `payment_unresolved` | unresolved | 1 / 0 | signed |
-| signer may have returned but persistence fails | process abort | held on recovery | 1 / 0 | issued after reconciliation |
+| signer may have returned but persistence fails | process abort | held on recovery | 1 / 0 | signed during startup recovery; later reconciliation may supersede |
 | paid response ambiguous | `payment_unresolved` | unresolved | 1 / 1 | signed |
 | settlement reports `success: false` | `payment_unresolved` | unresolved | 1 / 1 | signed |
 | second 402 or changed/missing settlement | `payment_unresolved` | held | 1 / 1 | signed |
@@ -3553,9 +3766,28 @@ and do not create another Spend Intent or Approval. After approval, concurrent e
 retries serialize one approval consumption and at most one signature; followers return
 the same terminal result or stable `REQUEST_IN_FLIGHT`. If the fresh unpaid probe
 returns an expired or changed challenge, terminalize the old approval with a signed
-`APPROVAL_CHALLENGE_CHANGED` receipt, create a new Spend Intent/Approval with a new
-public request ID, and do not sign. A changed ordinary request never matches the old
-approval.
+`APPROVAL_CHALLENGE_CHANGED` receipt and do not sign during that call. When the changed
+challenge is valid and its fresh pure evaluation remains `approval_required`, create a
+new Spend Intent/Approval with a new public request ID in the same domain transaction.
+If the fresh result is `allow` or `deny`, or the challenge is expired/invalid, create
+no replacement row in that transaction: return the old `payment_denied` result and
+receipt, and let a later exact tool call enter the ordinary new-intent lifecycle from
+scratch. A changed ordinary request never matches the old approval.
+Concretely, the changed-challenge domain transaction calls
+`cancelForIntentInTransaction(..., 'APPROVAL_CHALLENGE_CHANGED')`, so the old Approval
+is legally `cancelled`, transitions the old intent to `terminal`, writes
+`payment_denied / APPROVAL_CHALLENGE_CHANGED` revision 1, clears the old intent's
+`retry_matchable` flag, and then, only for a fresh `approval_required` result, calls
+`captureIntentInTransaction()`, `attachChallengeInTransaction()`,
+`policies.recordDecisionInTransaction()`, and `requestInTransaction()` to create the
+complete replacement binding from the already validated fresh challenge. Every call
+uses the same live token; none opens a nested transaction or duplicates repository
+SQL. The replacement receives newly Kernel-generated request, intent, correlation,
+and idempotency identifiers, while preserving the same ordinary request fingerprint
+only after the old row becomes non-matchable. The coordinator is retained until the
+old terminal outcome has its receipt; a receipt failure closes global admission
+before the new approval can be acted on. Faults at every write boundary prove the old
+aggregate and new request either commit together or not at all.
 
 Add a barriered concurrency test that pauses immediately after the durable signing
 claim, submits two identical agent retries, and proves both resolve to the original
@@ -3579,6 +3811,25 @@ become unresolved under its persisted binding; later revocation blocks all new w
 but never pretends to cancel a possibly signed authorization. Barrier tests pause at
 authentication, capture, unpaid-probe return, reservation, and immediately before the
 signing claim, race `revoke()`, and prove exactly those two serialized outcomes.
+
+The signing claim is also the final wallet-wide admission linearization point. Inside
+that same `BEGIN IMMEDIATE`, call
+`budgetLedger.snapshotInTransaction(token, { sessionId, sellerOrigin, at })` and
+recheck `walletBlocked` plus every open payment-resolution, execution-resolution, and
+refund blocker across the wallet. The current intent's own expected unsigned
+reservation is excluded only from the blocker predicate, never from exposure totals.
+If another intent became payment-unresolved, execution unknown/failed, or refund
+pending after this intent reserved, the later claim releases this still-unsigned
+reservation and terminalizes it as `payment_denied / WALLET_RECOVERY_REQUIRED` in the
+domain transaction, including the durable `BuyerOutcome`; while the mutation
+coordinator lease remains held, Task 7's mandatory second transaction signs and
+inserts the receipt before the call returns. If that receipt transaction fails, global
+admission enters the same fail-stop used by every other money-sensitive mutation. The
+claim issues no permit and invokes the signer zero times.
+Barrier tests create each of those three blocker classes between reservation and
+claim and prove the later claim loses safely. A blocker that commits after the signing
+claim follows the ordinary money-sensitive recovery rules and cannot retroactively
+release the authorization.
 
 - [ ] **Step 2: Specify and test the monetary transition order**
 
@@ -3620,10 +3871,12 @@ Reservation and signing claim are deliberately two transactions so
 re-evaluates the immutable policy/budget snapshot and calls `reserveInTransaction()`;
 for an approved retry it also calls `consumeForInTransaction()` in that same token,
 while the auto-approved path has no Approval row. The later signing-claim transaction
-reloads the exact reservation/policy/enrollment epoch, rechecks the deadline and
-active enrollment, derives/persists the one nonce/window, moves the attempt to
-`signing`, and appends its events before issuing the in-memory permit. Expiry or
-revocation at that second boundary safely releases the still-unsigned reservation and
+reloads the exact reservation/policy/enrollment epoch, calls the transaction-local
+wallet snapshot, and rechecks the deadline, active enrollment, and absence of any
+other wallet-wide recovery/refund blocker before it derives/persists the one
+nonce/window, moves the attempt to `signing`, and appends its events before issuing
+the in-memory permit. Expiry, revocation, or a newly committed wallet blocker at that
+second boundary safely releases the still-unsigned reservation and
 terminalizes it in the same transaction; nonce collision or another failed claim
 recheck likewise invokes the signer zero times. A crash between the two transactions
 leaves exactly the `reserved, no signing claim` state classified by Task 11.
@@ -3645,8 +3898,13 @@ CDP, or HTTP-server imports:
 export function createWalletKernel(dependencies) {
   return Object.freeze({
     openOrResumeSession({ agentInstanceId, walletAddress, policyVersionId }),
+    applyPolicy({ document, expectedPolicyHash }),
+    revokeAgent({ agentInstanceId, expectedEnrollmentHash, operatorIdHash }),
     transitionSessionPolicy({ sessionId, targetPolicyVersionId, expectedSessionHash }),
     closeSession({ sessionId, expectedSessionHash }),
+    approvePending({ approvalId, expectedIntentHash, operatorIdHash }),
+    denyPending({ approvalId, expectedIntentHash, operatorIdHash, reasonCode }),
+    expireDueApprovals({ limit }),
     execute({ sessionId, routeId, request, purposeLabel, correlationId }),
     status({ sessionId, intentId }),
   });
@@ -3664,6 +3922,38 @@ lease; the callback closes the shared admission gate before queued work can rech
 and before the Kernel rejects the call. Tests pause at this gap, queue a second intent
 plus every operator mutation class, and prove each observes
 `RECEIPT_PARITY_REQUIRED` with zero writes after the lease releases.
+
+`applyPolicy()` and `revokeAgent()` are the only live wrappers around Task 3's policy
+mutation and Task 4's enrollment revocation. Each first validates its closed input and
+displayed hash, then performs the repository's synchronous standalone transaction
+inside `authorityMutationCoordinator.runExclusive()`. `applyPolicy()` recomputes the
+canonical document hash, requires `expectedPolicyHash`, rechecks the loaded wallet and
+same-wallet live-rotation rule, applies the immutable version, and returns its exact
+blocked-session summaries. `revokeAgent()` requires the authenticated operator hash,
+conditionally revokes only the exact active enrollment, supersedes its admission
+attestation through the repository transaction, and returns the still-bound session
+IDs without closing or resolving them. Neither writes a BuyerOutcome or receipt. Race
+tests queue both methods against reservation and signing claim: FIFO order determines
+the winner, a policy/revocation winner blocks the later admission check, and a prior
+signing claim may only finish or become unresolved under its persisted epoch.
+
+The operator route never calls ApprovalQueue mutations directly. `approvePending()`
+serializes the exact conditional approval under the coordinator. `denyPending()` owns
+one domain transaction that calls `denyForIntentInTransaction()`, terminalizes the
+same SpendIntent, and inserts BuyerOutcome revision 1 as `payment_denied` with the
+validated bounded denial reason. `expireDueApprovals()` obtains a read-only
+`listDue()` batch and, in stable order, gives each still-due approval its own
+coordinator-held domain transaction calling `expireForIntentInTransaction()`,
+terminalizing the intent, and inserting `payment_denied / APPROVAL_EXPIRED` revision
+1. Each denial/expiry retains the lease through the mandatory second receipt
+transaction; a crash can leave only a terminal outcome missing its receipt, which
+startup parity repair fills before listeners. There is no durable `denied` or
+`expired` approval paired with a nonterminal intent or missing BuyerOutcome.
+Startup recovery runs the same expiry aggregate before readiness; normal operation
+runs a bounded due batch before admitting a new approval at the capacity limit and
+before applying an operator decision. An exact approved retry that discovers its own
+expiry executes that one aggregate directly. Read-only list/status routes never sweep
+or mutate as a side effect.
 
 `execute()` is the sole agent execution entrypoint. It first performs Task 4's exact
 session/fingerprint lookup: a matching retryable intent with an approved decision is
@@ -3812,7 +4102,9 @@ Seed one database row at each nonterminal payment/execution/refund state, close 
 store, reopen it, and call:
 
 ```js
-const report = recoverKernelAuthority({ store, receipts, now: fixedNow });
+const report = recoverKernelAuthority({
+  store, intents, budgets, approvals, receipts, now: fixedNow,
+});
 ```
 
 Assert:
@@ -3828,32 +4120,60 @@ Assert:
 | challenged + persisted deny decision, no outcome | intent `terminal`; buyer outcome `payment_denied` with the persisted PolicyDecision reason; receipt | yes |
 | challenged + persisted allow/approval-required decision, no approval/reservation | intent `terminal`; buyer outcome `payment_failed` / `RECOVERY_ABANDONED_UNSIGNED`; receipt | yes |
 | pending approval, unexpired | leave pending | yes |
-| pending approval, expired | expire, terminal receipt | yes |
+| pending approval, expired | atomically expire approval + terminalize intent + write `payment_denied / APPROVAL_EXPIRED` revision 1; receipt | yes |
 | approved but unconsumed, unexpired | retain for exact ordinary retry only; no reservation | yes |
-| approved but unconsumed, expired | expire, terminal receipt | yes |
+| approved but unconsumed, expired | atomically expire approval + terminalize intent + write `payment_denied / APPROVAL_EXPIRED` revision 1; receipt | yes |
 | consumed approval without its exact reservation | fail startup semantic audit | no listener |
 | reserved, no signing claim | release, terminal receipt | yes |
-| signing | change to `unresolved`, retain full hold | no |
-| signed | retain exact bytes, change to `unresolved` | no |
-| retrying | change to `unresolved`, retain full hold | no |
-| unresolved with pending/rejected payment candidate history | retain exact history and hold | no |
-| settled, execution missing | execution `unknown`, retain committed spend | no |
+| signing | atomically change PaymentAttempt and SpendIntent to `unresolved`, retain full hold and `retry_matchable = 1`, write `payment_unresolved / RECOVERY_PAYMENT_AMBIGUOUS` revision 1; receipt | no |
+| signed | retain exact bytes, atomically change PaymentAttempt and SpendIntent to `unresolved`, retain full hold and `retry_matchable = 1`, write `payment_unresolved / RECOVERY_PAYMENT_AMBIGUOUS` revision 1; receipt | no |
+| retrying | atomically change PaymentAttempt and SpendIntent to `unresolved`, retain full hold and `retry_matchable = 1`, write `payment_unresolved / RECOVERY_PAYMENT_AMBIGUOUS` revision 1; receipt | no |
+| unresolved with pending/abandoned/rejected payment candidate history | retain exact immutable history, current fresh case hash, existing outcome/receipt, and hold | no |
+| settled, execution missing | atomically insert execution `unknown`, open `reconciliation_required`, transition intent to `terminal` with `retry_matchable = 0`, write `execution_unknown / RECOVERY_EXECUTION_MISSING` revision 1, retain committed spend; receipt | no |
 | failed execution without `refund_pending` case/refund row | fail semantic audit | no listener |
 | unknown execution without `reconciliation_required` case | fail semantic audit | no listener |
 | failed/unknown execution with open resolution case | retain exact case and full block | no |
-| refund pending/unresolved | retain state and hold | no |
+| refund pending/unresolved, or only abandoned history awaiting a replacement | retain immutable history, current fresh case hash, open `refund_pending` resolution, and full block | no |
 
 Recovery never invents an extra state: `RECOVERY_ABANDONED_UNSIGNED` is a stable
 reason code on the applicable existing `upstream_failed` or `payment_failed`
 BuyerOutcome value while the Spend Intent uses the existing `terminal` state. That
 transition and its first outcome revision commit atomically before the receipt is
 projected.
+The same rule applies to every recovery-created terminal fact. Expiring an approval
+uses Task 6's scoped transition in the transaction that terminalizes its intent and
+inserts the outcome. Each `signing`/`signed`/`retrying` ambiguity transaction
+conditionally changes both the PaymentAttempt and its exact SpendIntent from their
+matching predecessor states to `unresolved`, retains the exact hold/bytes and
+`retry_matchable = 1`, and inserts the initial
+`payment_unresolved / RECOVERY_PAYMENT_AMBIGUOUS` outcome. The settled-without-
+execution transaction inserts the `unknown` execution, its wallet-blocking
+`reconciliation_required` case, conditionally transitions the exact SpendIntent from
+its legal predecessor to `terminal` while clearing `retry_matchable`, and inserts the
+initial `execution_unknown / RECOVERY_EXECUTION_MISSING` outcome together. That stable
+reason is the only recovery classification for a persisted settlement lacking an
+execution row. Fault injection after each individual write proves the execution,
+resolution case, terminal intent, outcome, and retained committed budget all roll back
+or commit as one unit.
+Only after each domain commit does recovery sign/insert its receipt; startup stays
+closed until global receipt parity is restored. An existing matching outcome with a
+missing receipt is repaired idempotently, while a conflicting existing outcome or
+receipt is semantic corruption rather than a second revision.
 `after_challenge_commit` means the challenge projection and PolicyDecision committed
 atomically but Task 10 had not yet created an approval or reservation. Recovery uses
 the persisted deny reason only for a deny; it never silently reconstructs a missing
 approval/reservation or resumes network work. Approval consumption and reservation
 are one aggregate transaction, so the consumed-without-reservation row is corruption,
 not a recoverable crash state.
+
+`abandoned` is immutable candidate history, not proof that payment/refund ambiguity
+ended. Recovery accepts zero or more abandoned/rejected predecessors plus at most one
+current pending payment candidate or pending/unresolved refund candidate, recomputes
+the displayed case hash from the complete ordered history, and requires it to differ
+from the pre-abandon hash. With no replacement yet, the rotated fresh hash and full
+hold remain active. Restart tests cover abandon-before-crash, replacement-before-
+crash, and abandon racing confirmation for both payment and refund observations; no
+case releases value, removes the wallet block, or revises the BuyerOutcome/receipt.
 
 Recovery is idempotent: a second call changes no rows, events, or receipt revisions.
 Test both legal unbound cases: first clean bootstrap before its initial session, and
@@ -4062,12 +4382,15 @@ Expected: FAIL with `ERR_MODULE_NOT_FOUND`.
 Create `recovery.mjs`:
 
 ```text
-export function recoverKernelAuthority({ store, receipts, now }) {
+export function recoverKernelAuthority({ store, intents, budgets, approvals, receipts, now }) {
   // Verify physical and semantic authority invariants, classify every incomplete row,
   // and return a frozen report.
 }
 
-export function createReconciler({ store, budgets, receipts, resolver, now, idFactory }) {
+export function createReconciler({
+  store, budgets, receipts, resolver, now, idFactory,
+  authorityMutationCoordinator, markAuthorityUnhealthy,
+}) {
   return Object.freeze({
     reconcilePayment({ intentId, operatorIdHash, paymentTransactionId = null,
       expectedPaymentCaseHash }),
@@ -4099,6 +4422,29 @@ idempotently. Resolver timeout or malformed evidence cannot release a budget hol
 There is no caller-authored generic `rejected`, `settled`, or `refund_confirmed`
 result. Each method validates its own closed result schema and source before any budget
 transition.
+
+The reconciler receives the same shared FIFO `authorityMutationCoordinator` and
+fail-stop `markAuthorityUnhealthy(code)` callback as Task 10. It never holds a
+coordinator lease across resolver/network work. `reconcilePayment()` and
+`observeRefund()` use one short lease to recheck the admission gate and atomically
+persist the candidate, release it before calling the resolver, then acquire a new
+lease for the authoritative resolution. `reconcileExecution()` first takes a bounded
+read-only binding snapshot, resolves outside any lease/transaction, then acquires its
+resolution lease. On every resolution lease, recheck the shared gate and global
+receipt parity before the first write, reload the exact persisted binding and case
+hash inside the domain transaction, and discard a stale resolver result with zero
+writes.
+
+Any resolution that writes a BuyerOutcome retains that second lease continuously
+across the domain commit and required receipt-signing/insert transaction. If receipt
+creation fails after the domain commit, synchronously call
+`markAuthorityUnhealthy('RECEIPT_PARITY_REQUIRED')` while still holding the lease;
+queued agent and operator mutations then recheck the closed gate and perform zero
+writes. Candidate persistence and `abandonCandidate()` also use the shared coordinator
+and gate but have no receipt phase because they do not write a BuyerOutcome. Barrier
+tests pause before and after each lease, during the network gap, and after the terminal
+domain commit to prove no network-under-lease, stale-result overwrite, post-commit
+unsafe retry, or receipt-parity race is possible.
 
 `reconcileExecution()` is legal only for an open
 `execution_resolutions.state = 'reconciliation_required'` row. A successful resolution
@@ -4133,24 +4479,37 @@ it `abandoned` with an event. It performs no resolver/network call, no budget or
 BuyerOutcome mutation, and returns the fresh replacement case hash. Its stale hash or
 a concurrent confirmation/rejection loses with zero writes.
 
-Before classifying recovery states, run a closed semantic audit across every row:
-state values and transitions are legal; atomic strings are canonical; accepted indices
-are in bounds for the persisted challenge; PolicyDecision/challenge/intent hashes
-match; route IDs are canonical bounded tokens; approvals duplicate the exact immutable
-binding; every reservation sums to its
-decision ceiling and uses that PolicyVersion's limits; every PaymentAttempt payload,
-header, hash, nonce, amount, and state agree; settlements own their unique transaction
-IDs; payment/refund candidates are canonical, immutable, unique, and have at most one
-open row per intent; every failed/unknown settled execution has exactly its required resolution/refund
-state; executions/refunds/reconciliations have legal predecessors; retryable fingerprints
-and open agent bindings are unique; every binding and intent carries its exact immutable
-enrollment hash; enrollment, binding, and isolation-attestation hashes/states agree and
-at most one attestation is current; every terminal intent has exactly one current
-buyer-outcome row whose revision matches its domain/reconciliation history; and receipts
-exactly project the corresponding buyer-outcome revisions.
-Any mismatch returns `AUTHORITY_SEMANTIC_CORRUPTION`, keeps both listeners closed, and
-performs no repair. Add corruption tests for each cross-table class using individually
-well-formed rows so SQL constraints alone cannot make the tests vacuous.
+Recovery uses two explicit audit phases; it never applies the final-state invariants to
+a crash gap before classifying that gap. The pre-classification audit verifies physical
+integrity, schema/foreign keys/CHECKs, event-chain validity, signatures of every
+existing receipt, canonical state/atomic strings, challenge indices and hashes,
+route/policy/approval immutable bindings, reservation arithmetic, internally complete
+PaymentAttempt fields for its current state, transaction/candidate uniqueness,
+candidate history/case hashes, legal predecessors, enrollment/session uniqueness and
+bindings, and isolation-attestation hashes. It admits only the exact incomplete shapes
+listed in Step 1: missing dependent outcome/receipt rows at named fault boundaries,
+`signing`/`signed`/`retrying`, settled-without-execution, due approval, reserved-before-
+claim, and the other enumerated unsigned abandonment cases. A near miss—extra row,
+wrong predecessor, conflicting outcome/receipt, partial execution case, or missing
+data not named by the matrix—is `AUTHORITY_SEMANTIC_CORRUPTION` with zero repair.
+
+After deterministic classification and domain repair, run the full semantic audit:
+every reservation sums to its decision ceiling and uses that PolicyVersion's limits;
+every PaymentAttempt payload/header/hash/nonce/amount/state agrees with its
+SpendIntent state and BudgetReservation disposition; settlements own
+their unique transaction IDs; payment/refund candidate histories are canonical and
+have at most one open row; every failed/unknown settled execution has exactly its
+required resolution/refund state; executions/refunds/reconciliations have legal
+predecessors; retryable fingerprints and open bindings are unique; every binding and
+intent carries its exact immutable enrollment hash; at most one attestation is current;
+every terminal/ambiguous intent has exactly one current BuyerOutcome whose revision
+matches domain/reconciliation history; and every BuyerOutcome revision has exactly one
+valid projecting receipt. A missing receipt for an otherwise exact committed outcome
+is the sole receipt repair case and is filled before this second audit; a conflicting
+receipt is never repaired. Any final mismatch returns
+`AUTHORITY_SEMANTIC_CORRUPTION`, keeps both listeners closed, and performs no further
+mutation. Add corruption and allowed-gap tests for each cross-table class using
+individually well-formed rows so SQL constraints alone cannot make them vacuous.
 
 - [ ] **Step 5: Prove recovery in fresh processes at every fault point**
 
@@ -4266,6 +4625,7 @@ WALLET_KERNEL_AGENT_RUN_OUTBOX=
 WALLET_KERNEL_RELEASE_ROOT=
 WALLET_KERNEL_RELEASE_MANIFEST=
 WALLET_KERNEL_SERVICE_DEFINITION_FILE=
+WALLET_KERNEL_SOCKET_DEFINITION_FILE=
 WALLET_KERNEL_ENV_FILE=
 WALLET_KERNEL_EVIDENCE_ROOT=
 WALLET_KERNEL_ISOLATION_REPORT_FILE=
@@ -4287,7 +4647,9 @@ Create `config.test.mjs` with an explicit environment object; never mutate or in
 the developer's real `process.env`. Assert:
 
 ```js
-const config = loadControlPlaneConfig({ env: fixtureEnv, checkoutRoot, uid });
+const config = loadControlPlaneConfig({
+  env: fixtureEnv, checkoutRoot, uid, platform: 'linux',
+});
 assert.deepEqual(config.publicConfig, {
   mode: 'cdp-testnet',
   agentHost: '127.0.0.1',
@@ -4305,9 +4667,11 @@ assert.deepEqual(config.publicConfig, {
   operatorTokenPath: fixtureEnv.WALLET_KERNEL_OPERATOR_TOKEN_FILE,
   enrollmentInboxPath: fixtureEnv.WALLET_KERNEL_ENROLLMENT_INBOX,
   agentRunOutboxPath: fixtureEnv.WALLET_KERNEL_AGENT_RUN_OUTBOX,
+  trustedAncestor: fixtureEnv.WALLET_KERNEL_TRUSTED_ANCESTOR,
   releaseRoot: fixtureEnv.WALLET_KERNEL_RELEASE_ROOT,
   releaseManifestPath: fixtureEnv.WALLET_KERNEL_RELEASE_MANIFEST,
   serviceDefinitionPath: fixtureEnv.WALLET_KERNEL_SERVICE_DEFINITION_FILE,
+  socketDefinitionPath: fixtureEnv.WALLET_KERNEL_SOCKET_DEFINITION_FILE,
   environmentFilePath: fixtureEnv.WALLET_KERNEL_ENV_FILE,
   evidenceRoot: fixtureEnv.WALLET_KERNEL_EVIDENCE_ROOT,
   isolationReportPath: fixtureEnv.WALLET_KERNEL_ISOLATION_REPORT_FILE,
@@ -4336,8 +4700,17 @@ the whole URL as secret because a path/query can contain a provider key. It must
 appear in `publicConfig`, logs, errors, receipts, projections, or evidence. The
 deterministic mode does not require CDP credentials or an RPC endpoint and must ignore
 rather than serialize any present values.
-Also reject `NODE_OPTIONS`, `NODE_PATH`, `LD_PRELOAD`, and every environment key with
-prefix `DYLD_` in live mode before dynamic SDK/adapter imports; tests cover each one.
+Also reject `NODE_OPTIONS`, `NODE_PATH`, every key with prefix `LD_` or `DYLD_`,
+`GCONV_PATH`, and `GLIBC_TUNABLES` in live mode before dynamic SDK/adapter imports;
+tests cover each class. The rendered systemd unit removes the loader controls before
+Node starts; this application check is defense in depth, not the first line of
+protection.
+`cdp-testnet` additionally requires the validated runtime platform to equal `linux`, the systemd
+activation contract, a root-owned configured `trustedAncestor`, and distinct
+root-owned service and socket unit files. `trustedAncestor` must lexically contain
+every configured live filesystem path; Task 2's descriptor walker then applies the
+role-specific owner/mode policy to the complete chain. A sticky writable ancestor,
+even `/tmp`, is never a valid live root.
 
 In the same test file, exercise `validateRouteMap({ document, mode })` before Task 14
 adds the concrete route file. Require a closed schema, unique bounded route IDs, fixed
@@ -4403,7 +4776,7 @@ export function validateRouteMap({ document, mode }) {
 }
 
 export function loadControlPlaneConfig({ env, checkoutRoot,
-  uid = process.getuid(), gid = process.getgid() }) {
+  uid = process.getuid(), gid = process.getgid(), platform = process.platform }) {
   return Object.freeze({
     publicConfig: Object.freeze({
       mode,
@@ -4424,9 +4797,11 @@ export function loadControlPlaneConfig({ env, checkoutRoot,
       operatorTokenPath,
       enrollmentInboxPath,
       agentRunOutboxPath,
+      trustedAncestor: mode === 'cdp-testnet' ? trustedAncestor : null,
       releaseRoot: mode === 'cdp-testnet' ? releaseRoot : null,
       releaseManifestPath: mode === 'cdp-testnet' ? releaseManifestPath : null,
       serviceDefinitionPath: mode === 'cdp-testnet' ? serviceDefinitionPath : null,
+      socketDefinitionPath: mode === 'cdp-testnet' ? socketDefinitionPath : null,
       environmentFilePath: mode === 'cdp-testnet' ? environmentFilePath : null,
       evidenceRoot: mode === 'cdp-testnet' ? evidenceRoot : null,
       isolationReportPath: mode === 'cdp-testnet' ? isolationReportPath : null,
@@ -4446,6 +4821,13 @@ allowed public keys. `assertCredentialPresence()` checks that the three CDP vari
 exist for `cdp-testnet` but returns no values. Pass the original environment only to
 the SDK constructor in the process composition root; do not copy credentials into the
 config, database, logs, errors, or receipts.
+`platform` is a closed unit-test seam, not an environment/configuration field. Accept
+only Node's known platform tokens and require exact `linux` in `cdp-testnet`; tests
+inject `linux` for the live-shape fixture and independently inject `darwin`/`win32` to
+prove rejection. The real `control-plane.mjs` always omits this argument and, before
+constructing any live dependency or listener, independently requires actual
+`process.platform === 'linux'`. No composition dependency or environment value can
+override that second gate, so the injection seam cannot make a macOS process live.
 In `cdp-testnet`, the owner bearer may travel only over the Kernel-owned Unix-domain
 socket named by `operatorSocketPath`. The live CLI must execute under the
 Kernel/operator OS identity that can traverse the socket's owner-only parent. The live
@@ -4706,9 +5088,16 @@ git commit -m "feat: adapt customer CDP wallets"
 - Create: `spikes/pi-wielder/src/kernel/release-integrity.mjs`
 - Create: `spikes/pi-wielder/src/agent/isolation-preflight.mjs`
 - Create: `spikes/pi-wielder/scripts/build-release-manifest.mjs`
+- Create: `spikes/pi-wielder/scripts/render-systemd-units.mjs`
+- Create: `spikes/pi-wielder/scripts/inspect-systemd-effective.mjs`
 - Create: `spikes/pi-wielder/scripts/preflight-live-deployment.mjs`
+- Create: `spikes/pi-wielder/scripts/prelaunch-kernel-reader.mjs`
 - Create: `spikes/pi-wielder/scripts/preflight-agent-isolation.mjs`
 - Create: `spikes/pi-wielder/scripts/agent-isolation-probe-worker.mjs`
+- Create: `spikes/pi-wielder/deploy/systemd/wallet-kernel.service`
+- Create: `spikes/pi-wielder/deploy/systemd/wallet-kernel-console.socket`
+- Create: `.github/workflows/pi-wielder-systemd.yml`
+- Modify: `spikes/pi-wielder/package.json`
 - Create: `spikes/pi-wielder/operator-console/index.html`
 - Create: `spikes/pi-wielder/operator-console/app.mjs`
 - Create: `spikes/pi-wielder/operator-console/styles.css`
@@ -4717,6 +5106,7 @@ git commit -m "feat: adapt customer CDP wallets"
 - Create: `spikes/pi-wielder/tests/operator-cli.test.mjs`
 - Create: `spikes/pi-wielder/tests/operator-console.test.mjs`
 - Create: `spikes/pi-wielder/tests/release-integrity.test.mjs`
+- Create: `spikes/pi-wielder/tests/systemd-units.test.mjs`
 - Create: `spikes/pi-wielder/tests/agent-isolation.test.mjs`
 
 - [ ] **Step 1: Write failing owner-credential tests**
@@ -4805,16 +5195,20 @@ console app; channel-inappropriate auth is rejected. All mutation bodies use clo
 reads. Unknown route, query, body field, state, identifier, or pagination value is
 rejected. Approval endpoints accept only operator intent plus a bounded reason code;
 they cannot change amount, wallet, quote, policy, challenge, expiry, or request. The
+approve and deny handlers call only Task 10's `approvePending()` and `denyPending()`
+aggregate services; `operator/api.mjs` is never handed ApprovalQueue itself. The
 policy validation body is exactly `{ document }`; it returns the normalized public
 policy plus its canonical hash. Policy apply is stateless and accepts exactly
 `{ document, expectedPolicyHash }`: it revalidates/recanonicalizes the document and
 requires the recomputed hash to equal the displayed validation hash before calling
-Task 3's repository. It never trusts a filename, cached browser object, or
+Task 10's coordinated `applyPolicy()` facade. It never receives Task 3's mutable
+repository and never trusts a filename, cached browser object, or
 caller-supplied normalized projection. The running API additionally requires the
 document wallet to equal the already-loaded adapter identity; a wallet change returns
-`WALLET_ROTATION_REQUIRES_OFFLINE_RESTART`. Only after guarded close and daemon stop may
-the lock-owning offline apply accept a different wallet, before closed configuration
-and the adapter are restarted together. Approval bodies
+`WALLET_ROTATION_REQUIRES_OFFLINE_RESTART`. Only after guarded close and Task 13's
+verified socket-plus-service maintenance quiesce may the lock-owning offline apply
+accept a different wallet, before closed configuration and the adapter are restarted
+together. Approval bodies
 require the displayed intent hash; reconciliation bodies require the displayed intent
 hash plus the applicable displayed case hash, and `kind` is exactly `payment`,
 `execution`, or `refund-observation`. Execution accepts no financial evidence and
@@ -4830,8 +5224,10 @@ abandoned candidate. The abandon-candidate route accepts only `kind` equal to
 resolver call, and returns the newly rotated case hash. Execution has no candidate to
 abandon.
 Agent revocation accepts exactly `expectedEnrollmentHash`, marks only the active
-enrollment revoked through Task 4's repository, and immediately removes agent admission
-without closing or resolving its session. It returns the bound session IDs that still
+enrollment revoked through Task 10's coordinated `revokeAgent()` facade, and
+immediately removes agent admission. The operator API never receives Task 4's mutable
+repository. Revocation does not close or resolve its session; it returns the bound
+session IDs that still
 need safe operator reconciliation/close.
 The session transition body contains exactly `targetPolicyHash` and
 `expectedSessionHash`; the target must be active and the Kernel enforces Task 10's
@@ -4903,7 +5299,7 @@ as fixed by the exact clean-install sequence below. Agent enrollment
 validates the descriptor's exact hash, closed schema, canonical different Pi UID in
 live mode, uniqueness, and absence of any raw token before inserting the immutable
 active `agent_enrollments` row. These commands validate the owner token,
-call `acquireAuthorityLock({ databasePath, role: 'bootstrap' })`, prove no Kernel
+call `acquireAuthorityLock({ databasePath, role: 'bootstrap', pathTrust })`, prove no Kernel
 writer owns the SQLite authority, perform only the requested operation, close/fsync,
 and release the lock. Approval, receipt, reconciliation, and export commands remain
 authenticated Unix-socket API clients in live mode and loopback clients only in the
@@ -4920,12 +5316,32 @@ returns `AUTHORITY_RECOVERY_REQUIRED`. Tests seed a domain-commit/receipt gap an
 offline apply/enroll/attest either repairs exact parity first or performs no requested
 write; no bootstrap path can advance authority past a missing receipt.
 
-The final clean-install order is exact: Kernel `preflight`; Pi-side `credential init`;
-offline `agent enroll`; offline `policy apply`; privileged isolation probe bound to
-that enrollment; offline `isolation attest`; then daemon start. Normal replacement uses
-guarded session close, authenticated `agent revoke --confirm ENROLLMENT_HASH`, daemon
-stop, new Pi credential/descriptor, offline replacement enrollment, a fresh
-probe/attestation, and clean restart. If compromise requires revocation before a close
+The final clean-install order is exact: privileged immutable release/unit install;
+Kernel `preflight`; Pi-side `credential init`; offline `agent enroll`; offline `policy
+apply`; `systemctl daemon-reload`; `systemctl enable wallet-kernel-console.socket`
+without starting it; effective-config inspection and release-manifest creation;
+privileged isolation probe bound to that enrollment/manifest; offline `isolation
+attest`; explicit socket start; then service start. Any failure after enablement runs a
+root cleanup that disables/stops the socket again; even an abrupt reboot in that short
+window remains fail-closed because live preflight cannot find the matching fresh
+attestation.
+
+Normal replacement uses guarded session close, authenticated `agent revoke --confirm
+ENROLLMENT_HASH`, then a privileged maintenance quiesce in this exact order:
+`systemctl disable --now wallet-kernel-console.socket`, `systemctl stop
+wallet-kernel.service`, and verification that both units are `inactive`, the socket is
+`disabled`, both `Job` values are empty, `MainPID=0`, no listener remains at
+127.0.0.1:8405, and a role-`bootstrap` authority-lock probe succeeds. Only then may a
+new Pi credential/descriptor, offline replacement enrollment/configuration, and fresh
+probe/attestation run. Restore performs `daemon-reload`, enables the socket without
+starting it, rechecks the complete effective-config projection, imports the fresh
+attestation, starts the socket, and starts the service. A failed maintenance step
+leaves the socket disabled and service stopped; it never silently resumes an old
+binding. A dropped-Pi connection-storm integration test runs throughout quiesce and
+proves that, after socket disablement completes, traffic cannot reactivate the service,
+acquire the authority lock, or interfere with the offline mutation.
+
+If compromise requires revocation before a close
 that unresolved money blocks, revoke first, remain in operator-only recovery, reconcile
 and close, then stop/enroll. Tests cover both orders and prove no second active row is
 created. No step edits SQLite by hand.
@@ -4981,8 +5397,9 @@ const isolationReport = Object.freeze({
   releaseManifestHash: `sha256:${'88'.repeat(32)}`,
   releaseTreeHash: `sha256:${'99'.repeat(32)}`,
   nodeExecutableHash: `sha256:${'aa'.repeat(32)}`,
-  serviceDefinitionHash: `sha256:${'bb'.repeat(32)}`,
-  environmentMetadataHash: `sha256:${'cc'.repeat(32)}`,
+  serviceArtifactsHash: `sha256:${'bb'.repeat(32)}`,
+  systemdEffectiveConfigHash: `sha256:${'cc'.repeat(32)}`,
+  environmentMetadataHash: `sha256:${'dd'.repeat(32)}`,
   probeResults: Object.freeze({
     authorityDirectory: 'EACCES',
     database: 'EACCES',
@@ -4992,7 +5409,7 @@ const isolationReport = Object.freeze({
     agentCredential: 'READABLE',
     releaseTreeWrite: 'EACCES',
     dependencyTreeWrite: 'EACCES',
-    serviceDefinitionWrite: 'EACCES',
+    serviceArtifactsWrite: 'EACCES',
     kernelEnvironmentParentWrite: 'EACCES',
   }),
   probedAt: '2026-07-31T12:00:00.000Z',
@@ -5001,8 +5418,11 @@ const isolationReport = Object.freeze({
 const reportHash = sha256(canonicalJson(isolationReport));
 ```
 
-The metadata hashes cover closed `(role, device, inode, uid, gid, mode)` projections,
-not paths, file contents, mutable size/mtime, or secrets. Validate canonical nonzero
+The authority and credential metadata hashes cover the closed, ordered ancestor-chain
+projections from Task 2—`(role, depth, device, inode, uid, gid, mode)`—plus the leaf
+projection, not paths, file contents, mutable size/mtime, or secrets. This binds every
+Kernel private/writable root and the Pi credential root to a chain Pi cannot rename.
+Validate canonical nonzero
 UID/GID strings, the exact active enrollment hash, every deployment hash, all ten
 literal result codes,
 `probedAt <= now < expiresAt`, and a maximum 15-minute interval. Print only
@@ -5068,16 +5488,31 @@ is excluded from its tree hash):
   entrypoint: 'src/control-plane.mjs',
   packageLockHash: 'sha256:<64 lowercase hex>',
   releaseTreeHash: 'sha256:<64 lowercase hex>',
+  kernelIdentity: {
+    uid: '<canonical positive decimal>',
+    gid: '<canonical positive decimal>',
+  },
   node: {
-    version: 'v24.15.0',
+    version: 'v24.18.1',
     executablePathHash: 'sha256:<64 lowercase hex>',
     executableSha256: 'sha256:<64 lowercase hex>',
     uid: '0', gid: '<canonical nonnegative gid>', mode: '<canonical octal>',
   },
-  service: {
-    definitionPathHash: 'sha256:<64 lowercase hex>',
-    definitionSha256: 'sha256:<64 lowercase hex>',
+  environment: {
     environmentMetadataHash: 'sha256:<64 lowercase hex>',
+  },
+  serviceArtifacts: [{
+    role: 'kernel-service' | 'console-socket',
+    pathHash: 'sha256:<64 lowercase hex>',
+    sha256: 'sha256:<64 lowercase hex>',
+    uid: '0', gid: '<canonical nonnegative gid>', mode: '<canonical octal>',
+  }],
+  systemd: {
+    managerVersion: '<bounded canonical systemd version>',
+    systemctlVersion: '<bounded canonical systemctl version>',
+    systemctlExecutablePathHash: 'sha256:<64 lowercase hex>',
+    systemctlExecutableSha256: 'sha256:<64 lowercase hex>',
+    effectiveConfigHash: 'sha256:<64 lowercase hex>',
   },
   entries: [{
     path: '<canonical relative path>',
@@ -5094,39 +5529,148 @@ Entries are sorted by canonical relative path and cover the entire release tree 
 the manifest. Reject absolute/dot/duplicate paths, devices/FIFOs/sockets, escaping or
 dangling symlinks, hard-linked regular files, missing/extra entries, mutable
 directories/files, a package-lock mismatch, an entrypoint outside the tree, or a Node
-version outside the exact pinned runtime. The environment metadata hash covers only
+version outside the exact pinned runtime. `kernelIdentity` is the install-time,
+root-owned source of truth for the dedicated Kernel's numeric UID/GID; both values
+must be canonical positive decimals, must differ from the Pi identity, and may never
+be inferred later from an account name, environment variable, report, or mutable
+configuration. `serviceArtifacts` is closed, sorted by
+`role`, contains exactly one `kernel-service` and one `console-socket` row for the
+systemd pilot, and rejects duplicates, missing/extra roles, or path reuse. Its
+domain-separated canonical aggregate hash is `serviceArtifactsHash` in the isolation
+report. The environment metadata hash covers only
 `(device,inode,uid,gid,mode)` for the Kernel-owned `0600` environment file under its
-Kernel-owned `0700` parent, never secret contents or its path. The service definition
-and socket-activation definition are root-owned, hashed public configuration.
+Kernel-owned `0700` parent, never secret contents or its path. Both the service
+definition and socket-activation definition are root-owned, content-hashed public
+configuration; neither can be omitted merely because the service manager uses two
+files.
 
-`preflight-live-deployment.mjs` is invoked by the root-owned service manager before it
-drops to the Kernel UID. Using the pinned absolute root-owned Node binary, it verifies
-the release manifest/tree, Node executable, launcher, service/socket definitions, and
-environment metadata and validates the service manager's reserved console listener.
-It acquires the authority lock in read-only `prelaunch` role and inspects only the
-active-enrollment/current-attestation keys. With one active enrollment, it single-FD
-opens the already human-confirmed `isolationReportPath`, requires its hash to equal
-SQLite's exact current attestation, revalidates its unexpired static bindings, then
-reruns the dropped-Pi-identity probes and requires the current results/metadata to equal
-that artifact. It does not generate, rewrite, import, supersede, or timestamp a report
-and performs no SQLite mutation. Only `preflight-agent-isolation.mjs` generates a new
-report, and only the confirmed offline `isolation attest` command imports it. With zero
-active enrollment, prelaunch still verifies deployment integrity/write denial but skips
-agent-credential report matching so operator-only recovery can start.
+The install does not equate those file hashes with PID1's loaded configuration.
+Before manifest creation it runs the fixed root-owned `/usr/bin/systemctl
+daemon-reload`, enables (without starting) `wallet-kernel-console.socket`, and invokes
+`inspect-systemd-effective.mjs`. That inspector verifies the absolute `systemctl`
+inode/owner/mode and hashes its bytes, accepts bounded output, and invokes only closed
+argument arrays—never a shell. For both units it requires `LoadState=loaded`, the
+exact installed `FragmentPath`, empty `DropInPaths`, `NeedDaemonReload=no`,
+`Transient=no`, and the expected `UnitFileState` (`static` for the socket-triggered
+service and `enabled` for the socket). Masked, generated, transient, alias, linked,
+runtime-enabled, stale, or overridden units fail.
+
+The inspector requests exactly this security-relevant property set with `systemctl
+show --all --no-pager --property=...`, rejects duplicate/missing keys and unbounded or
+malformed values, and splits each line only at its first `=`:
+
+```text
+both: Id LoadState FragmentPath DropInPaths NeedDaemonReload Transient UnitFileState
+service: User Group SupplementaryGroups EnvironmentFiles ExecStartPreEx ExecStartEx
+  Restart RestartUSec UMask NoNewPrivileges CapabilityBoundingSet AmbientCapabilities
+  ProtectSystem ProtectHome PrivateTmp PrivateDevices ProtectKernelTunables
+  ProtectKernelModules ProtectControlGroups LockPersonality RestrictAddressFamilies
+  ReadWritePaths UnsetEnvironment Requires After
+socket: Listen Accept Service FileDescriptorName ReusePort
+```
+
+It canonicalizes scalar values and sorted sets directly. `ExecStartPreEx` and
+`ExecStartEx` use a closed parser for systemd's flag-bearing command structure: retain
+and hash only the static executable path, exact argv array, and sorted flags array.
+Require the preflight flags to equal exactly `['privileged']` (the loaded form of
+the unit's `+` prefix) and the main command flags to equal `[]`; `ignore-failure` or
+any other flag is forbidden. Explicitly recognize but exclude the runtime-only start/exit timestamp,
+PID, result code, and status fields from the hash, and reject any unknown structural
+field instead of silently discarding it. The inspector then requires every value
+represented by the rendered templates:
+numeric Kernel UID/GID, empty supplementary/capability sets, exact environment and
+command paths/argv, the complete sandbox and write-path sets, the service's socket
+dependency/order, one exact loopback stream, `Accept=no`, exact target service and FD
+name, and `ReusePort=no`. It separately records PID1's exact bounded `Version` manager
+property and the bounded first `systemctl --version` client line, plus the root-owned
+executable path hash/byte hash and domain-separated normalized projection hash, in the manifest's
+closed `systemd` object. `build-release-manifest.mjs` accepts that result
+only from this post-reload inspection and rechecks it against the renderer output.
+The privileged live preflight repeats the same PID1 query and requires byte-for-byte
+canonical projection/hash equality with the manifest before it drops identity. Thus a
+drop-in, stale manager cache, alternate fragment, runtime property, changed
+executable, or skipped daemon reload blocks startup even when the two unit files on
+disk still hash correctly.
+
+`preflight-live-deployment.mjs` is invoked by the root-owned service manager before the
+Kernel service. Using the pinned absolute root-owned Node binary, the root phase
+verifies only root-owned facts: release manifest/tree, Node executable, launcher, both
+service artifacts, the freshly loaded PID1 effective-config projection, loader
+environment allowlist, Task 2 ancestor chains, and the
+dropped-Pi write/create/rename denial probes. It never imports `secure-storage.mjs` or
+`authority-lock.mjs`, never opens the Kernel-owned authority/database/report/token/key,
+and never relaxes their exact-current-UID owner checks merely because it is root.
+Its closed command line contains absolute `--release-manifest`, canonical numeric
+`--kernel-uid`, and canonical numeric `--kernel-gid` values rendered into the unit.
+Before spawning a child, the root phase requires those values to equal the manifest's
+`kernelIdentity`, parses the hashed installed service artifact to require the same
+literal numeric `User=`/`Group=` directives, and rejects account names, remapping,
+unknown/repeated arguments, or a manifest/argument/unit disagreement.
+
+Authority/report comparison runs in `prelaunch-kernel-reader.mjs`. That file statically
+imports built-ins only, starts under the privileged preflight process, immediately
+calls `process.setgroups([])`, then `setgid(exactKernelGid)` and
+`setuid(exactKernelUid)`, verifies the resulting real/effective identity and empty
+supplementary groups, and only then dynamically imports the trusted-path,
+secure-storage, authority-lock, and read-only SQLite code. It signals readiness over a
+dedicated IPC channel with a root-generated nonce. The root phase spawns the pinned
+Node binary with only the reader path plus the manifest-verified numeric
+`--kernel-uid`/`--kernel-gid` arguments and `stdio: ['ignore', 'pipe', 'pipe', 'ipc']`;
+the child validates that closed argv before dropping. The parent then sends one closed
+canonical request containing the same UID/GID, validated public paths, expected
+release/ancestor hashes, and current probe-result codes—never CDP credentials, owner
+bearer, receipt key, environment contents, or open authority descriptors. The child
+must cross-check the two identity copies and reject unknown IPC fields, a second
+request, wrong nonce/parent PID, wrong UID/GID, or inherited loader variables. It does
+not assert a total descriptor count because Node/libuv owns internal descriptors;
+instead the production spawn passes no explicit descriptor beyond stdio plus IPC.
+Tests open identifiable regular-file and listening-socket sentinels in the parent and
+prove neither is inherited or usable in the normal child. A tampered spawn that adds a
+sentinel to an explicit stdio slot, or an IPC request that names any authority,
+listener, secret, or extra descriptor, must fail bootstrap before project imports.
+
+Under the exact Kernel UID, the child calls
+`acquireAuthorityLock({ databasePath, role: 'prelaunch', pathTrust })`, opens the main
+authority strictly read-only, and inspects only the active-enrollment/current-
+attestation keys. With one active enrollment, it single-FD opens the already
+human-confirmed `isolationReportPath`, requires its hash to equal SQLite's exact
+current attestation, requires its `kernelUid`/`kernelGid` to equal the manifest and
+fixed bootstrap identity, revalidates its unexpired static bindings and full ancestor-chain
+metadata, and requires the root phase's fresh probe codes/hashes to equal that
+artifact. It returns only a closed canonical status/digest object, closes SQLite,
+releases the lock, and exits; the root parent verifies the nonce/status and exits too
+before `ExecStart` begins. Neither phase generates, rewrites, imports, supersedes,
+timestamps, or mutates a report/database. Only `preflight-agent-isolation.mjs`
+generates a report, and only confirmed offline `isolation attest` imports it. With zero
+active enrollment, the dropped child still validates ownership/deployment and returns
+explicit `recovery_only`; it skips agent-credential report matching so the operator
+plane can start closed to agent spend.
+
+Tests prove a root-direct `secure-storage`/authority open fails owner validation; a
+child that remains root, drops to the wrong UID/GID, retains a supplementary group,
+or imports project code before dropping cannot return green. A barrier keeps the
+dropped child holding `prelaunch` and proves Kernel/bootstrap contenders receive
+`AUTHORITY_BUSY`; killing it releases the OS lock. Ancestor swap attempts before and
+after the root phase, between IPC readiness and the child open, and after child exit
+are either OS-denied to the Pi UID or detected by the child's independently repeated
+fd-walk/hash comparison. Root/capability mutation remains outside the pilot threat
+boundary.
 
 The dropped-identity worker must receive `EACCES`/`EPERM` for
 write/create/rename attempts against the release root, representative source,
 lockfile, dependency, launcher, service definitions, environment file/parent, and
 Kernel writable roots. Readability of public code is not a failure; writability is.
 The previously imported privileged report binds `releaseManifestHash`, `releaseTreeHash`,
-`nodeExecutableHash`, `serviceDefinitionHash`, and `environmentMetadataHash` alongside
+`nodeExecutableHash`, `serviceArtifactsHash`, `systemdEffectiveConfigHash`, and
+`environmentMetadataHash` alongside
 the enrollment/isolation facts.
 
 The service launches with a closed environment and live startup rejects `NODE_OPTIONS`,
-`NODE_PATH`, `LD_PRELOAD`, every `DYLD_*` variable, and any unrecognized code-loader
+`NODE_PATH`, every `LD_*`/`DYLD_*` variable, `GCONV_PATH`, `GLIBC_TUNABLES`, and any unrecognized code-loader
 or `WALLET_KERNEL_` field. `release-integrity.mjs` runs again inside the Kernel before
 opening SQLite, requires `import.meta.url`/the process entrypoint inside the attested
-release, and recomputes the complete manifest/external artifact hashes. After it opens
+release, requires `process.getuid()`/`process.getgid()` to equal the manifest's numeric
+`kernelIdentity`, and recomputes the complete manifest/external artifact hashes. After it opens
 and recovers SQLite, normal admission single-FD hashes the same configured report
 artifact and requires `currentFor()` to match its exact DB row and release hash. This
 runtime check supplements rather than replaces
@@ -5135,6 +5679,151 @@ loader variable, add an extra file, swap a parent, and run real dropped-UID nega
 write probes; all block before a credential, database, or listener is opened. Restart
 tests cover the exact same imported artifact, expiry, DB/artifact hash mismatch,
 release-hash mismatch, and zero-active operator recovery without any implicit import.
+
+- [ ] **Step 3a: Pin the Linux systemd service and socket-activation contract**
+
+The two committed files under `deploy/systemd/` are strict templates, not units that
+silently discover a checkout. `render-systemd-units.mjs` accepts one closed canonical
+install document with canonical positive numeric `kernelUid`/`kernelGid`, concrete immutable
+`releaseRoot`, pinned absolute Node executable, owner-only environment file, authority/
+evidence/runtime/directional-handoff roots, and installed unit output paths. It rejects unknown fields,
+relative paths, shell metacharacters/newlines, a mutable executable/release, same/root
+Pi and Kernel identities, or output overwrite. It substitutes every template marker,
+fails if any marker remains, and returns the exact service/socket bytes and their
+hashes; the privileged installer exclusive-creates the installed units root-owned
+`0644`, fsyncs them and their parent, then supplies those two installed paths to
+`build-release-manifest.mjs`. No executable path comes from the Kernel environment
+file, `PATH`, a `current` symlink, or shell expansion. The renderer accepts UID/GID
+numbers only—never account or group names—and writes the same pair into the manifest
+input, `User=`/`Group=`, and fixed preflight arguments. Installation may verify that a
+human-provisioned account currently resolves to that pair for operator ergonomics,
+but the account name is not persisted as authority and a later NSS name remap cannot
+change the unit identity.
+
+The rendered `wallet-kernel.service` must contain, and the static test must parse:
+
+```text
+[Unit]
+Requires=wallet-kernel-console.socket
+After=network-online.target wallet-kernel-console.socket
+
+[Service]
+Type=simple
+User=<exact numeric Kernel UID>
+Group=<exact numeric Kernel GID>
+SupplementaryGroups=
+EnvironmentFile=<absolute owner-only Kernel environment file>
+ExecStartPre=+<absolute pinned Node> <immutable release>/scripts/preflight-live-deployment.mjs --release-manifest <absolute immutable manifest> --kernel-uid <exact numeric Kernel UID> --kernel-gid <exact numeric Kernel GID>
+ExecStart=<absolute pinned Node> <immutable release>/src/control-plane.mjs
+Restart=on-failure
+RestartSec=2s
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=<exact authority root> <exact evidence root> <exact runtime root> <exact Kernel outbox parent>
+UnsetEnvironment=NODE_OPTIONS NODE_PATH LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_DEBUG LD_PROFILE GLIBC_TUNABLES GCONV_PATH
+```
+
+The renderer emits absolute tokens as individual systemd arguments and rejects
+whitespace rather than relying on shell quoting. The environment file remains subject
+to the closed configuration allowlist, may not contain any `NODE_*` loader control,
+`LD_*`, `DYLD_*`, `GCONV_PATH`, or `GLIBC_TUNABLES`, and is metadata-bound into the
+report. The `UnsetEnvironment` defense is applied after all systemd environment
+sources; runtime repeats the rejection before dynamic SDK imports. `ExecStartPre=+`
+is the only privileged command; systemd's `+` execution deliberately bypasses the
+per-command UID/capability/filesystem restrictions for that root preflight, while the
+plain `ExecStart` receives empty bounding and ambient capability sets. The integration
+test proves it can perform the exact
+drop choreography above under the unit's sandbox; the long-running `ExecStart` has the
+configured non-root UID/GID, no supplementary groups/capabilities, and write access
+only to the four declared roots (the Pi-owned enrollment inbox remains read-only). A directive that weakens this list, grants release/
+unit/environment writes, invokes a shell, or derives executable paths from environment
+fails the test.
+
+Host provisioning must also make the dedicated Kernel account a member of no
+supplementary group in NSS/userdb; the empty `SupplementaryGroups=` directive prevents
+unit-added groups but is not treated as proof that host membership is empty. Before
+opening secrets or SQLite, live runtime parses `/proc/self/status`, requires the
+`Groups:` set to contain no GID other than the exact primary GID (or to be empty under
+the platform's representation), and fails closed otherwise. The Linux integration adds
+the fixture Kernel user to an extra group, proves startup refusal, removes it, and then
+proves green startup.
+The same early `/proc/self/status` gate requires `CapInh`, `CapPrm`, `CapEff`, and
+`CapAmb` all equal zero for the main process. Unit tests inject each nonzero field and
+fail before secrets/SQLite; the root-prefixed preflight is tested separately and is
+never mistaken for the long-running Kernel identity.
+
+The rendered `wallet-kernel-console.socket` must contain exactly one
+`ListenStream=127.0.0.1:8405`, `Accept=no`,
+`Service=wallet-kernel.service`, `FileDescriptorName=wallet-kernel-console`, and
+`ReusePort=no`, followed by the exact install section
+`[Install]` + `WantedBy=sockets.target`; it is installed/enabled separately under
+`sockets.target` and has no
+`PartOf=wallet-kernel.service`, so systemd retains the listener across service crashes.
+The main process accepts exactly `LISTEN_PID === process.pid`, `LISTEN_FDS === 1`, and
+`LISTEN_FDNAMES === 'wallet-kernel-console'`, adopts descriptor 3, verifies it is a
+listening `AF_INET/SOCK_STREAM` socket bound to exact `127.0.0.1:8405`, clears the
+activation variables, and never calls bind/listen by address. `ExecStartPre` does not
+consume or pretend to validate `LISTEN_PID`; the non-root main process performs the
+descriptor check before either application listener is admitted.
+
+Create `systemd-units.test.mjs` to render a synthetic immutable release, check both
+installed artifact hashes appear in `serviceArtifacts`, run
+`inspect-systemd-effective.mjs` after a real daemon reload, require its hash in the
+manifest/report, and run `systemd-analyze
+verify` plus `systemd-socket-activate --fdname=wallet-kernel-console` in mandatory
+Linux CI. The inherited-FD fixture proves descriptor 3/name/address validation, then
+crashes/restarts the service while a competing bind still gets `EADDRINUSE`. Static
+negative cases remove/change every required directive, add a second listener, insert
+an environment-derived executable/shell, make either installed unit mutable, or omit
+either artifact from the manifest; all fail. Identity negatives pass an account name,
+remap an NSS name after rendering, or alter one UID/GID copy in the unit, preflight
+argv, manifest, isolation report, or runtime process fixture: name input is rejected,
+remapping has no effect on the numeric unit, and every numeric disagreement fails
+before secrets, SQLite, or listeners. A macOS local run reports this Linux
+integration as explicitly skipped, never passed; `cdp-testnet` completion requires the
+recorded Linux/systemd job to pass.
+
+Effective-config negatives install a drop-in, point `FragmentPath` at an alternate
+unit, apply a runtime property, edit a fragment without `daemon-reload`, leave either
+unit masked/transient/runtime-enabled, or change every security-relevant projected
+property one at a time. They prove `DropInPaths`, fragment/state checks,
+`NeedDaemonReload`, or the manifest hash rejects each case before the dropped child or
+main process opens authority. A lifecycle fixture records the manifest projection
+before first start, starts and cleanly restarts the service, and proves the effective
+hash remains identical while the excluded Exec runtime timestamps/PID/status change;
+altering any static executable/argv/flag field still changes the hash and blocks. The
+fixture cleanup removes all unit/drop-in/enablement
+artifacts and reloads PID1 even after a failed assertion.
+
+The Linux integration installs both synthetic units, runs `daemon-reload`, enables the
+socket without starting it, and requires `systemctl is-enabled` to report `enabled`
+with the exact root-owned `sockets.target.wants/wallet-kernel-console.socket` symlink.
+It then starts the socket, proves activation survives a service crash and a simulated
+target stop/start cycle, and fails if `[Install]`, `WantedBy=sockets.target`, the
+enablement link, or the post-reload effective projection is absent or stale.
+
+Add `test:systemd` to `spikes/pi-wielder/package.json` for the systemd, release-
+integrity, and agent-isolation files, and create
+`.github/workflows/pi-wielder-systemd.yml`. The workflow has read-only repository
+permissions, no secrets, `ubuntu-24.04`, exact Node `24.18.1`, `npm ci`, and actions
+pinned to reviewed full commit SHAs. Its privileged step creates two disposable
+non-root fixture identities, runs only the dedicated systemd integration wrapper under
+`sudo -- /usr/bin/env -i PATH=/usr/bin:/bin` with a closed environment, then removes
+the fixture units/users.
+The job must not install/enable the real pilot units, contact CDP/Base Sepolia, upload
+authority artifacts, or treat a skipped test as success. Task 16 records the workflow
+run URL and commit alongside local verification before any `cdp-testnet` claim.
 
 `agent revoke` is an authenticated operator mutation over the Unix admin channel or
 browser session, so a compromised Pi capability
@@ -5172,7 +5861,8 @@ node --test spikes/pi-wielder/tests/operator-auth.test.mjs \
   spikes/pi-wielder/tests/operator-cli.test.mjs \
   spikes/pi-wielder/tests/operator-console.test.mjs \
   spikes/pi-wielder/tests/agent-isolation.test.mjs \
-  spikes/pi-wielder/tests/release-integrity.test.mjs
+  spikes/pi-wielder/tests/release-integrity.test.mjs \
+  spikes/pi-wielder/tests/systemd-units.test.mjs
 ```
 
 Expected: FAIL until the operator modules and static console exist.
@@ -5219,8 +5909,10 @@ export function createOperatorApp({ auth, services, bodyLimits, mode, transport,
 }
 ```
 
-Implement `release-integrity.mjs`, `build-release-manifest.mjs`, and
-`preflight-live-deployment.mjs` against the exact manifest/prelaunch contracts above.
+Implement `release-integrity.mjs`, `build-release-manifest.mjs`,
+`render-systemd-units.mjs`, `inspect-systemd-effective.mjs`,
+`preflight-live-deployment.mjs`, and
+`prelaunch-kernel-reader.mjs` against the exact manifest/prelaunch contracts above.
 All filesystem tests inject a temporary synthetic release; the optional real-UID test
 uses only human-supplied safe fixture identities and never changes the developer
 checkout.
@@ -5265,7 +5957,8 @@ raw evidence.
 ```bash
 node --test spikes/pi-wielder/tests/operator-*.test.mjs \
   spikes/pi-wielder/tests/agent-isolation.test.mjs \
-  spikes/pi-wielder/tests/release-integrity.test.mjs
+  spikes/pi-wielder/tests/release-integrity.test.mjs \
+  spikes/pi-wielder/tests/systemd-units.test.mjs
 ```
 
 Expected: authentication, exact routes, CLI exits, CSP, activated four-view console,
@@ -5278,16 +5971,24 @@ git add spikes/pi-wielder/src/operator \
   spikes/pi-wielder/src/kernel/release-integrity.mjs \
   spikes/pi-wielder/src/agent/isolation-preflight.mjs \
   spikes/pi-wielder/scripts/build-release-manifest.mjs \
+  spikes/pi-wielder/scripts/render-systemd-units.mjs \
+  spikes/pi-wielder/scripts/inspect-systemd-effective.mjs \
   spikes/pi-wielder/scripts/preflight-live-deployment.mjs \
+  spikes/pi-wielder/scripts/prelaunch-kernel-reader.mjs \
   spikes/pi-wielder/scripts/preflight-agent-isolation.mjs \
   spikes/pi-wielder/scripts/agent-isolation-probe-worker.mjs \
+  spikes/pi-wielder/deploy/systemd/wallet-kernel.service \
+  spikes/pi-wielder/deploy/systemd/wallet-kernel-console.socket \
+  .github/workflows/pi-wielder-systemd.yml \
+  spikes/pi-wielder/package.json \
   spikes/pi-wielder/operator-console \
   spikes/pi-wielder/tests/operator-auth.test.mjs \
   spikes/pi-wielder/tests/operator-api.test.mjs \
   spikes/pi-wielder/tests/operator-cli.test.mjs \
   spikes/pi-wielder/tests/operator-console.test.mjs \
   spikes/pi-wielder/tests/agent-isolation.test.mjs \
-  spikes/pi-wielder/tests/release-integrity.test.mjs
+  spikes/pi-wielder/tests/release-integrity.test.mjs \
+  spikes/pi-wielder/tests/systemd-units.test.mjs
 git commit -m "feat: add authenticated local wallet operations"
 ```
 
@@ -5381,7 +6082,6 @@ export function createAgentAuth({ store, intents, walletIdentity, activePolicy,
   kernelUid, kernelGid, expectedAgentUid, expectedAgentGid, mode }) {
   return Object.freeze({
     authenticate(request),
-    openOrResumeSession(enrolledAgent),
     resolveBoundSession(authenticatedAgent),
   });
 }
@@ -5417,11 +6117,11 @@ remain zero.
 During composition and before either listener, load zero or one active enrollment—not
 the Pi credential file. With zero, enter the recovery-only composition above, preserve
 all revoked bindings for operator work, and call no open/create/signing method. With
-one, inspect its binding before opening agent admission. With no binding, call Task 4's
-atomic `openOrResumeSession({ agentInstanceId, walletAddress,
+one, inspect its binding before opening agent admission. With no binding, call Task
+10's coordinated `kernel.openOrResumeSession({ agentInstanceId, walletAddress,
 policyVersionId: activePolicy.id })`. With one exact `open` binding, require its wallet
-and policy to equal the active configuration, then call `openOrResumeSession()` using
-that already-pinned policy only to obtain the idempotent existing row. With one
+and policy to equal the active configuration, then call that same Kernel facade using
+the already-pinned policy only to obtain the idempotent existing row. With one
 `policy_blocked` binding, do not call an open/create method: preserve it for operator
 recovery/status and reject every
 agent execute/retry as `POLICY_TRANSITION_REQUIRED`; Task 10's explicit safe transition
@@ -5429,8 +6129,10 @@ must close the old session and atomically rebind the same agent to the active po
 Any revoked-enrollment binding is retained as history but cannot be selected by an
 active replacement enrollment. Two candidate bindings, an
 `open` binding on a non-active policy, or any wallet/digest mismatch fails closed.
-Task 4's paired operations remain the sole creators/replacers/closers of session and
-binding rows; composition never inserts a binding separately.
+Task 4's paired repository operations remain the sole underlying
+creators/replacers/closers of session and binding rows; live composition reaches them
+only through the shared-coordinator Kernel facade and never inserts a binding
+separately.
 Restart with the same credential therefore reuses the exact session and pending intent
 without restoring spend admission; concurrent starts converge.
 An enrollment/digest/UID/GID mismatch, multiple open bindings, closed/missing referenced session,
@@ -5555,6 +6257,27 @@ export async function startControlPlane(options = {}) {
 }
 ```
 
+After exclusive startup recovery restores receipt parity, `createControlPlane()` owns
+one mutable in-memory admission state and one synchronous
+`markAuthorityUnhealthy(code)` closure. That closure changes the gate from `open` to
+`closed` before scheduling listener shutdown and is idempotent for the first stable
+reason. Construct exactly one Task 7 `createAuthorityMutationCoordinator({
+assertAdmissionOpen, markAuthorityUnhealthy })` instance, then inject that exact object
+identity and callback into both `createWalletKernel()` and `createReconciler()`. The
+operator API receives those two facades and no mutable repository, so every live
+operator mutation shares the same FIFO. Agent routes receive only the Kernel facade.
+Neither facade, recovery, a route, nor a repository constructs another coordinator.
+
+In `control-plane.test.mjs`, inject spying Kernel/Reconciler factories and a coordinator
+factory, assert the coordinator factory is called once, and assert strict object and
+callback identity at both constructors. Queue one Kernel terminal receipt-gap fixture,
+one reconciliation candidate write/network/resolution fixture, and one operator
+mutation: prove FIFO order for each lease, prove the resolver runs only between two
+released Reconciler leases, and prove a fail-stop from either facade closes the one
+gate before every queued callback. A second coordinator construction, direct mutable
+repository exposure to either HTTP app, or live composition without both injections
+fails construction.
+
 In `cdp-testnet`, `createControlPlane()` first runs Task 13's in-process release
 verification; this occurs before reading any secret, opening SQLite, or constructing
 an SDK client and yields the recomputed release-manifest hash. After authority recovery,
@@ -5568,8 +6291,8 @@ recovery before constructing listeners. Zero selects `recovery_only`, with opera
 services plus the closed-denial agent app and no session/signer admission. One loads
 its zero-or-one exact binding and follows Task 14 Step 1's
 no-binding/open/policy-blocked startup algorithm before constructing the normal proxy
-closure. It calls `openOrResumeSession()` only for the first two legal binding cases
-and never for `policy_blocked`; it never opens the Pi credential file. The authenticated agent identity and read-only session
+closure. It calls `kernel.openOrResumeSession()` only for the first two legal binding
+cases and never for `policy_blocked`; it never opens the Pi credential file. The authenticated agent identity and read-only session
 resolver remain inside that closure; each admitted request resolves the current
 binding, so a guarded policy transition takes effect without a daemon restart. The
 session ID is never returned to Pi or read from an HTTP request, and startup does not
@@ -5605,7 +6328,9 @@ Kernel must receive `AUTHORITY_BUSY` before it can mutate authority state.
 
 In normal `cdp-testnet` admission, preflight also requires non-root distinct
 Kernel/agent UIDs, pinned nonzero GIDs, exact enrollment/config identity agreement,
-Kernel authority parent mode `0700`, and `currentFor()` returning the unexpired stored
+Task 2's independently revalidated full trusted-ancestor chains for every configured
+Kernel/config/report/evidence/socket/handoff path, exact terminal modes, and
+`currentFor()` returning the unexpired stored
 isolation-attestation row for the exact active enrollment and freshly recomputed
 Kernel-accessible authority metadata, including the privileged report's attested Pi
 credential metadata and successful denial results imported from Task 13's
@@ -5996,6 +6721,8 @@ The manifest’s closed schema is:
     status: 'simulated' | 'enforced',
     releaseManifestDigest: null | 'sha256:<64 lowercase hex>',
     releaseTreeHash: null | 'sha256:<64 lowercase hex>',
+    serviceArtifactsHash: null | 'sha256:<64 lowercase hex>',
+    systemdEffectiveConfigHash: null | 'sha256:<64 lowercase hex>',
   },
   inputs: { policyHash, routeMapHash, configHash },
   source: {
@@ -6031,8 +6758,9 @@ null digest and `base-sepolia-testnet -> isolation.status = enforced` with a val
 unexpired imported preflight digest. Identity hashes are domain-separated hashes over
 the pinned UID/GID pair, never raw local identity/path values. No offline bundle may
 claim enforced isolation. The same mode relation applies to `deployment`: offline has
-two null hashes, while testnet must match the root-owned release manifest/tree hashes
-bound into the imported privileged report.
+four null hashes, while testnet must match the root-owned release manifest/tree,
+aggregate service-artifact hash, and PID1 effective-config hash bound into the
+imported privileged report.
 
 Recursively scan the entire bundle for raw bodies, prompts, responses, payment
 signatures/payloads, agent credentials, operator token/raw identity, provider exceptions, and
@@ -6104,7 +6832,8 @@ For testnet, `manifest.git.commit` comes from the attested release manifest and
 the live command never runs `git status` in a checkout. Offline/developer evidence
 still records the actual Git worktree state.
 
-The run intent contains release manifest/tree hashes, commit, wallet address, policy hash, route hash, maximum total
+The run intent contains release manifest/tree/service-artifact/effective-systemd
+hashes, commit, wallet address, policy hash, route hash, maximum total
 atomic amount, exact seller routes, and expiry. Print its digest and exit `2` without
 the exact human-provided confirmation. Never request faucet funds, transfer funds,
 select mainnet, overwrite an evidence directory, or infer authorization from an
@@ -6179,12 +6908,17 @@ files pass.
 
 Document:
 
-- supported POSIX host requirements, Node 24.15+ for deterministic development,
-  exact Node 24.15.0 for the attested live release, and `npm ci`;
+- supported POSIX host requirements, Node 24.18.1+ for deterministic development,
+  exact Node 24.18.1 for the attested live release, and `npm ci`;
 - privileged install from a clean commit into the root-owned immutable release tree,
-  release-manifest creation/verification, service-manager prelaunch, forbidden loader
-  environment, and separate Kernel-writable data/evidence roots;
-- owner-only authority directory creation outside the checkout;
+  systemd-unit rendering to exact immutable paths, release-manifest creation/
+  verification, mandatory daemon reload, PID1 effective-config hash verification,
+  `[Install] WantedBy=sockets.target`, enabling the console socket independently,
+  root-to-Kernel-child prelaunch choreography, forbidden loader environment, and
+  separate Kernel-writable data/evidence/runtime roots;
+- owner-only authority directory creation outside the checkout, the configured
+  root-owned trusted ancestor, full descriptor-walk validation for every private/
+  writable/config/handoff path, and explicit rejection of sticky writable ancestors;
 - distinct non-root Kernel/Pi UID provisioning, pinned GID, cleared supplementary
   groups, isolation probe/attestation, and the same-UID live startup refusal;
 - policy and route validation before start;
@@ -6194,10 +6928,15 @@ Document:
 - Pi-owned credential creation, non-secret enrollment handoff/import, revocation,
   safe replacement, and restart-stable session binding;
 - the two directional handoff parents and wrong-direction write denial;
-- the exact clean bootstrap and replacement order from Task 13, including fresh
-  isolation-attestation import before each live start;
+- the exact clean bootstrap and replacement order from Task 13, including persistent
+  socket disablement before service stop, both-unit/job/listener/authority-lock
+  quiescence checks, failure-stays-disabled behavior, connection-storm verification,
+  and fresh isolation-attestation import before each live start;
 - operator token location/mode, live Unix admin CLI, root socket-activated loopback
-  console, one-time `console launch` flow, and deterministic fallback;
+  console, exact daemon-reload + `systemctl enable wallet-kernel-console.socket` +
+  effective-config check + `systemctl start wallet-kernel-console.socket` sequence
+  before service start, one-time `console launch` flow, crash-retained listener verification, and
+  deterministic fallback;
 - approval, denial, expiry, reconciliation, and full-refund observation procedures;
 - backup/restore as an offline SQLite file operation with integrity verification;
 - incident response for unresolved signing/payment, execution-evidence, and
@@ -6211,6 +6950,8 @@ Document:
 
 Keep current results labeled `measured offline` and live CDP/Base Sepolia labeled
 `not-run` until a human authorizes and runs the testnet command.
+The runbook must also distinguish local macOS deterministic tests from the mandatory
+Linux/systemd CI result; a skipped systemd test can never satisfy the live-host gate.
 
 - [ ] **Step 6: Commit evidence tooling and operating documentation**
 
@@ -6290,7 +7031,7 @@ automated command/result table
 temporary offline evidence path, manifest hash, and verification result
 live CDP and testnet status
 agent isolation status and preflight digest (`simulated` is not live-ready)
-deployment status, release-manifest/tree hashes, and socket-activation status
+deployment status, release-manifest/tree/service-artifact/PID1-effective hashes, and socket-activation status
 known limitations and unresolved records
 agent-doable follow-ups
 human-only CDP credential, wallet funding, testnet authorization, and commercialization items
