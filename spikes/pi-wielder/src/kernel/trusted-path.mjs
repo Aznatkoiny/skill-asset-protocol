@@ -7,6 +7,9 @@ const MODES = new Set(['deterministic', 'cdp-testnet']);
 const ROLES = new Set(['kernel-private', 'root-only']);
 const SQLITE_SUFFIXES = new Set(['', '-wal', '-shm']);
 const METADATA_DOMAIN = 'wallet-kernel/trusted-parent-metadata/v1\0';
+const LIST_PRIVATE_NAMES = Symbol.for(
+  'skill-asset-protocol.wallet-kernel.trusted-parent.private-temp-list.v1',
+);
 const DIRECTORY_FLAGS = fs.constants.O_RDONLY
   | fs.constants.O_DIRECTORY
   | fs.constants.O_NOFOLLOW;
@@ -365,6 +368,21 @@ export function openTrustedParent({
         fail('name must match the exact private temporary name grammar');
       }
     };
+    const listPrivateNames = () => {
+      assertOpen();
+      revalidate();
+      let names;
+      try {
+        const parentLocation = mode === 'cdp-testnet'
+          ? `/proc/self/fd/${parentDescriptor}`
+          : canonicalParentPath;
+        names = fs.readdirSync(parentLocation, { encoding: 'utf8' });
+      } catch (error) {
+        throw wrapFileError(error, 'private temporary listing');
+      }
+      revalidate();
+      return Object.freeze(names.filter((name) => privateNamePattern.test(name)).sort());
+    };
 
     const openLeaf = (flags, creationMode) => openBounded(
       leafName,
@@ -442,7 +460,7 @@ export function openTrustedParent({
     };
 
     revalidate();
-    return Object.freeze({
+    const guard = {
       canonicalParentPath,
       ancestorMetadataHash,
       status: mode === 'deterministic' ? 'simulated' : 'enforced',
@@ -454,7 +472,14 @@ export function openTrustedParent({
       fsyncParent,
       revalidate,
       close,
+    };
+    Object.defineProperty(guard, LIST_PRIVATE_NAMES, {
+      configurable: false,
+      enumerable: false,
+      value: listPrivateNames,
+      writable: false,
     });
+    return Object.freeze(guard);
   } catch (error) {
     closed = true;
     try {

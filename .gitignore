@@ -34,3 +34,13 @@ spikes/pi-wielder/**/*.key
 .agents/skills/*
 !.agents/skills/optimizing-claude-code-prompts/
 skills-lock.json
+
+# Agent Spend Control Plane local authority
+spikes/pi-wielder/**/*.sqlite
+spikes/pi-wielder/**/*.sqlite-wal
+spikes/pi-wielder/**/*.sqlite-shm
+spikes/pi-wielder/**/*.operator-token
+spikes/pi-wielder/**/*.receipt-key
+spikes/pi-wielder/**/*.agent-credential
+spikes/pi-wielder/**/*.agent-enrollment
+spikes/pi-wielder/**/*.authority-lock.sqlite*

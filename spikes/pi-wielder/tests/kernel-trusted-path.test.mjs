@@ -13,6 +13,9 @@ test('exports the trusted parent opener', () => {
 
 const CURRENT_UID = process.getuid();
 const METADATA_DOMAIN = 'wallet-kernel/trusted-parent-metadata/v1\0';
+const LIST_PRIVATE_NAMES = Symbol.for(
+  'skill-asset-protocol.wallet-kernel.trusted-parent.private-temp-list.v1',
+);
 
 function makeFixture(t, {
   ancestorMode = 0o700,
@@ -203,6 +206,45 @@ test('sibling and private-temp namespaces are closed and bounded', (t) => {
     assert.throws(() => guard.unlinkNamed(name), /private temporary name/);
   }
   guard.close();
+});
+
+test('internal private-temp listing is descriptor-bound, exact, sorted, and revalidated', (t) => {
+  const fixture = makeFixture(t);
+  const guard = openTrustedParent(deterministicOptions(fixture));
+  const first = `.kernel.sqlite.tmp-101-${'11'.repeat(16)}`;
+  const second = `.kernel.sqlite.tmp-202-${'22'.repeat(16)}`;
+  for (const name of [
+    second,
+    first,
+    `.kernel.sqlite.tmp-0-${'33'.repeat(16)}`,
+    `.kernel.sqlite.tmp-303-${'AA'.repeat(16)}`,
+    'unrelated',
+  ]) {
+    fs.writeFileSync(path.join(fixture.terminal, name), 'candidate', { mode: 0o600 });
+  }
+
+  assert.equal(Object.keys(guard).includes(String(LIST_PRIVATE_NAMES)), false);
+  const descriptor = Object.getOwnPropertyDescriptor(guard, LIST_PRIVATE_NAMES);
+  assert.equal(descriptor?.enumerable, false);
+  assert.equal(typeof descriptor?.value, 'function');
+  const names = guard[LIST_PRIVATE_NAMES]();
+  assert.deepEqual(names, [first, second]);
+  assert.equal(Object.isFrozen(names), true);
+  assert.equal(names.some((name) => name.includes(fixture.terminal)), false);
+
+  const originalReaddir = fs.readdirSync;
+  fs.readdirSync = function mutateAfterListing(location, options) {
+    const result = originalReaddir.call(fs, location, options);
+    fs.chmodSync(fixture.terminal, 0o755);
+    return result;
+  };
+  try {
+    assert.throws(() => guard[LIST_PRIVATE_NAMES](), /changed/);
+  } finally {
+    fs.readdirSync = originalReaddir;
+    guard.close();
+  }
+  assert.throws(() => guard[LIST_PRIVATE_NAMES](), /closed/);
 });
 
 test('leaf opens are no-follow even when the caller omits O_NOFOLLOW', (t) => {
