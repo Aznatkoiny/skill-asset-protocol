@@ -268,7 +268,7 @@ test('simultaneous fresh processes migrate WAL to one rollback-journal owner', a
   }
 });
 
-test('a transient non-delete WAL result exhausts as AUTHORITY_BUSY', (t) => {
+test('a persistent non-delete WAL result remains distinct from AUTHORITY_BUSY', (t) => {
   const fixture = authority(t, 'wallet-kernel-wal-transition-busy-');
   const lockPath = authorityLockPath(fixture.databasePath);
   fs.writeFileSync(lockPath, '', { mode: 0o600 });
@@ -298,7 +298,9 @@ test('a transient non-delete WAL result exhausts as AUTHORITY_BUSY', (t) => {
         role: 'kernel',
         pathTrust: fixture.pathTrust,
       }),
-      (error) => error instanceof KernelError && error.code === 'AUTHORITY_BUSY',
+      (error) => error instanceof KernelError
+        && error.code === 'AUTHORITY_JOURNAL_MODE'
+        && /rollback journal mode/.test(error.message),
     );
   } finally {
     DatabaseSync.prototype.prepare = originalPrepare;

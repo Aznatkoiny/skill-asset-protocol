@@ -103,6 +103,13 @@ export function acquireAuthorityLock({ databasePath, role, pathTrust }) {
     }
   }
   if (!database) {
+    if (retryableFailure instanceof RetryableJournalTransition) {
+      throw new KernelError(
+        'AUTHORITY_JOURNAL_MODE',
+        'Wallet Kernel authority lock could not enter SQLite rollback journal mode',
+        { cause: retryableFailure },
+      );
+    }
     throw new KernelError(
       'AUTHORITY_BUSY',
       'Wallet Kernel authority is already held by another process',
