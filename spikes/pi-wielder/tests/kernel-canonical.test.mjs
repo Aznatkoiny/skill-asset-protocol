@@ -81,7 +81,32 @@ test('closed records accept only exact own enumerable data fields', () => {
   assert.equal(getterCalls, 0);
 });
 
+test('closed records reject unsafe nested data without invoking accessors', () => {
+  let getterCalls = 0;
+  const nestedAccessor = Object.defineProperty({}, 'secret', {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      return 'must not run';
+    },
+  });
+
+  assertKernelError(
+    () => exactRecord({ a: nestedAccessor }, ['a'], [], 'SHAPE', 'record'),
+    'SHAPE',
+  );
+  assert.equal(getterCalls, 0);
+
+  for (const nested of [new Date(), new Map(), { value: Symbol('hidden') }]) {
+    assertKernelError(() => exactRecord({ a: nested }, ['a'], [], 'SHAPE', 'record'), 'SHAPE');
+  }
+});
+
 test('sha256 hashes strings and bytes with an explicit lowercase prefix', () => {
+  assert.equal(
+    sha256('abc'),
+    'sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+  );
   assert.match(sha256(Buffer.from('wallet-kernel')), /^sha256:[0-9a-f]{64}$/);
   assert.equal(sha256('wallet-kernel'), sha256(new Uint8Array(Buffer.from('wallet-kernel'))));
 
@@ -166,6 +191,10 @@ test('canonical tokens enforce the bounded ASCII grammar', () => {
     const maximum = value === 'abcde' ? 4 : 200;
     assertKernelError(() => canonicalToken(value, 'token', maximum), 'TOKEN_FORMAT');
   }
+
+  for (const maximum of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, '4', null]) {
+    assertKernelError(() => canonicalToken('a', 'token', maximum), 'TOKEN_FORMAT');
+  }
 });
 
 test('canonical timestamps require an exact ISO roundtrip', () => {
@@ -176,6 +205,7 @@ test('canonical timestamps require an exact ISO roundtrip', () => {
     new Date(timestamp),
     '2026-07-31T00:00:00Z',
     '2026-07-30T20:00:00.000-04:00',
+    '2025-02-29T00:00:00.000Z',
     'not-a-timestamp',
   ]) {
     assertKernelError(() => canonicalTimestamp(value, 'created at'), 'TIMESTAMP_FORMAT');
@@ -193,4 +223,59 @@ test('frozen copies detach and recursively freeze nested values', () => {
   assert.equal(Object.isFrozen(copy.nested), true);
   assert.equal(Object.isFrozen(copy.nested.values), true);
   assert.equal(Object.isFrozen(copy.nested.values[1]), true);
+});
+
+test('frozen copies reject nested accessors without invoking them', () => {
+  let getterCalls = 0;
+  const nestedAccessor = Object.defineProperty({}, 'secret', {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      return 'must not run';
+    },
+  });
+
+  assertKernelError(() => frozenCopy({ nested: nestedAccessor }), 'CANONICAL_TYPE');
+  assert.equal(getterCalls, 0);
+});
+
+test('frozen copies reject mutable or ambiguous object and array shapes', () => {
+  const customArray = [1];
+  Object.setPrototypeOf(customArray, Object.create(Array.prototype));
+
+  for (const value of [
+    new Date('2026-07-31T00:00:00.000Z'),
+    new Map([['key', 'value']]),
+    new Set(['value']),
+    new Uint8Array([1]),
+    Object.assign(Object.create(null), { value: 1 }),
+    { value: Symbol('hidden') },
+    { [Symbol('hidden')]: true },
+    { fn() {} },
+    Object.defineProperty({ visible: true }, 'hidden', { value: true, enumerable: false }),
+    Object.defineProperty([1], 'hidden', { value: true, enumerable: false }),
+    Object.assign([1], { extra: true }),
+    Object.assign([1], { [Symbol('hidden')]: true }),
+    [1, , 3],
+    customArray,
+  ]) {
+    assertKernelError(() => frozenCopy(value), 'CANONICAL_TYPE');
+  }
+});
+
+test('frozen copies preserve and freeze cyclic plain data graphs', () => {
+  const source = { name: 'root' };
+  const values = [source];
+  source.self = source;
+  source.values = values;
+  values.push(values);
+
+  const copy = frozenCopy(source);
+
+  assert.notEqual(copy, source);
+  assert.equal(copy.self, copy);
+  assert.equal(copy.values[0], copy);
+  assert.equal(copy.values[1], copy.values);
+  assert.equal(Object.isFrozen(copy), true);
+  assert.equal(Object.isFrozen(copy.values), true);
 });

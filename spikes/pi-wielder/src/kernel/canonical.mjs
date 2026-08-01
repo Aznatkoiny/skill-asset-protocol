@@ -8,6 +8,79 @@ export class KernelError extends Error {
   }
 }
 
+function throwDataGraphError(code, label) {
+  throw new KernelError(
+    code,
+    `${label} must contain only primitives, plain objects, and dense arrays`,
+  );
+}
+
+function cloneDataGraph(value, code, label, seen = new Map()) {
+  if (value === null) return null;
+  if (['undefined', 'string', 'boolean', 'number', 'bigint'].includes(typeof value)) {
+    return value;
+  }
+  if (!value || typeof value !== 'object') {
+    return throwDataGraphError(code, label);
+  }
+  if (seen.has(value)) return seen.get(value);
+
+  if (Array.isArray(value)) {
+    if (Object.getPrototypeOf(value) !== Array.prototype) {
+      return throwDataGraphError(code, label);
+    }
+    const keys = Reflect.ownKeys(value);
+    const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+    if (!lengthDescriptor || lengthDescriptor.enumerable
+        || !Object.hasOwn(lengthDescriptor, 'value')
+        || keys.length !== lengthDescriptor.value + 1) {
+      return throwDataGraphError(code, label);
+    }
+
+    const descriptors = [];
+    for (let index = 0; index < lengthDescriptor.value; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) {
+        return throwDataGraphError(code, label);
+      }
+      descriptors.push(descriptor);
+    }
+
+    const copy = new Array(lengthDescriptor.value);
+    seen.set(value, copy);
+    for (let index = 0; index < descriptors.length; index += 1) {
+      copy[index] = cloneDataGraph(descriptors[index].value, code, label, seen);
+    }
+    return copy;
+  }
+
+  if (Object.getPrototypeOf(value) !== Object.prototype) {
+    return throwDataGraphError(code, label);
+  }
+  const keys = Reflect.ownKeys(value);
+  const descriptors = new Map();
+  for (const key of keys) {
+    if (typeof key !== 'string') return throwDataGraphError(code, label);
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) {
+      return throwDataGraphError(code, label);
+    }
+    descriptors.set(key, descriptor);
+  }
+
+  const copy = {};
+  seen.set(value, copy);
+  for (const [key, descriptor] of descriptors) {
+    Object.defineProperty(copy, key, {
+      configurable: true,
+      enumerable: true,
+      value: cloneDataGraph(descriptor.value, code, label, seen),
+      writable: true,
+    });
+  }
+  return copy;
+}
+
 export function exactRecord(value, required, optional = [], code = 'SCHEMA', label = 'value') {
   if (!value || typeof value !== 'object' || Array.isArray(value)
       || Object.getPrototypeOf(value) !== Object.prototype) {
@@ -25,7 +98,7 @@ export function exactRecord(value, required, optional = [], code = 'SCHEMA', lab
     throw new KernelError(code, `${label} fields do not match the closed schema`);
   }
 
-  return structuredClone(value);
+  return cloneDataGraph(value, code, label);
 }
 
 function throwCanonicalTypeError(message) {
@@ -150,7 +223,7 @@ export function canonicalTimestamp(value, label) {
 }
 
 export function frozenCopy(value) {
-  const copy = structuredClone(value);
+  const copy = cloneDataGraph(value, 'CANONICAL_TYPE', 'frozen copy');
   const seen = new WeakSet();
   const freeze = (item) => {
     if (item && typeof item === 'object' && !seen.has(item)) {
