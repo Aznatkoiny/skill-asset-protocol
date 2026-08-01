@@ -405,7 +405,6 @@ export function openTrustedParent({
           );
           const published = fs.fstatSync(publishedDescriptor, { bigint: true });
           if (!published.isFile() || published.dev !== source.dev || published.ino !== source.ino) {
-            try { fs.unlinkSync(childLocation(leafName)); } catch {}
             fail('private temporary publish did not preserve the held regular file');
           }
         } finally {

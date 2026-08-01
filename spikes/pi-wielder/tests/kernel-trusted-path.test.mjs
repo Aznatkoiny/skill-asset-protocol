@@ -129,6 +129,55 @@ test('private temporary names publish by no-replace link and unlink only the exa
   guard.close();
 });
 
+test('publish mismatch fails closed without unlinking a replacement leaf by pathname', (t) => {
+  const fixture = makeFixture(t);
+  const guard = openTrustedParent(deterministicOptions(fixture));
+  const name = `.kernel.sqlite.tmp-${process.pid}-${'ef'.repeat(16)}`;
+  const descriptor = guard.openNamedLeaf(
+    name,
+    fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL,
+    0o600,
+  );
+  fs.writeFileSync(descriptor, 'candidate');
+  fs.closeSync(descriptor);
+
+  const originalFstat = fs.fstatSync;
+  let regularFileFstats = 0;
+  let replacementInstalled = false;
+  fs.fstatSync = function replacePublishedLeaf(descriptorToInspect, options) {
+    const stat = originalFstat.call(fs, descriptorToInspect, options);
+    if (options?.bigint === true && stat.isFile()) {
+      regularFileFstats += 1;
+      if (regularFileFstats === 2) {
+        fs.unlinkSync(fixture.targetFile);
+        fs.writeFileSync(fixture.targetFile, 'replacement', { mode: 0o600 });
+        replacementInstalled = true;
+        return new Proxy(stat, {
+          get(target, property, receiver) {
+            if (property === 'ino') return target.ino + 1n;
+            return Reflect.get(target, property, receiver);
+          },
+        });
+      }
+    }
+    return stat;
+  };
+
+  try {
+    assert.throws(
+      () => guard.linkNamedToLeaf(name),
+      /private temporary publish did not preserve the held regular file/,
+    );
+  } finally {
+    fs.fstatSync = originalFstat;
+    guard.close();
+  }
+
+  assert.equal(replacementInstalled, true);
+  assert.equal(fs.existsSync(fixture.targetFile), true);
+  assert.equal(fs.readFileSync(fixture.targetFile, 'utf8'), 'replacement');
+});
+
 test('sibling and private-temp namespaces are closed and bounded', (t) => {
   const fixture = makeFixture(t);
   fs.writeFileSync(fixture.targetFile, 'database', { mode: 0o600 });
