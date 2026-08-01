@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { types as utilTypes } from 'node:util';
 
 export class KernelError extends Error {
   constructor(code, message, options) {
@@ -23,6 +24,7 @@ function cloneDataGraph(value, code, label, seen = new Map()) {
   if (!value || typeof value !== 'object') {
     return throwDataGraphError(code, label);
   }
+  if (utilTypes.isProxy(value)) return throwDataGraphError(code, label);
   if (seen.has(value)) return seen.get(value);
 
   if (Array.isArray(value)) {
@@ -82,7 +84,7 @@ function cloneDataGraph(value, code, label, seen = new Map()) {
 }
 
 export function exactRecord(value, required, optional = [], code = 'SCHEMA', label = 'value') {
-  if (!value || typeof value !== 'object' || Array.isArray(value)
+  if (!value || typeof value !== 'object' || utilTypes.isProxy(value) || Array.isArray(value)
       || Object.getPrototypeOf(value) !== Object.prototype) {
     throw new KernelError(code, `${label} must be one plain object`);
   }
@@ -116,6 +118,9 @@ function canonicalSerialize(value, ancestors) {
     return String(value);
   }
   if (!value || typeof value !== 'object') {
+    return throwCanonicalTypeError('value is not canonical JSON data');
+  }
+  if (utilTypes.isProxy(value)) {
     return throwCanonicalTypeError('value is not canonical JSON data');
   }
   if (ancestors.has(value)) {

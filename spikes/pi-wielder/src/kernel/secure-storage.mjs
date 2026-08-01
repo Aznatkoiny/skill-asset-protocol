@@ -14,6 +14,9 @@ const PRIVATE_TEMP_LIST = Symbol.for(
 const STAT_SQLITE_SIBLING = Symbol.for(
   'skill-asset-protocol.wallet-kernel.trusted-parent.sqlite-sibling-stat.v1',
 );
+const OPEN_SQLITE_SIBLING_HELD = Symbol.for(
+  'skill-asset-protocol.wallet-kernel.trusted-parent.sqlite-sibling-held-open.v1',
+);
 const SQLITE_SUFFIXES = Object.freeze(['', '-wal', '-shm']);
 const PATH_TRUST_FIELDS = Object.freeze([
   'mode',
@@ -377,10 +380,14 @@ export function secureNewSqliteSideFiles(databasePath, existing, {
     if (preflight.ancestorMetadataHash !== guard.ancestorMetadataHash) {
       throw new Error('SQLite preflight capability belongs to a different trusted parent');
     }
+    const openSqliteSiblingHeld = guard[OPEN_SQLITE_SIBLING_HELD];
+    if (typeof openSqliteSiblingHeld !== 'function') {
+      throw new Error('trusted parent does not expose held-open SQLite acquisition');
+    }
     for (const suffix of SQLITE_SUFFIXES) {
       let descriptor;
       try {
-        descriptor = guard.openSibling(suffix, fs.constants.O_RDONLY | NOFOLLOW);
+        descriptor = openSqliteSiblingHeld(suffix, fs.constants.O_RDONLY);
       } catch (error) {
         if (error.code === 'ENOENT') {
           heldFiles.set(suffix, null);
@@ -397,7 +404,7 @@ export function secureNewSqliteSideFiles(databasePath, existing, {
       const existedAtPreflight = preflight.existingFiles.has(suffix);
       const preflightIdentity = preflight.existingFiles.get(suffix);
       if (existedAtPreflight) {
-        if (!sameSqliteFile(preflightIdentity, currentIdentity)) {
+        if (!sameSqliteIdentity(preflightIdentity, currentIdentity)) {
           throw new Error(`${label} identity changed after preflight`);
         }
         if (currentIdentity.mode !== 0o600) {

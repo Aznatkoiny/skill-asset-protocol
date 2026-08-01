@@ -22,6 +22,9 @@ const LIST_PRIVATE_NAMES = Symbol.for(
 const STAT_SQLITE_SIBLING = Symbol.for(
   'skill-asset-protocol.wallet-kernel.trusted-parent.sqlite-sibling-stat.v1',
 );
+const OPEN_SQLITE_SIBLING_HELD = Symbol.for(
+  'skill-asset-protocol.wallet-kernel.trusted-parent.sqlite-sibling-held-open.v1',
+);
 const DIRECTORY_FLAGS = fs.constants.O_RDONLY
   | fs.constants.O_DIRECTORY
   | fs.constants.O_NOFOLLOW;
@@ -233,11 +236,11 @@ function closeDescriptors(descriptors) {
   for (let index = descriptors.length - 1; index >= 0; index -= 1) {
     try {
       fs.closeSync(descriptors[index]);
+      descriptors.splice(index, 1);
     } catch (error) {
       firstError ??= error;
     }
   }
-  descriptors.length = 0;
   if (firstError) throw firstError;
 }
 
@@ -312,7 +315,7 @@ export function openTrustedParent({
   }
 
   const descriptors = [];
-  let closed = false;
+  let state = 'open';
   try {
     descriptors.push(openDirectory(trustedAncestor, 'trusted ancestor'));
     for (let index = 0; index < descendants.length; index += 1) {
@@ -340,7 +343,7 @@ export function openTrustedParent({
     const parentDescriptor = descriptors.at(-1);
 
     const assertOpen = () => {
-      if (closed) fail('trusted parent guard is closed');
+      if (state !== 'open') fail('trusted parent guard is closing or closed');
     };
 
     const verifyProjection = (actual, expected) => {
@@ -403,7 +406,7 @@ export function openTrustedParent({
           try { fs.closeSync(descriptor); } catch {}
         }
         if (error?.message === 'trusted path descriptor or namespace metadata changed'
-            || error?.message === 'trusted parent guard is closed') {
+            || error?.message === 'trusted parent guard is closing or closed') {
           throw error;
         }
         throw wrapFileError(error, label);
@@ -451,6 +454,26 @@ export function openTrustedParent({
     const openSibling = (suffix, flags) => {
       assertSuffix(suffix);
       return openBounded(`${leafName}${suffix}`, flags, undefined, 'SQLite sibling open');
+    };
+    const openSqliteSiblingHeld = (suffix, flags) => {
+      assertOpen();
+      assertSuffix(suffix);
+      if (flags !== fs.constants.O_RDONLY) {
+        fail('SQLite held-open flags must be read-only');
+      }
+      revalidate();
+      try {
+        // Ownership transfers to the SQLite lifetime proof as soon as openSync
+        // returns. No fallible validation or cleanup may run in this layer
+        // after acquisition because closing this descriptor could release
+        // process-associated SQLite locks before DatabaseSync closes.
+        return fs.openSync(
+          childLocation(`${leafName}${suffix}`),
+          fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+        );
+      } catch (error) {
+        throw wrapFileError(error, 'SQLite held-open sibling');
+      }
     };
     const statSibling = (suffix) => {
       assertOpen();
@@ -572,9 +595,10 @@ export function openTrustedParent({
     };
 
     const close = () => {
-      if (closed) return;
-      closed = true;
+      if (state === 'closed') return;
+      state = 'closing';
       closeDescriptors(descriptors);
+      state = 'closed';
     };
 
     revalidate();
@@ -603,12 +627,19 @@ export function openTrustedParent({
       value: statSibling,
       writable: false,
     });
+    Object.defineProperty(guard, OPEN_SQLITE_SIBLING_HELD, {
+      configurable: false,
+      enumerable: false,
+      value: openSqliteSiblingHeld,
+      writable: false,
+    });
     return Object.freeze(guard);
   } catch (error) {
-    closed = true;
+    state = 'closing';
     try {
       closeDescriptors(descriptors);
     } catch {}
+    if (descriptors.length === 0) state = 'closed';
     throw error;
   }
 }

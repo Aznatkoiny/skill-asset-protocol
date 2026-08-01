@@ -308,6 +308,47 @@ test('every operation rejects use after close while close remains idempotent', (
   assert.doesNotThrow(() => guard.close());
 });
 
+test('trusted parent close retains a failed descriptor for one bounded retry', (t) => {
+  const fixture = makeFixture(t);
+  fs.writeFileSync(fixture.targetFile, 'database', { mode: 0o600 });
+  const terminalIdentity = fs.statSync(fixture.terminal, { bigint: true });
+  const guard = openTrustedParent(deterministicOptions(fixture));
+  const originalClose = fs.closeSync;
+  let terminalDescriptor;
+  let terminalCloseCalls = 0;
+
+  fs.closeSync = function failFirstTerminalClose(descriptor) {
+    const stat = fs.fstatSync(descriptor, { bigint: true });
+    if (stat.isDirectory()
+        && stat.dev === terminalIdentity.dev
+        && stat.ino === terminalIdentity.ino) {
+      terminalDescriptor = descriptor;
+      terminalCloseCalls += 1;
+      if (terminalCloseCalls === 1) {
+        throw new Error('injected trusted parent close fault');
+      }
+    }
+    return originalClose.call(fs, descriptor);
+  };
+
+  try {
+    assert.throws(() => guard.close(), /injected trusted parent close fault/);
+    assert.throws(() => guard.revalidate(), /closing|closed/);
+    assert.doesNotThrow(() => guard.close());
+    assert.doesNotThrow(() => guard.close());
+  } finally {
+    fs.closeSync = originalClose;
+    if (terminalDescriptor !== undefined) {
+      try {
+        fs.fstatSync(terminalDescriptor);
+        originalClose.call(fs, terminalDescriptor);
+      } catch {}
+    }
+  }
+
+  assert.equal(terminalCloseCalls, 2);
+});
+
 test('mode, role, UID, path, and canonical-component inputs fail closed', (t) => {
   const fixture = makeFixture(t);
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'trusted-outside-'));

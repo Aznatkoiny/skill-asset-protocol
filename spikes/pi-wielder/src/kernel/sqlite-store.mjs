@@ -1,6 +1,14 @@
 import { DatabaseSync } from 'node:sqlite';
+import { types as utilTypes } from 'node:util';
 
-import { canonicalJson, exactRecord, sha256 } from './canonical.mjs';
+import {
+  canonicalJson,
+  canonicalTimestamp,
+  canonicalToken,
+  exactRecord,
+  KernelError,
+  sha256,
+} from './canonical.mjs';
 import {
   preflightSqliteFiles,
   preparePrivateFile,
@@ -15,9 +23,20 @@ const EXPOSED_PRAGMAS = Object.freeze([
   'user_version',
 ]);
 function assertSynchronousOperation(operation) {
-  if (Object.getPrototypeOf(operation) !== Function.prototype) {
+  if (utilTypes.isProxy(operation)
+      || Object.getPrototypeOf(operation) !== Function.prototype) {
     throw new Error(
       'authority transactions must be synchronous; only ordinary synchronous functions are accepted',
+    );
+  }
+}
+
+function assertScopedSql(sql) {
+  if (typeof sql !== 'string'
+      || sql.includes(';')
+      || !/^\s*(?:SELECT|INSERT|UPDATE|DELETE)\b/i.test(sql)) {
+    throw new Error(
+      'only one SELECT, INSERT, UPDATE, or DELETE statement is exposed inside a transaction',
     );
   }
 }
@@ -28,6 +47,9 @@ function hasThenBoundary(value) {
   }
   let cursor = value;
   while (cursor !== null) {
+    if (utilTypes.isProxy(cursor)) {
+      throw new Error('authority transaction return values must not contain a proxy');
+    }
     const descriptor = Object.getOwnPropertyDescriptor(cursor, 'then');
     if (descriptor) {
       return !Object.hasOwn(descriptor, 'value') || typeof descriptor.value === 'function';
@@ -40,6 +62,11 @@ function hasThenBoundary(value) {
 function assertSafeTransactionReturn(value, token, seen = new Set()) {
   if (value === token) {
     throw new Error('authority transaction token must not cross a return boundary');
+  }
+  if (value !== null
+      && (typeof value === 'object' || typeof value === 'function')
+      && utilTypes.isProxy(value)) {
+    throw new Error('authority transaction return values must not contain a proxy');
   }
   if (hasThenBoundary(value)) throw new Error('authority transactions must be synchronous');
   if (value === null || (typeof value !== 'object' && typeof value !== 'function')) return;
@@ -159,19 +186,68 @@ export function openKernelStore({
     if (databaseClosed || closed) throw new Error('Wallet Kernel store is closed');
   };
 
+  const assertLiveTransaction = (token) => {
+    if (!liveTransactions.has(token)) throw new Error('invalid authority transaction');
+    assertOpen();
+  };
+
+  const frozenCapability = (fields) => {
+    const capability = Object.create(null);
+    for (const [name, value] of fields) {
+      Object.defineProperty(capability, name, {
+        configurable: false,
+        enumerable: true,
+        value: Object.freeze(value),
+        writable: false,
+      });
+    }
+    return Object.freeze(capability);
+  };
+
+  const statementCapability = (token, statement) => frozenCapability([
+    ['run', (...parameters) => {
+      assertLiveTransaction(token);
+      return statement.run(...parameters);
+    }],
+    ['get', (...parameters) => {
+      assertLiveTransaction(token);
+      return statement.get(...parameters);
+    }],
+    ['all', (...parameters) => {
+      assertLiveTransaction(token);
+      return statement.all(...parameters);
+    }],
+  ]);
+
+  const databaseCapability = (token) => frozenCapability([
+    ['prepare', (sql) => {
+      assertLiveTransaction(token);
+      assertScopedSql(sql);
+      return statementCapability(token, db.prepare(sql));
+    }],
+  ]);
+
   const appendEvent = (event, txDb = db) => {
-    const { entityType, entityId, eventType, data } = exactRecord(
+    const normalized = exactRecord(
       event,
       ['entityType', 'entityId', 'eventType', 'data'],
       [],
       'EVENT_SCHEMA',
       'event',
     );
+    const entityType = canonicalToken(normalized.entityType, 'event entity type');
+    const entityId = canonicalToken(normalized.entityId, 'event entity ID');
+    const eventType = canonicalToken(normalized.eventType, 'event type');
+    const { data } = normalized;
+    if (!data || typeof data !== 'object' || Array.isArray(data)
+        || Object.getPrototypeOf(data) !== Object.prototype) {
+      throw new KernelError('EVENT_SCHEMA', 'event data must be one plain object');
+    }
+    const createdAt = canonicalTimestamp(now(), 'event createdAt');
+    const dataJson = canonicalJson(data);
     const previous = txDb.prepare(
       'SELECT event_hash FROM events ORDER BY sequence DESC LIMIT 1',
     ).get();
-    const createdAt = now();
-    const dataJson = canonicalJson(data);
     const previousHash = previous?.event_hash ?? null;
     const eventHash = sha256(canonicalJson({
       entityType,
@@ -189,11 +265,18 @@ export function openKernelStore({
   };
 
   const within = (token, operation) => {
-    assertOpen();
-    if (!liveTransactions.has(token)) throw new Error('invalid authority transaction');
+    assertLiveTransaction(token);
     if (typeof operation !== 'function') throw new TypeError('transaction operation must be a function');
     assertSynchronousOperation(operation);
-    const value = operation({ db, appendEvent: (event) => appendEvent(event, db) });
+    const scopedDatabase = databaseCapability(token);
+    const scope = frozenCapability([
+      ['db', scopedDatabase],
+      ['appendEvent', (event) => {
+        assertLiveTransaction(token);
+        return appendEvent(event, db);
+      }],
+    ]);
+    const value = operation(scope);
     assertSafeTransactionReturn(value, token);
     return value;
   };

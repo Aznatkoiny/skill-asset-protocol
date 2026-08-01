@@ -102,6 +102,35 @@ test('closed records reject unsafe nested data without invoking accessors', () =
   }
 });
 
+test('canonical data boundaries reject proxies before invoking their traps', () => {
+  let trapCalls = 0;
+  const target = { value: 1 };
+  const proxy = new Proxy(target, {
+    get() {
+      trapCalls += 1;
+      return Reflect.get(...arguments);
+    },
+    getOwnPropertyDescriptor() {
+      trapCalls += 1;
+      return Reflect.getOwnPropertyDescriptor(...arguments);
+    },
+    getPrototypeOf() {
+      trapCalls += 1;
+      return Reflect.getPrototypeOf(...arguments);
+    },
+    ownKeys() {
+      trapCalls += 1;
+      return Reflect.ownKeys(...arguments);
+    },
+  });
+
+  assertKernelError(() => exactRecord(proxy, ['value'], [], 'SHAPE', 'record'), 'SHAPE');
+  assertKernelError(() => exactRecord({ value: proxy }, ['value'], [], 'SHAPE', 'record'), 'SHAPE');
+  assertKernelError(() => canonicalJson(proxy), 'CANONICAL_TYPE');
+  assertKernelError(() => frozenCopy(proxy), 'CANONICAL_TYPE');
+  assert.equal(trapCalls, 0);
+});
+
 test('sha256 hashes strings and bytes with an explicit lowercase prefix', () => {
   assert.equal(
     sha256('abc'),

@@ -583,7 +583,7 @@ test('only SQLite files absent at preflight may be tightened to 0600', (t) => {
     () => secureNewSqliteSideFiles(fixture.databasePath, secondPreflight, {
       pathTrust: fixture.pathTrust,
     }),
-    /owner-only/,
+    /owner-only|identity changed/,
   );
   assert.equal(fs.statSync(fixture.databasePath).mode & 0o777, 0o644);
 
@@ -601,6 +601,55 @@ test('only SQLite files absent at preflight may be tightened to 0600', (t) => {
     /identity changed after preflight/,
   );
   assert.equal(fs.readFileSync(replaced.databasePath, 'utf8'), 'replacement');
+});
+
+test('SQLite repair compares the full stable preflight identity', (t) => {
+  const fixture = authority(t, 'wallet-kernel-preflight-metadata-');
+  fs.writeFileSync(fixture.databasePath, '', { mode: 0o600 });
+  const databaseIdentity = fs.statSync(fixture.databasePath, { bigint: true });
+  const preflight = preflightSqliteFiles(fixture.databasePath, {
+    pathTrust: fixture.pathTrust,
+  });
+  const originalFstat = fs.fstatSync;
+  const originalLstat = fs.lstatSync;
+  let proof;
+  const withDifferentGroup = (stat) => new Proxy(stat, {
+    get(target, property, receiver) {
+      if (property === 'gid') {
+        return typeof target.gid === 'bigint' ? target.gid + 1n : target.gid + 1;
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
+
+  fs.fstatSync = function injectDifferentGroup(descriptor, options) {
+    const stat = originalFstat.call(fs, descriptor, options);
+    if (stat.isFile()
+        && BigInt(stat.dev) === databaseIdentity.dev
+        && BigInt(stat.ino) === databaseIdentity.ino) {
+      return withDifferentGroup(stat);
+    }
+    return stat;
+  };
+  fs.lstatSync = function injectNamespaceGroup(location, options) {
+    const stat = originalLstat.call(fs, location, options);
+    if (location === fixture.databasePath) return withDifferentGroup(stat);
+    return stat;
+  };
+  try {
+    assert.throws(
+      () => {
+        proof = secureNewSqliteSideFiles(fixture.databasePath, preflight, {
+          pathTrust: fixture.pathTrust,
+        });
+      },
+      /identity changed after preflight/,
+    );
+  } finally {
+    fs.fstatSync = originalFstat;
+    fs.lstatSync = originalLstat;
+    proof?.close();
+  }
 });
 
 test('SQLite lifetime proof revalidates held files and namespace identity until close', (t) => {
@@ -1258,6 +1307,53 @@ test('domain mutation and event append commit or roll back together', () => {
   }
 });
 
+test('event envelopes normalize canonical text before hash and insert', () => {
+  let clock = '2026-08-01T00:00:00.000Z';
+  const store = openKernelStore({
+    filePath: ':memory:',
+    allowMemory: true,
+    now: () => clock,
+  });
+  const baseEvent = {
+    entityType: 'test',
+    entityId: 'one',
+    eventType: 'test.created',
+    data: { value: 1 },
+  };
+  let attempt = 0;
+  const mutation = (event) => store.mutate(event, ({ db }) => db.prepare(
+    'INSERT INTO metadata(key, value) VALUES (?, ?)',
+  ).run(`invalid-${attempt += 1}`, 'no'));
+
+  try {
+    for (const field of ['entityType', 'entityId', 'eventType']) {
+      for (const value of [1, true]) {
+        assert.throws(
+          () => mutation({ ...baseEvent, [field]: value }),
+          (error) => error?.code === 'TOKEN_FORMAT',
+        );
+      }
+    }
+    for (const data of [null, 1, true, [], 'value']) {
+      assert.throws(
+        () => mutation({ ...baseEvent, data }),
+        (error) => error?.code === 'EVENT_SCHEMA',
+      );
+    }
+    for (const value of [1, true, '2026-08-01T00:00:00Z', 'not-a-time']) {
+      clock = value;
+      assert.throws(
+        () => mutation(baseEvent),
+        (error) => error?.code === 'TIMESTAMP_FORMAT',
+      );
+    }
+    assert.equal(store.readOne('SELECT COUNT(*) AS count FROM metadata').count, 0n);
+    assert.equal(store.events().length, 0);
+  } finally {
+    store.close();
+  }
+});
+
 test('transaction tokens are live, synchronous, unforgeable, and non-nestable', () => {
   const store = memoryStore();
   let stale;
@@ -1325,6 +1421,158 @@ test('transaction tokens are live, synchronous, unforgeable, and non-nestable', 
         return undefined;
       }), /ordinary synchronous functions/);
     }
+  } finally {
+    store.close();
+  }
+});
+
+test('transaction capabilities are frozen, narrow, and revoked at every stale call site', async () => {
+  const store = memoryStore();
+  let leakedDatabase;
+  let leakedStatement;
+  let leakedRun;
+  let leakedAppender;
+  let microtaskError;
+  let timerError;
+
+  try {
+    await new Promise((resolve) => {
+      store.transaction((token) => store.within(token, (scope) => {
+        assert.equal(Object.getPrototypeOf(scope), null);
+        assert.equal(Object.isFrozen(scope), true);
+        assert.deepEqual(Object.keys(scope), ['db', 'appendEvent']);
+        assert.equal(Object.getPrototypeOf(scope.db), null);
+        assert.equal(Object.isFrozen(scope.db), true);
+        assert.deepEqual(Object.keys(scope.db), ['prepare']);
+        assert.equal(scope.db.exec, undefined);
+        assert.equal(scope.db.close, undefined);
+        assert.equal(scope.db.constructor, undefined);
+
+        leakedDatabase = scope.db;
+        leakedStatement = scope.db.prepare(
+          'INSERT INTO metadata(key, value) VALUES (?, ?)',
+        );
+        assert.equal(Object.getPrototypeOf(leakedStatement), null);
+        assert.equal(Object.isFrozen(leakedStatement), true);
+        assert.deepEqual(Object.keys(leakedStatement), ['run', 'get', 'all']);
+        leakedRun = leakedStatement.run;
+        leakedAppender = scope.appendEvent;
+
+        queueMicrotask(() => {
+          try {
+            leakedDatabase.prepare('SELECT 1');
+          } catch (error) {
+            microtaskError = error;
+          }
+        });
+        setTimeout(() => {
+          try {
+            leakedStatement.run('timer', 'no');
+          } catch (error) {
+            timerError = error;
+          }
+          resolve();
+        }, 0);
+      }));
+    });
+
+    for (const action of [
+      () => leakedDatabase.prepare('SELECT 1'),
+      () => leakedStatement.run('statement', 'no'),
+      () => leakedRun('extracted', 'no'),
+      () => leakedAppender({
+        entityType: 'test',
+        entityId: 'stale',
+        eventType: 'test.stale',
+        data: {},
+      }),
+    ]) {
+      assert.throws(action, /invalid authority transaction/);
+    }
+    assert.match(microtaskError?.message ?? '', /invalid authority transaction/);
+    assert.match(timerError?.message ?? '', /invalid authority transaction/);
+    assert.equal(store.readOne('SELECT COUNT(*) AS count FROM metadata').count, 0n);
+    assert.equal(store.events().length, 0);
+
+    let rolledBackStatement;
+    assert.throws(() => store.transaction((token) => store.within(token, ({ db }) => {
+      rolledBackStatement = db.prepare('INSERT INTO metadata(key, value) VALUES (?, ?)');
+      throw new Error('rollback capability');
+    })), /rollback capability/);
+    assert.throws(
+      () => rolledBackStatement.run('rollback', 'no'),
+      /invalid authority transaction/,
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test('scoped SQL cannot take over transaction or database configuration authority', () => {
+  const store = memoryStore();
+  const forbidden = [
+    'BEGIN IMMEDIATE',
+    'COMMIT',
+    'END',
+    'ROLLBACK',
+    'SAVEPOINT nested',
+    'RELEASE nested',
+    'PRAGMA foreign_keys = OFF',
+    "ATTACH DATABASE ':memory:' AS extra",
+    'DETACH DATABASE extra',
+    'VACUUM',
+    '-- hidden transaction control\nCOMMIT',
+  ];
+
+  try {
+    for (const [index, sql] of forbidden.entries()) {
+      assert.throws(
+        () => store.transaction((token) => store.within(token, ({ db }) => {
+          db.prepare('INSERT INTO metadata(key, value) VALUES (?, ?)')
+            .run(`forbidden-${index}`, 'no');
+          db.prepare(sql).run();
+          throw new Error('manual transaction control escaped');
+        })),
+        /only one.*SELECT.*INSERT.*UPDATE.*DELETE/i,
+      );
+      assert.equal(store.getMetadata(`forbidden-${index}`), null);
+    }
+    assert.equal(store.events().length, 0);
+  } finally {
+    store.close();
+  }
+});
+
+test('transaction return validation rejects proxies before invoking their traps', () => {
+  const store = memoryStore();
+  let trapCalls = 0;
+  const handler = {
+    get(target, property, receiver) {
+      trapCalls += 1;
+      return Reflect.get(target, property, receiver);
+    },
+    getOwnPropertyDescriptor(target, property) {
+      trapCalls += 1;
+      return Reflect.getOwnPropertyDescriptor(target, property);
+    },
+    getPrototypeOf(target) {
+      trapCalls += 1;
+      return Reflect.getPrototypeOf(target);
+    },
+    ownKeys(target) {
+      trapCalls += 1;
+      return Reflect.ownKeys(target);
+    },
+  };
+  const hidden = new Proxy(Object.create(null), handler);
+
+  try {
+    assert.throws(() => store.transaction((token) => store.within(token, ({ db }) => {
+      db.prepare('INSERT INTO metadata(key, value) VALUES (?, ?)').run('proxy', 'no');
+      return { nested: [hidden] };
+    })), /proxy|inert/i);
+    assert.equal(trapCalls, 0);
+    assert.equal(store.getMetadata('proxy'), null);
   } finally {
     store.close();
   }
@@ -1485,6 +1733,57 @@ test('SQLite proof acquisition failure closes the database before held target de
     DatabaseSync.prototype.close = originalDatabaseClose;
   }
   assert.deepEqual(closeOrder.slice(0, 2), ['database', 'proof']);
+});
+
+test('SQLite target ownership transfers before fallible post-open path checks', (t) => {
+  const fixture = authority(t, 'wallet-kernel-store-proof-transfer-');
+  const originalExec = DatabaseSync.prototype.exec;
+  const originalDatabaseClose = DatabaseSync.prototype.close;
+  const originalOpen = fs.openSync;
+  const originalClose = fs.closeSync;
+  const closeOrder = [];
+  let armed = false;
+  let targetDescriptor;
+
+  DatabaseSync.prototype.exec = function armAfterWal(sql) {
+    const value = originalExec.call(this, sql);
+    if (sql === 'PRAGMA journal_mode = WAL;') armed = true;
+    return value;
+  };
+  fs.openSync = function driftAfterTargetOpen(location) {
+    const descriptor = originalOpen.apply(fs, arguments);
+    if (armed && location === fixture.databasePath && targetDescriptor === undefined) {
+      targetDescriptor = descriptor;
+      fs.chmodSync(fixture.directory, 0o755);
+    }
+    return descriptor;
+  };
+  fs.closeSync = function recordTargetClose(descriptor) {
+    if (descriptor === targetDescriptor) closeOrder.push('target');
+    return originalClose.call(fs, descriptor);
+  };
+  DatabaseSync.prototype.close = function recordDatabaseClose() {
+    if (armed) closeOrder.push('database');
+    return originalDatabaseClose.call(this);
+  };
+
+  try {
+    assert.throws(
+      () => openKernelStore({
+        filePath: fixture.databasePath,
+        pathTrust: fixture.pathTrust,
+      }),
+      /changed/,
+    );
+  } finally {
+    DatabaseSync.prototype.exec = originalExec;
+    DatabaseSync.prototype.close = originalDatabaseClose;
+    fs.openSync = originalOpen;
+    fs.closeSync = originalClose;
+    fs.chmodSync(fixture.directory, 0o700);
+  }
+
+  assert.deepEqual(closeOrder.slice(0, 2), ['database', 'target']);
 });
 
 const enumCases = [
