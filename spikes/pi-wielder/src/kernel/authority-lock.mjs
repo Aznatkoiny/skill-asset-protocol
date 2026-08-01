@@ -10,18 +10,32 @@ const SQLITE_LOCKED = 6;
 const ACQUISITION_ATTEMPTS = 4;
 const RETRY_SIGNAL = new Int32Array(new SharedArrayBuffer(4));
 
+class RetryableJournalTransition extends Error {
+  constructor() {
+    super('SQLite rollback journal transition did not complete');
+    this.name = 'RetryableJournalTransition';
+  }
+}
+
 function isSqliteContention(error) {
   if (error?.code !== 'ERR_SQLITE_ERROR' || !Number.isInteger(error.errcode)) return false;
   const primaryResultCode = error.errcode & 0xff;
   return primaryResultCode === SQLITE_BUSY || primaryResultCode === SQLITE_LOCKED;
 }
 
-function closeFailedAcquisition(database) {
+function closeFailedAcquisition(database, transactionHeld) {
   if (!database) return;
+  if (transactionHeld) {
+    try {
+      database.exec('ROLLBACK');
+    } catch {
+      // Preserve the acquisition failure while still attempting connection close.
+    }
+  }
   try {
     database.close();
   } catch {
-    // Preserve the acquisition failure. This connection never owned the authority transaction.
+    // Preserve the acquisition failure; a failed open never returns an authority handle.
   }
 }
 
@@ -34,26 +48,29 @@ function waitForZeroTimeoutTieBreak(attempt) {
 
 function openExclusiveAuthorityDatabase(lockPath) {
   let database;
+  let transactionHeld = false;
   try {
     database = new DatabaseSync(lockPath, { timeout: 0 });
     database.exec('BEGIN EXCLUSIVE');
+    transactionHeld = true;
     let journalMode = database.prepare('PRAGMA journal_mode').get()?.journal_mode;
     if (journalMode !== 'delete') {
       database.exec('ROLLBACK');
+      transactionHeld = false;
       journalMode = database.prepare('PRAGMA journal_mode = DELETE').get()?.journal_mode;
+      if (journalMode !== 'delete') throw new RetryableJournalTransition();
       database.exec('BEGIN EXCLUSIVE');
-    }
-    if (journalMode !== 'delete') {
-      throw new KernelError(
-        'AUTHORITY_JOURNAL_MODE',
-        'Wallet Kernel authority lock requires SQLite rollback journal mode',
-      );
+      transactionHeld = true;
     }
     return database;
   } catch (error) {
-    closeFailedAcquisition(database);
+    closeFailedAcquisition(database, transactionHeld);
     throw error;
   }
+}
+
+function isRetryableAcquisition(error) {
+  return isSqliteContention(error) || error instanceof RetryableJournalTransition;
 }
 
 export function acquireAuthorityLock({ databasePath, role, pathTrust }) {
@@ -74,14 +91,14 @@ export function acquireAuthorityLock({ databasePath, role, pathTrust }) {
   preparePrivateFile(lockPath, 'Wallet Kernel authority lock', { pathTrust });
 
   let database;
-  let contention;
+  let retryableFailure;
   for (let attempt = 0; attempt < ACQUISITION_ATTEMPTS; attempt += 1) {
     try {
       database = openExclusiveAuthorityDatabase(lockPath);
       break;
     } catch (error) {
-      if (!isSqliteContention(error)) throw error;
-      contention = error;
+      if (!isRetryableAcquisition(error)) throw error;
+      retryableFailure = error;
       if (attempt + 1 < ACQUISITION_ATTEMPTS) waitForZeroTimeoutTieBreak(attempt);
     }
   }
@@ -89,27 +106,33 @@ export function acquireAuthorityLock({ databasePath, role, pathTrust }) {
     throw new KernelError(
       'AUTHORITY_BUSY',
       'Wallet Kernel authority is already held by another process',
-      { cause: contention },
+      { cause: retryableFailure },
     );
   }
 
-  let closed = false;
+  let state = 'transaction-held';
   return Object.freeze({
     close() {
-      if (closed) return;
-      closed = true;
-      let failure;
-      try {
-        database.exec('ROLLBACK');
-      } catch (error) {
-        failure = error;
+      if (state === 'closed' || state === 'rolling-back' || state === 'closing') return;
+      if (state === 'transaction-held') {
+        state = 'rolling-back';
+        try {
+          database.exec('ROLLBACK');
+          state = 'rollback-complete';
+        } catch (error) {
+          state = 'transaction-held';
+          throw error;
+        }
       }
+
+      state = 'closing';
       try {
         database.close();
       } catch (error) {
-        failure ??= error;
+        state = 'rollback-complete';
+        throw error;
       }
-      if (failure) throw failure;
+      state = 'closed';
     },
   });
 }

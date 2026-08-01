@@ -149,6 +149,40 @@ test('one process owns the shared authority until its idempotent close', (t) => 
   }
 });
 
+test('a failed connection close is retryable without rolling back twice', (t) => {
+  const fixture = authority(t, 'wallet-kernel-close-retry-');
+  const owner = acquireAuthorityLock({
+    databasePath: fixture.databasePath,
+    role: 'kernel',
+    pathTrust: fixture.pathTrust,
+  });
+  const originalClose = DatabaseSync.prototype.close;
+  const originalExec = DatabaseSync.prototype.exec;
+  let closeCalls = 0;
+  let rollbackCalls = 0;
+  DatabaseSync.prototype.exec = function countAuthorityRollback(statement) {
+    if (statement === 'ROLLBACK') rollbackCalls += 1;
+    return originalExec.call(this, statement);
+  };
+  DatabaseSync.prototype.close = function failFirstAuthorityClose() {
+    closeCalls += 1;
+    if (closeCalls === 1) throw new Error('injected authority connection close failure');
+    return originalClose.call(this);
+  };
+  try {
+    assert.throws(() => owner.close(), /injected authority connection close failure/);
+    assert.equal(rollbackCalls, 1);
+    assert.doesNotThrow(() => owner.close());
+    assert.equal(closeCalls, 2);
+    assert.equal(rollbackCalls, 1);
+    assert.doesNotThrow(() => owner.close());
+    assert.equal(closeCalls, 2);
+  } finally {
+    DatabaseSync.prototype.close = originalClose;
+    DatabaseSync.prototype.exec = originalExec;
+  }
+});
+
 test('only kernel, bootstrap, and prelaunch roles are accepted', (t) => {
   for (const role of ROLES) {
     const fixture = authority(t, `wallet-kernel-role-${role}-`);
@@ -189,6 +223,98 @@ test('simultaneous fresh processes yield exactly one ready owner', async (t) => 
   const loser = winner === first ? second : first;
   assert.deepEqual(await waitForExit(loser), { code: 1, signal: null });
   await releaseWorker(winner);
+});
+
+test('simultaneous fresh processes migrate WAL to one rollback-journal owner', async (t) => {
+  const fixture = authority(t, 'wallet-kernel-simultaneous-wal-lock-');
+  const lockPath = authorityLockPath(fixture.databasePath);
+  fs.writeFileSync(lockPath, '', { mode: 0o600 });
+  const setup = new DatabaseSync(lockPath, { timeout: 0 });
+  try {
+    assert.equal(
+      setup.prepare('PRAGMA journal_mode = WAL').get().journal_mode,
+      'wal',
+    );
+  } finally {
+    setup.close();
+  }
+
+  const first = startWorker(t, fixture, { role: 'kernel' });
+  const second = startWorker(t, fixture, { role: 'prelaunch' });
+  const outcomes = await Promise.all([first.next(), second.next()]);
+  assert.equal(
+    outcomes.filter((outcome) => outcome.type === 'ready').length,
+    1,
+    JSON.stringify(outcomes),
+  );
+  assert.equal(
+    outcomes.filter(
+      (outcome) => outcome.type === 'error' && outcome.code === 'AUTHORITY_BUSY',
+    ).length,
+    1,
+    JSON.stringify(outcomes),
+  );
+
+  const winner = outcomes[0].type === 'ready' ? first : second;
+  const loser = winner === first ? second : first;
+  assert.deepEqual(await waitForExit(loser), { code: 1, signal: null });
+  await releaseWorker(winner);
+
+  const check = new DatabaseSync(lockPath, { readOnly: true });
+  try {
+    assert.equal(check.prepare('PRAGMA journal_mode').get().journal_mode, 'delete');
+  } finally {
+    check.close();
+  }
+});
+
+test('a transient non-delete WAL result exhausts as AUTHORITY_BUSY', (t) => {
+  const fixture = authority(t, 'wallet-kernel-wal-transition-busy-');
+  const lockPath = authorityLockPath(fixture.databasePath);
+  fs.writeFileSync(lockPath, '', { mode: 0o600 });
+  const setup = new DatabaseSync(lockPath, { timeout: 0 });
+  try {
+    assert.equal(
+      setup.prepare('PRAGMA journal_mode = WAL').get().journal_mode,
+      'wal',
+    );
+  } finally {
+    setup.close();
+  }
+
+  const originalPrepare = DatabaseSync.prototype.prepare;
+  DatabaseSync.prototype.prepare = function retainWalMode(statement) {
+    if (statement === 'PRAGMA journal_mode = DELETE') {
+      return Object.freeze({
+        get: () => Object.freeze({ journal_mode: 'wal' }),
+      });
+    }
+    return originalPrepare.call(this, statement);
+  };
+  try {
+    assert.throws(
+      () => acquireAuthorityLock({
+        databasePath: fixture.databasePath,
+        role: 'kernel',
+        pathTrust: fixture.pathTrust,
+      }),
+      (error) => error instanceof KernelError && error.code === 'AUTHORITY_BUSY',
+    );
+  } finally {
+    DatabaseSync.prototype.prepare = originalPrepare;
+  }
+
+  acquireAuthorityLock({
+    databasePath: fixture.databasePath,
+    role: 'kernel',
+    pathTrust: fixture.pathTrust,
+  }).close();
+  const check = new DatabaseSync(lockPath, { readOnly: true });
+  try {
+    assert.equal(check.prepare('PRAGMA journal_mode').get().journal_mode, 'delete');
+  } finally {
+    check.close();
+  }
 });
 
 test('every ordered role pair contends and clean close permits a successor', async (t) => {
