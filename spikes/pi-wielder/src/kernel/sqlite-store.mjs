@@ -74,8 +74,10 @@ function rollbackWithoutMasking(db) {
 function closeWithoutMasking(db) {
   try {
     db?.close();
+    return true;
   } catch {
     // Preserve the initialization error that caused cleanup.
+    return false;
   }
 }
 
@@ -96,6 +98,9 @@ export function openKernelStore({
   }
 
   let db;
+  let sqliteFiles;
+  let failedSqliteProof;
+  let initializationDatabaseClosed = false;
   try {
     db = new DatabaseSync(filePath, { timeout: 5_000, readBigInts: true });
     db.exec('PRAGMA foreign_keys = ON; PRAGMA trusted_schema = OFF; PRAGMA synchronous = FULL;');
@@ -117,19 +122,41 @@ export function openKernelStore({
       }
     }
 
-    if (!inMemory) secureNewSqliteSideFiles(filePath, existing, { pathTrust });
+    if (!inMemory) {
+      sqliteFiles = secureNewSqliteSideFiles(filePath, existing, {
+        pathTrust,
+        onAcquisitionFailure: (proof) => {
+          failedSqliteProof = proof;
+          rollbackWithoutMasking(db);
+          initializationDatabaseClosed = closeWithoutMasking(db);
+          if (initializationDatabaseClosed) {
+            try {
+              proof.close();
+              failedSqliteProof = undefined;
+            } catch {}
+          }
+        },
+      });
+    }
   } catch (error) {
-    rollbackWithoutMasking(db);
-    closeWithoutMasking(db);
+    if (!initializationDatabaseClosed) {
+      rollbackWithoutMasking(db);
+      initializationDatabaseClosed = closeWithoutMasking(db);
+    }
+    if (initializationDatabaseClosed) {
+      try { failedSqliteProof?.close(); } catch {}
+      try { sqliteFiles?.close(); } catch {}
+    }
     throw error;
   }
 
   const liveTransactions = new WeakSet();
   let transactionOpen = false;
+  let databaseClosed = false;
   let closed = false;
 
   const assertOpen = () => {
-    if (closed) throw new Error('Wallet Kernel store is closed');
+    if (databaseClosed || closed) throw new Error('Wallet Kernel store is closed');
   };
 
   const appendEvent = (event, txDb = db) => {
@@ -183,7 +210,7 @@ export function openKernelStore({
       liveTransactions.add(token);
       const value = operation(token);
       assertSafeTransactionReturn(value, token);
-      if (!inMemory) preflightSqliteFiles(filePath, { pathTrust });
+      if (!inMemory) sqliteFiles.revalidate();
       db.exec('COMMIT');
       return value;
     } catch (error) {
@@ -248,7 +275,13 @@ export function openKernelStore({
   const close = () => {
     if (closed) return;
     if (transactionOpen) throw new Error('cannot close Wallet Kernel store during a transaction');
-    db.close();
+    if (!databaseClosed) {
+      db.close();
+      databaseClosed = true;
+    }
+    // POSIX may drop SQLite's process-associated locks when any proof fd for
+    // the same inode closes, so the database always closes first.
+    sqliteFiles?.close();
     closed = true;
   };
 

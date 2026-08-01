@@ -11,6 +11,9 @@ const NOFOLLOW = fs.constants.O_NOFOLLOW;
 const PRIVATE_TEMP_LIST = Symbol.for(
   'skill-asset-protocol.wallet-kernel.trusted-parent.private-temp-list.v1',
 );
+const STAT_SQLITE_SIBLING = Symbol.for(
+  'skill-asset-protocol.wallet-kernel.trusted-parent.sqlite-sibling-stat.v1',
+);
 const SQLITE_SUFFIXES = Object.freeze(['', '-wal', '-shm']);
 const PATH_TRUST_FIELDS = Object.freeze([
   'mode',
@@ -110,6 +113,30 @@ function sameFileIdentity(left, right) {
     && left.mode === right.mode
     && left.size === right.size
     && left.modificationTime === right.modificationTime;
+}
+
+function sqliteIdentityFor(stat) {
+  const mode = typeof stat.mode === 'bigint'
+    ? Number(stat.mode & 0o7777n)
+    : stat.mode & 0o7777;
+  return Object.freeze({
+    device: stat.dev.toString(10),
+    inode: stat.ino.toString(10),
+    uid: Number(stat.uid),
+    gid: Number(stat.gid),
+    mode,
+  });
+}
+
+function sameSqliteFile(left, right) {
+  return left?.device === right.device && left?.inode === right.inode;
+}
+
+function sameSqliteIdentity(left, right) {
+  return sameSqliteFile(left, right)
+    && left.uid === right.uid
+    && left.gid === right.gid
+    && left.mode === right.mode;
 }
 
 function privateParent(filePath, label, checkoutRoot, pathTrust) {
@@ -255,13 +282,16 @@ export function readPrivateInputFile(filePath, label, {
 }
 
 export function preflightSqliteFiles(databasePath, { pathTrust } = {}) {
+  // Call only before SQLite opens this path in the current process. POSIX
+  // record locks are process-associated and closing any descriptor for a
+  // locked inode can release SQLite's locks on its separate descriptor.
   const guard = privateParent(
     databasePath,
     'Wallet Kernel database',
     CHECKOUT_ROOT,
     pathTrust,
   );
-  const existingSuffixes = new Set();
+  const existingFiles = new Map();
   try {
     for (const suffix of SQLITE_SUFFIXES) {
       let descriptor;
@@ -273,8 +303,9 @@ export function preflightSqliteFiles(databasePath, { pathTrust } = {}) {
       }
       try {
         const label = `SQLite ${suffix || 'database'}`;
-        assertOwnerOnlyRegular(fs.fstatSync(descriptor), label);
-        existingSuffixes.add(suffix);
+        const stat = fs.fstatSync(descriptor, { bigint: true });
+        assertOwnerOnlyRegular(stat, label);
+        existingFiles.set(suffix, sqliteIdentityFor(stat));
       } finally {
         fs.closeSync(descriptor);
       }
@@ -284,7 +315,7 @@ export function preflightSqliteFiles(databasePath, { pathTrust } = {}) {
     SQLITE_PREFLIGHTS.set(capability, Object.freeze({
       ancestorMetadataHash: guard.ancestorMetadataHash,
       databasePath,
-      existingSuffixes,
+      existingFiles,
     }));
     return capability;
   } finally {
@@ -292,13 +323,50 @@ export function preflightSqliteFiles(databasePath, { pathTrust } = {}) {
   }
 }
 
-export function secureNewSqliteSideFiles(databasePath, existing, { pathTrust } = {}) {
+export function secureNewSqliteSideFiles(databasePath, existing, {
+  pathTrust,
+  onAcquisitionFailure,
+} = {}) {
   const guard = privateParent(
     databasePath,
     'Wallet Kernel database',
     CHECKOUT_ROOT,
     pathTrust,
   );
+  const heldFiles = new Map();
+  // These proof descriptors deliberately remain open for the SQLite
+  // connection's lifetime. Revalidation uses fstat/lstat only; close() must
+  // run after DatabaseSync.close() so it cannot tear down SQLite's locks.
+  let guardClosed = false;
+  let state = 'acquiring';
+  const closeHeldFiles = () => {
+    if (state === 'closed') return;
+    state = 'closing';
+    let firstError;
+    for (const [suffix, held] of [...heldFiles.entries()].reverse()) {
+      if (!held) {
+        heldFiles.delete(suffix);
+        continue;
+      }
+      try {
+        fs.closeSync(held.descriptor);
+        heldFiles.delete(suffix);
+      } catch (error) {
+        firstError ??= error;
+      }
+    }
+    if (heldFiles.size === 0 && !guardClosed) {
+      try {
+        guard.close();
+        guardClosed = true;
+      } catch (error) {
+        firstError ??= error;
+      }
+    }
+    if (heldFiles.size === 0 && guardClosed) state = 'closed';
+    if (firstError) throw firstError;
+  };
+
   try {
     const preflight = SQLITE_PREFLIGHTS.get(existing);
     if (!preflight) throw new Error('SQLite repair requires an opaque preflight capability');
@@ -314,30 +382,90 @@ export function secureNewSqliteSideFiles(databasePath, existing, { pathTrust } =
       try {
         descriptor = guard.openSibling(suffix, fs.constants.O_RDONLY | NOFOLLOW);
       } catch (error) {
-        if (error.code === 'ENOENT') continue;
+        if (error.code === 'ENOENT') {
+          heldFiles.set(suffix, null);
+          continue;
+        }
         throw error;
       }
-      try {
-        const label = `SQLite ${suffix || 'database'}`;
-        const stat = fs.fstatSync(descriptor);
-        assertOwner(stat, label);
-        if (!stat.isFile()) throw new Error(`${label} must be regular`);
-        if (preflight.existingSuffixes.has(suffix)) {
-          if ((stat.mode & 0o777) !== 0o600) {
-            throw new Error(`${label} must be owner-only`);
-          }
-        } else {
-          fs.fchmodSync(descriptor, 0o600);
+      heldFiles.set(suffix, Object.freeze({ descriptor, identity: null }));
+      const label = `SQLite ${suffix || 'database'}`;
+      let stat = fs.fstatSync(descriptor, { bigint: true });
+      assertOwner(stat, label);
+      if (!stat.isFile()) throw new Error(`${label} must be regular`);
+      const currentIdentity = sqliteIdentityFor(stat);
+      const existedAtPreflight = preflight.existingFiles.has(suffix);
+      const preflightIdentity = preflight.existingFiles.get(suffix);
+      if (existedAtPreflight) {
+        if (!sameSqliteFile(preflightIdentity, currentIdentity)) {
+          throw new Error(`${label} identity changed after preflight`);
         }
-      } finally {
-        fs.closeSync(descriptor);
+        if (currentIdentity.mode !== 0o600) {
+          throw new Error(`${label} must be owner-only`);
+        }
+      } else {
+        fs.fchmodSync(descriptor, 0o600);
       }
+      stat = fs.fstatSync(descriptor, { bigint: true });
+      assertOwnerOnlyRegular(stat, label);
+      heldFiles.set(suffix, Object.freeze({
+        descriptor,
+        identity: sqliteIdentityFor(stat),
+      }));
     }
     guard.revalidate();
-  } finally {
-    guard.close();
+
+    const revalidate = () => {
+      if (state !== 'open') throw new Error('SQLite lifetime proof is closing or closed');
+      guard.revalidate();
+      const statSibling = guard[STAT_SQLITE_SIBLING];
+      if (typeof statSibling !== 'function') {
+        throw new Error('trusted parent does not expose SQLite namespace stat');
+      }
+      for (const suffix of SQLITE_SUFFIXES) {
+        const held = heldFiles.get(suffix);
+        let namespaceStat;
+        try {
+          namespaceStat = statSibling(suffix);
+        } catch (error) {
+          if (error.code === 'ENOENT' && held === null) continue;
+          if (error.code === 'ENOENT') {
+            throw new Error(`SQLite ${suffix || 'database'} namespace identity changed`);
+          }
+          throw error;
+        }
+        if (held === null) {
+          throw new Error(`SQLite ${suffix || 'database'} namespace identity changed`);
+        }
+        const descriptorStat = fs.fstatSync(held.descriptor, { bigint: true });
+        const label = `SQLite ${suffix || 'database'}`;
+        assertOwnerOnlyRegular(descriptorStat, label);
+        const descriptorIdentity = sqliteIdentityFor(descriptorStat);
+        const namespaceIdentity = sqliteIdentityFor(namespaceStat);
+        if (!namespaceStat.isFile()
+            || !sameSqliteIdentity(descriptorIdentity, held.identity)
+            || !sameSqliteIdentity(namespaceIdentity, held.identity)) {
+          throw new Error(`${label} namespace identity changed`);
+        }
+      }
+      guard.revalidate();
+    };
+
+    state = 'open';
+    revalidate();
+    return Object.freeze({
+      revalidate,
+      close: closeHeldFiles,
+    });
+  } catch (error) {
+    const cleanup = Object.freeze({ close: closeHeldFiles });
+    if (typeof onAcquisitionFailure === 'function') {
+      try { onAcquisitionFailure(cleanup); } catch {}
+    } else {
+      try { cleanup.close(); } catch {}
+    }
+    throw error;
   }
-  preflightSqliteFiles(databasePath, { pathTrust });
 }
 
 function candidateError(label, error) {

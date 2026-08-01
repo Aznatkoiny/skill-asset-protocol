@@ -192,6 +192,15 @@ async function waitForFiles(files, timeoutMilliseconds = 5_000) {
   }
 }
 
+function waitForFileSync(file, timeoutMilliseconds = 5_000) {
+  const deadline = Date.now() + timeoutMilliseconds;
+  const signal = new Int32Array(new SharedArrayBuffer(4));
+  while (!fs.existsSync(file)) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path.basename(file)}`);
+    Atomics.wait(signal, 0, 0, 5);
+  }
+}
+
 test('exports the secure storage boundary', () => {
   for (const value of [
     preparePrivateFile,
@@ -559,10 +568,15 @@ test('only SQLite files absent at preflight may be tightened to 0600', (t) => {
   fs.writeFileSync(`${fixture.databasePath}-wal`, '', { mode: 0o644 });
   fs.writeFileSync(`${fixture.databasePath}-shm`, '', { mode: 0o666 });
 
-  secureNewSqliteSideFiles(fixture.databasePath, existing, { pathTrust: fixture.pathTrust });
+  const proof = secureNewSqliteSideFiles(
+    fixture.databasePath,
+    existing,
+    { pathTrust: fixture.pathTrust },
+  );
   assert.equal(fs.statSync(fixture.databasePath).mode & 0o777, 0o600);
   assert.equal(fs.statSync(`${fixture.databasePath}-wal`).mode & 0o777, 0o600);
   assert.equal(fs.statSync(`${fixture.databasePath}-shm`).mode & 0o777, 0o600);
+  proof.close();
 
   fs.chmodSync(fixture.databasePath, 0o644);
   assert.throws(
@@ -572,6 +586,85 @@ test('only SQLite files absent at preflight may be tightened to 0600', (t) => {
     /owner-only/,
   );
   assert.equal(fs.statSync(fixture.databasePath).mode & 0o777, 0o644);
+
+  const replaced = authority(t, 'wallet-kernel-preflight-replaced-');
+  fs.writeFileSync(replaced.databasePath, 'original', { mode: 0o600 });
+  const replacementPreflight = preflightSqliteFiles(replaced.databasePath, {
+    pathTrust: replaced.pathTrust,
+  });
+  fs.renameSync(replaced.databasePath, `${replaced.databasePath}.original`);
+  fs.writeFileSync(replaced.databasePath, 'replacement', { mode: 0o600 });
+  assert.throws(
+    () => secureNewSqliteSideFiles(replaced.databasePath, replacementPreflight, {
+      pathTrust: replaced.pathTrust,
+    }),
+    /identity changed after preflight/,
+  );
+  assert.equal(fs.readFileSync(replaced.databasePath, 'utf8'), 'replacement');
+});
+
+test('SQLite lifetime proof revalidates held files and namespace identity until close', (t) => {
+  const fixture = authority(t, 'wallet-kernel-sqlite-proof-');
+  const preflight = preflightSqliteFiles(fixture.databasePath, {
+    pathTrust: fixture.pathTrust,
+  });
+  for (const suffix of ['', '-wal', '-shm']) {
+    fs.writeFileSync(`${fixture.databasePath}${suffix}`, '', { mode: 0o644 });
+  }
+
+  const proof = secureNewSqliteSideFiles(
+    fixture.databasePath,
+    preflight,
+    { pathTrust: fixture.pathTrust },
+  );
+  assert.equal(Object.isFrozen(proof), true);
+  assert.deepEqual(Object.keys(proof), ['revalidate', 'close']);
+  assert.doesNotThrow(() => proof.revalidate());
+  for (const suffix of ['', '-wal', '-shm']) {
+    assert.equal(fs.statSync(`${fixture.databasePath}${suffix}`).mode & 0o777, 0o600);
+  }
+
+  const wal = `${fixture.databasePath}-wal`;
+  fs.renameSync(wal, `${wal}.replaced`);
+  fs.writeFileSync(wal, '', { mode: 0o600 });
+  assert.throws(() => proof.revalidate(), /namespace identity changed/);
+  proof.close();
+  proof.close();
+  assert.throws(() => proof.revalidate(), /closed/);
+});
+
+test('SQLite lifetime proof retries only target descriptors whose close failed', (t) => {
+  const fixture = authority(t, 'wallet-kernel-sqlite-proof-close-');
+  for (const suffix of ['', '-wal', '-shm']) {
+    fs.writeFileSync(`${fixture.databasePath}${suffix}`, '', { mode: 0o600 });
+  }
+  const preflight = preflightSqliteFiles(fixture.databasePath, {
+    pathTrust: fixture.pathTrust,
+  });
+  const proof = secureNewSqliteSideFiles(
+    fixture.databasePath,
+    preflight,
+    { pathTrust: fixture.pathTrust },
+  );
+  const walIdentity = fs.statSync(`${fixture.databasePath}-wal`, { bigint: true });
+  const originalClose = fs.closeSync;
+  let walCloseCalls = 0;
+  fs.closeSync = function failFirstWalClose(descriptor) {
+    const stat = fs.fstatSync(descriptor, { bigint: true });
+    if (stat.dev === walIdentity.dev && stat.ino === walIdentity.ino) {
+      walCloseCalls += 1;
+      if (walCloseCalls === 1) throw new Error('injected SQLite proof close fault');
+    }
+    return originalClose.call(fs, descriptor);
+  };
+  try {
+    assert.throws(() => proof.close(), /injected SQLite proof close fault/);
+    assert.doesNotThrow(() => proof.close());
+  } finally {
+    fs.closeSync = originalClose;
+  }
+  assert.equal(walCloseCalls, 2);
+  assert.throws(() => proof.revalidate(), /closed/);
 });
 
 test('new SQLite symlinks and nonfiles fail closed instead of being repaired', (t) => {
@@ -1350,6 +1443,50 @@ test('a newer schema and initialization faults close the database without maskin
   }
 });
 
+test('SQLite proof acquisition failure closes the database before held target descriptors', (t) => {
+  const fixture = authority(t, 'wallet-kernel-store-proof-failure-');
+  const sentinel = new Error('injected SQLite proof acquisition fault');
+  const originalFchmod = fs.fchmodSync;
+  const originalClose = fs.closeSync;
+  const originalDatabaseClose = DatabaseSync.prototype.close;
+  const closeOrder = [];
+  let injected = false;
+
+  fs.fchmodSync = function injectProofFailure() {
+    if (!injected) {
+      injected = true;
+      throw sentinel;
+    }
+    return originalFchmod.apply(fs, arguments);
+  };
+  fs.closeSync = function recordProofClose(descriptor) {
+    if (injected) {
+      try {
+        if (fs.fstatSync(descriptor).isFile()) closeOrder.push('proof');
+      } catch {}
+    }
+    return originalClose.call(fs, descriptor);
+  };
+  DatabaseSync.prototype.close = function recordDatabaseClose() {
+    if (injected) closeOrder.push('database');
+    return originalDatabaseClose.call(this);
+  };
+  try {
+    assert.throws(
+      () => openKernelStore({
+        filePath: fixture.databasePath,
+        pathTrust: fixture.pathTrust,
+      }),
+      (error) => error === sentinel,
+    );
+  } finally {
+    fs.fchmodSync = originalFchmod;
+    fs.closeSync = originalClose;
+    DatabaseSync.prototype.close = originalDatabaseClose;
+  }
+  assert.deepEqual(closeOrder.slice(0, 2), ['database', 'proof']);
+});
+
 const enumCases = [
   {
     name: 'spend_sessions.state',
@@ -1676,6 +1813,11 @@ test('boolean and paired-index CHECK boundaries accept only their declared forms
 
 test('two processes serialize one conditional claim and one hash-chain event', async (t) => {
   const fixtureAuthority = authority(t, 'wallet-kernel-store-writers-');
+  const coordination = fs.mkdtempSync(path.join(os.tmpdir(), 'wallet-kernel-writer-gate-'));
+  fs.chmodSync(coordination, 0o700);
+  t.after(() => fs.rmSync(coordination, { force: true, recursive: true }));
+  const releaseFile = path.join(coordination, 'release');
+  const readyFiles = [path.join(coordination, 'ready-a'), path.join(coordination, 'ready-b')];
   const initial = openKernelStore({
     filePath: fixtureAuthority.databasePath,
     pathTrust: fixtureAuthority.pathTrust,
@@ -1684,9 +1826,21 @@ test('two processes serialize one conditional claim and one hash-chain event', a
   const fixture = fileURLToPath(new URL('./fixtures/kernel-db-writer.mjs', import.meta.url));
   const children = ['a', 'b'].map((claimId) => spawn(
     process.execPath,
-    [fixture, fixtureAuthority.databasePath, fixtureAuthority.directory, claimId],
+    [
+      fixture,
+      fixtureAuthority.databasePath,
+      fixtureAuthority.directory,
+      claimId,
+      readyFiles[claimId === 'a' ? 0 : 1],
+      releaseFile,
+    ],
     { stdio: ['ignore', 'pipe', 'pipe'] },
   ));
+  try {
+    await waitForFiles(readyFiles);
+  } finally {
+    fs.writeFileSync(releaseFile, 'release', { mode: 0o600 });
+  }
   assert.deepEqual(
     (await Promise.all(children.map(childResult))).sort(),
     ['already_claimed', 'claimed'],
@@ -1701,4 +1855,108 @@ test('two processes serialize one conditional claim and one hash-chain event', a
     1,
   );
   reopened.close();
+});
+
+test('normal store close releases SQLite before held file-proof descriptors', (t) => {
+  const fixture = authority(t, 'wallet-kernel-store-close-order-');
+  const store = openKernelStore({ filePath: fixture.databasePath, pathTrust: fixture.pathTrust });
+  const targetIdentities = new Set(['', '-wal', '-shm'].map((suffix) => {
+    const stat = fs.statSync(`${fixture.databasePath}${suffix}`, { bigint: true });
+    return `${stat.dev}:${stat.ino}`;
+  }));
+  const originalClose = fs.closeSync;
+  const originalDatabaseClose = DatabaseSync.prototype.close;
+  const closeOrder = [];
+  fs.closeSync = function recordProofClose(descriptor) {
+    try {
+      const stat = fs.fstatSync(descriptor, { bigint: true });
+      if (targetIdentities.has(`${stat.dev}:${stat.ino}`)) closeOrder.push('proof');
+    } catch {}
+    return originalClose.call(fs, descriptor);
+  };
+  DatabaseSync.prototype.close = function recordDatabaseClose() {
+    closeOrder.push('database');
+    return originalDatabaseClose.call(this);
+  };
+  try {
+    store.close();
+  } finally {
+    fs.closeSync = originalClose;
+    DatabaseSync.prototype.close = originalDatabaseClose;
+  }
+  assert.equal(closeOrder[0], 'database');
+  assert.equal(closeOrder.filter((entry) => entry === 'proof').length, 3);
+});
+
+test('pre-commit file proof never closes SQLite lock-bearing descriptors', async (t) => {
+  const fixtureAuthority = authority(t, 'wallet-kernel-store-lock-proof-');
+  const coordination = fs.mkdtempSync(path.join(os.tmpdir(), 'wallet-kernel-lock-proof-gate-'));
+  fs.chmodSync(coordination, 0o700);
+  t.after(() => fs.rmSync(coordination, { force: true, recursive: true }));
+  const readyFile = path.join(coordination, 'ready');
+  const startFile = path.join(coordination, 'start');
+  const attemptFile = path.join(coordination, 'attempt');
+  const store = openKernelStore({
+    filePath: fixtureAuthority.databasePath,
+    pathTrust: fixtureAuthority.pathTrust,
+  });
+  const contenderFixture = fileURLToPath(
+    new URL('./fixtures/kernel-db-lock-contender.mjs', import.meta.url),
+  );
+  const contender = spawn(process.execPath, [
+    contenderFixture,
+    fixtureAuthority.databasePath,
+    readyFile,
+    startFile,
+    attemptFile,
+  ], { stdio: ['ignore', 'pipe', 'pipe'] });
+  await waitForFiles([readyFile]);
+
+  const sharedMemoryIdentity = fs.statSync(
+    `${fixtureAuthority.databasePath}-shm`,
+    { bigint: true },
+  );
+  const originalClose = fs.closeSync;
+  let lockBearingCloseCalls = 0;
+  fs.closeSync = function pauseAfterLockBearingClose(descriptor) {
+    let isSharedMemory = false;
+    try {
+      const stat = fs.fstatSync(descriptor, { bigint: true });
+      isSharedMemory = stat.dev === sharedMemoryIdentity.dev
+        && stat.ino === sharedMemoryIdentity.ino;
+    } catch {}
+    const result = originalClose.call(fs, descriptor);
+    if (isSharedMemory) {
+      lockBearingCloseCalls += 1;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+    }
+    return result;
+  };
+
+  let transactionError;
+  try {
+    store.transaction((token) => store.within(token, ({ db, appendEvent }) => {
+      db.prepare('INSERT INTO metadata(key, value) VALUES (?, ?)').run('claim', 'owner');
+      appendEvent({
+        entityType: 'test',
+        entityId: 'owner',
+        eventType: 'test.claimed',
+        data: { claimId: 'owner' },
+      });
+      fs.writeFileSync(startFile, 'start', { mode: 0o600 });
+      waitForFileSync(attemptFile);
+    }));
+  } catch (error) {
+    transactionError = error;
+  } finally {
+    fs.closeSync = originalClose;
+  }
+
+  const contenderOutcome = await childResult(contender);
+  assert.ifError(transactionError);
+  assert.equal(lockBearingCloseCalls, 0);
+  assert.equal(contenderOutcome, 'already_claimed');
+  assert.equal(store.verifyEventChain(), true);
+  assert.equal(store.getMetadata('claim'), 'owner');
+  store.close();
 });

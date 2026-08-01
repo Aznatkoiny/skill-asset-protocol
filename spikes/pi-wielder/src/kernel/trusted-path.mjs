@@ -19,6 +19,9 @@ const FILE_IDENTITY_FIELDS = Object.freeze([
 const LIST_PRIVATE_NAMES = Symbol.for(
   'skill-asset-protocol.wallet-kernel.trusted-parent.private-temp-list.v1',
 );
+const STAT_SQLITE_SIBLING = Symbol.for(
+  'skill-asset-protocol.wallet-kernel.trusted-parent.sqlite-sibling-stat.v1',
+);
 const DIRECTORY_FLAGS = fs.constants.O_RDONLY
   | fs.constants.O_DIRECTORY
   | fs.constants.O_NOFOLLOW;
@@ -449,6 +452,19 @@ export function openTrustedParent({
       assertSuffix(suffix);
       return openBounded(`${leafName}${suffix}`, flags, undefined, 'SQLite sibling open');
     };
+    const statSibling = (suffix) => {
+      assertOpen();
+      assertSuffix(suffix);
+      revalidate();
+      let stat;
+      try {
+        stat = fs.lstatSync(childLocation(`${leafName}${suffix}`), { bigint: true });
+      } catch (error) {
+        throw wrapFileError(error, 'SQLite sibling stat');
+      }
+      revalidate();
+      return stat;
+    };
     const openNamedLeaf = (name, flags, creationMode) => {
       assertPrivateName(name);
       return openBounded(name, flags, creationMode, 'private temporary open');
@@ -579,6 +595,12 @@ export function openTrustedParent({
       configurable: false,
       enumerable: false,
       value: listPrivateNames,
+      writable: false,
+    });
+    Object.defineProperty(guard, STAT_SQLITE_SIBLING, {
+      configurable: false,
+      enumerable: false,
+      value: statSibling,
       writable: false,
     });
     return Object.freeze(guard);
