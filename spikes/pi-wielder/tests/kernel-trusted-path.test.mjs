@@ -64,6 +64,19 @@ function statProjection(role, paths) {
   });
 }
 
+function privateFileIdentity(filePath) {
+  const stat = fs.statSync(filePath, { bigint: true });
+  return Object.freeze({
+    device: stat.dev.toString(10),
+    inode: stat.ino.toString(10),
+    uid: Number(stat.uid),
+    gid: Number(stat.gid),
+    mode: Number(stat.mode & 0o7777n),
+    size: stat.size.toString(10),
+    modificationTime: stat.mtimeNs.toString(10),
+  });
+}
+
 test('deterministic guard holds an owner-only chain and exposes only the frozen boundary', (t) => {
   const fixture = makeFixture(t);
   fs.writeFileSync(fixture.targetFile, 'database', { mode: 0o600 });
@@ -179,6 +192,23 @@ test('publish mismatch fails closed without unlinking a replacement leaf by path
   assert.equal(replacementInstalled, true);
   assert.equal(fs.existsSync(fixture.targetFile), true);
   assert.equal(fs.readFileSync(fixture.targetFile, 'utf8'), 'replacement');
+});
+
+test('validated private-temp identity gates publish and cleanup before pathname mutation', (t) => {
+  const fixture = makeFixture(t);
+  const guard = openTrustedParent(deterministicOptions(fixture));
+  const name = `.kernel.sqlite.tmp-${process.pid}-${'fa'.repeat(16)}`;
+  const candidate = path.join(fixture.terminal, name);
+  fs.writeFileSync(candidate, 'validated', { mode: 0o600 });
+  const identity = privateFileIdentity(candidate);
+  fs.renameSync(candidate, `${candidate}.moved`);
+  fs.writeFileSync(candidate, 'replacement', { mode: 0o600 });
+
+  assert.throws(() => guard.linkNamedToLeaf(name, identity), /identity changed/);
+  assert.equal(fs.existsSync(fixture.targetFile), false);
+  assert.throws(() => guard.unlinkNamed(name, identity), /identity changed/);
+  assert.equal(fs.readFileSync(candidate, 'utf8'), 'replacement');
+  guard.close();
 });
 
 test('sibling and private-temp namespaces are closed and bounded', (t) => {

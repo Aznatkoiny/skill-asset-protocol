@@ -7,6 +7,15 @@ const MODES = new Set(['deterministic', 'cdp-testnet']);
 const ROLES = new Set(['kernel-private', 'root-only']);
 const SQLITE_SUFFIXES = new Set(['', '-wal', '-shm']);
 const METADATA_DOMAIN = 'wallet-kernel/trusted-parent-metadata/v1\0';
+const FILE_IDENTITY_FIELDS = Object.freeze([
+  'device',
+  'inode',
+  'uid',
+  'gid',
+  'mode',
+  'size',
+  'modificationTime',
+]);
 const LIST_PRIVATE_NAMES = Symbol.for(
   'skill-asset-protocol.wallet-kernel.trusted-parent.private-temp-list.v1',
 );
@@ -112,6 +121,52 @@ function projectionFor(stat, role, depth) {
     gid,
     mode: modeOf(stat),
   };
+}
+
+function fileIdentityFor(stat) {
+  return {
+    device: stat.dev.toString(10),
+    inode: stat.ino.toString(10),
+    uid: Number(stat.uid),
+    gid: Number(stat.gid),
+    mode: modeOf(stat),
+    size: stat.size.toString(10),
+    modificationTime: stat.mtimeNs.toString(10),
+  };
+}
+
+function captureExpectedFileIdentity(value) {
+  if (value === undefined) return undefined;
+  if (value === null
+      || typeof value !== 'object'
+      || !Object.isFrozen(value)
+      || Object.getPrototypeOf(value) !== Object.prototype
+      || Object.getOwnPropertySymbols(value).length !== 0) {
+    fail('expected private file identity must be one frozen plain data object');
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Object.keys(descriptors);
+  if (keys.length !== FILE_IDENTITY_FIELDS.length
+      || FILE_IDENTITY_FIELDS.some((field) => !Object.hasOwn(descriptors, field))) {
+    fail('expected private file identity must contain exact fields');
+  }
+  const captured = {};
+  for (const field of FILE_IDENTITY_FIELDS) {
+    const descriptor = descriptors[field];
+    if (!descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) {
+      fail('expected private file identity fields must be enumerable data');
+    }
+    captured[field] = descriptor.value;
+  }
+  return captured;
+}
+
+function assertExpectedFileIdentity(stat, expected) {
+  if (!expected) return;
+  const actual = fileIdentityFor(stat);
+  if (FILE_IDENTITY_FIELDS.some((field) => actual[field] !== expected[field])) {
+    fail('private temporary file identity changed');
+  }
 }
 
 function sameProjection(left, right) {
@@ -399,15 +454,17 @@ export function openTrustedParent({
       return openBounded(name, flags, creationMode, 'private temporary open');
     };
 
-    const linkNamedToLeaf = (name) => {
+    const linkNamedToLeaf = (name, expectedIdentityValue) => {
       assertOpen();
       assertPrivateName(name);
+      const expectedIdentity = captureExpectedFileIdentity(expectedIdentityValue);
       revalidate();
       let sourceDescriptor;
       try {
         sourceDescriptor = openBounded(name, fs.constants.O_RDONLY, undefined, 'private temporary open');
         const source = fs.fstatSync(sourceDescriptor, { bigint: true });
         if (!source.isFile()) fail('private temporary link source must be a regular file');
+        assertExpectedFileIdentity(source, expectedIdentity);
         try {
           fs.linkSync(childLocation(name), childLocation(leafName));
         } catch (error) {
@@ -425,6 +482,18 @@ export function openTrustedParent({
           if (!published.isFile() || published.dev !== source.dev || published.ino !== source.ino) {
             fail('private temporary publish did not preserve the held regular file');
           }
+          if (expectedIdentity) {
+            const publishedIdentity = fileIdentityFor(published);
+            for (const field of FILE_IDENTITY_FIELDS) {
+              if (field !== 'modificationTime'
+                  && publishedIdentity[field] !== expectedIdentity[field]) {
+                fail('private temporary publish did not preserve validated identity');
+              }
+            }
+            if (publishedIdentity.modificationTime !== expectedIdentity.modificationTime) {
+              fail('private temporary publish did not preserve validated identity');
+            }
+          }
         } finally {
           if (publishedDescriptor !== undefined) fs.closeSync(publishedDescriptor);
         }
@@ -434,14 +503,44 @@ export function openTrustedParent({
       }
     };
 
-    const unlinkNamed = (name) => {
+    const unlinkNamed = (name, expectedIdentityValue) => {
       assertOpen();
       assertPrivateName(name);
+      const expectedIdentity = captureExpectedFileIdentity(expectedIdentityValue);
       revalidate();
+      let descriptor;
+      let linkCountBefore;
       try {
+        if (expectedIdentity) {
+          descriptor = openBounded(
+            name,
+            fs.constants.O_RDONLY,
+            undefined,
+            'private temporary cleanup open',
+          );
+          const before = fs.fstatSync(descriptor, { bigint: true });
+          if (!before.isFile()) fail('private temporary cleanup source must be regular');
+          assertExpectedFileIdentity(before, expectedIdentity);
+          linkCountBefore = before.nlink;
+        }
         fs.unlinkSync(childLocation(name));
+        if (descriptor !== undefined) {
+          const after = fs.fstatSync(descriptor, { bigint: true });
+          if (after.dev !== BigInt(expectedIdentity.device)
+              || after.ino !== BigInt(expectedIdentity.inode)
+              || after.nlink >= linkCountBefore) {
+            fail('private temporary cleanup descriptor identity changed');
+          }
+        }
       } catch (error) {
+        if (error?.message === 'private temporary file identity changed'
+            || error?.message === 'private temporary cleanup source must be regular'
+            || error?.message === 'private temporary cleanup descriptor identity changed') {
+          throw error;
+        }
         throw wrapFileError(error, 'private temporary unlink');
+      } finally {
+        if (descriptor !== undefined) fs.closeSync(descriptor);
       }
       revalidate();
     };

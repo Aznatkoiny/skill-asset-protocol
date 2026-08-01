@@ -189,6 +189,56 @@ test('every file-backed boundary requires an explicit frozen pathTrust object', 
   for (const action of calls(mutableTrust)) assert.throws(action, /frozen pathTrust/);
 });
 
+test('frozen pathTrust accepts only exact own enumerable data fields without invoking accessors', (t) => {
+  const fixture = authority(t);
+  let getterCalls = 0;
+  const accessorTrust = {
+    mode: 'deterministic',
+    kernelUid: CURRENT_UID,
+    agentUid: CURRENT_UID,
+  };
+  Object.defineProperty(accessorTrust, 'trustedAncestor', {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      return fixture.directory;
+    },
+  });
+  Object.freeze(accessorTrust);
+  assert.throws(
+    () => preparePrivateFile(fixture.privatePath, 'Receipt key', { pathTrust: accessorTrust }),
+    /data fields/,
+  );
+  assert.equal(getterCalls, 0);
+
+  const symbolTrust = { ...fixture.pathTrust };
+  symbolTrust[Symbol('hidden')] = 'value';
+  Object.freeze(symbolTrust);
+  assert.throws(
+    () => preparePrivateFile(fixture.privatePath, 'Receipt key', { pathTrust: symbolTrust }),
+    /symbols/,
+  );
+
+  const unknownTrust = Object.freeze({ ...fixture.pathTrust, extra: true });
+  assert.throws(
+    () => preparePrivateFile(fixture.privatePath, 'Receipt key', { pathTrust: unknownTrust }),
+    /exact fields/,
+  );
+
+  const inheritedTrust = Object.freeze(Object.assign(
+    Object.create({ mode: 'deterministic' }),
+    {
+      trustedAncestor: fixture.directory,
+      kernelUid: CURRENT_UID,
+      agentUid: CURRENT_UID,
+    },
+  ));
+  assert.throws(
+    () => preparePrivateFile(fixture.privatePath, 'Receipt key', { pathTrust: inheritedTrust }),
+    /plain object|exact fields/,
+  );
+});
+
 test('private files must use absolute paths outside the checkout', (t) => {
   const fixture = authority(t);
   assert.throws(
@@ -272,15 +322,17 @@ test('readPrivateInputFile reads one held descriptor and enforces nonempty bound
   const originalValue = secret('33');
   fs.writeFileSync(fixture.privatePath, originalValue, { mode: 0o600 });
   const moved = path.join(fixture.directory, 'original-held-value');
-  const originalReadFile = fs.readFileSync;
-  let descriptorReads = 0;
-  fs.readFileSync = function swapPathBeforeDescriptorRead(input, ...rest) {
-    if (typeof input === 'number') {
-      descriptorReads += 1;
+  const originalRead = fs.readSync;
+  const descriptorsRead = new Set();
+  let swapped = false;
+  fs.readSync = function swapPathBeforeDescriptorRead(descriptor, ...rest) {
+    descriptorsRead.add(descriptor);
+    if (!swapped) {
+      swapped = true;
       fs.renameSync(fixture.privatePath, moved);
       fs.writeFileSync(fixture.privatePath, secret('44'), { mode: 0o600 });
     }
-    return originalReadFile.call(fs, input, ...rest);
+    return originalRead.call(fs, descriptor, ...rest);
   };
   let bytes;
   try {
@@ -289,9 +341,9 @@ test('readPrivateInputFile reads one held descriptor and enforces nonempty bound
       pathTrust: fixture.pathTrust,
     });
   } finally {
-    fs.readFileSync = originalReadFile;
+    fs.readSync = originalRead;
   }
-  assert.equal(descriptorReads, 1);
+  assert.equal(descriptorsRead.size, 1);
   assert.equal(bytes.toString('utf8'), originalValue);
   assert.equal(fs.readFileSync(fixture.privatePath, 'utf8'), secret('44'));
 
@@ -310,19 +362,85 @@ test('readPrivateInputFile reads one held descriptor and enforces nonempty bound
     }),
     /size/,
   );
+  assert.throws(
+    () => readPrivateInputFile(fixture.privatePath, 'Policy file', {
+      maximumBytes: 1_048_577,
+      pathTrust: fixture.pathTrust,
+    }),
+    /hard ceiling/,
+  );
+});
+
+test('bounded descriptor reads reject growth without reading beyond limit plus one', (t) => {
+  const fixture = authority(t);
+  fs.writeFileSync(fixture.privatePath, '1', { mode: 0o600 });
+  const originalRead = fs.readSync;
+  let maximumRequested = 0;
+  let grew = false;
+  fs.readSync = function growHeldInode(descriptor, buffer, offset, length, position) {
+    maximumRequested = Math.max(maximumRequested, length);
+    if (!grew) {
+      grew = true;
+      fs.appendFileSync(fixture.privatePath, '23456789');
+    }
+    return originalRead.call(fs, descriptor, buffer, offset, length, position);
+  };
+  try {
+    assert.throws(
+      () => readPrivateInputFile(fixture.privatePath, 'Policy file', {
+        maximumBytes: 4,
+        pathTrust: fixture.pathTrust,
+      }),
+      /size/,
+    );
+  } finally {
+    fs.readSync = originalRead;
+  }
+  assert.equal(maximumRequested <= 5, true);
 });
 
 test('SQLite preflight accepts absent or exact 0600 current-owner regular files', (t) => {
   const fixture = authority(t);
-  assert.deepEqual([...preflightSqliteFiles(fixture.databasePath, {
-    pathTrust: fixture.pathTrust,
-  })], []);
+  const absent = preflightSqliteFiles(fixture.databasePath, { pathTrust: fixture.pathTrust });
+  assert.equal(Object.isFrozen(absent), true);
+  assert.deepEqual(Object.keys(absent), []);
+  assert.equal(absent instanceof Set, false);
 
-  const expected = ['', '-wal', '-shm'].map((suffix) => `${fixture.databasePath}${suffix}`);
-  for (const target of expected) fs.writeFileSync(target, '', { mode: 0o600 });
+  for (const suffix of ['', '-wal', '-shm']) {
+    fs.writeFileSync(`${fixture.databasePath}${suffix}`, '', { mode: 0o600 });
+  }
   const existing = preflightSqliteFiles(fixture.databasePath, { pathTrust: fixture.pathTrust });
-  assert.equal(existing instanceof Set, true);
-  assert.deepEqual([...existing], expected);
+  assert.equal(Object.isFrozen(existing), true);
+  assert.deepEqual(Object.keys(existing), []);
+  assert.equal(existing instanceof Set, false);
+});
+
+test('SQLite repair requires its opaque one-use path-bound preflight capability', (t) => {
+  const first = authority(t, 'wallet-kernel-preflight-one-');
+  const second = authority(t, 'wallet-kernel-preflight-two-');
+  const capability = preflightSqliteFiles(first.databasePath, { pathTrust: first.pathTrust });
+  fs.writeFileSync(`${first.databasePath}-wal`, '', { mode: 0o644 });
+
+  assert.throws(
+    () => secureNewSqliteSideFiles(first.databasePath, Object.freeze({}), {
+      pathTrust: first.pathTrust,
+    }),
+    /opaque preflight capability/,
+  );
+  assert.equal(fs.statSync(`${first.databasePath}-wal`).mode & 0o777, 0o644);
+  assert.throws(
+    () => secureNewSqliteSideFiles(second.databasePath, capability, {
+      pathTrust: second.pathTrust,
+    }),
+    /different database path/,
+  );
+  assert.equal(fs.statSync(`${first.databasePath}-wal`).mode & 0o777, 0o644);
+  assert.throws(
+    () => secureNewSqliteSideFiles(first.databasePath, capability, {
+      pathTrust: first.pathTrust,
+    }),
+    /consumed|opaque preflight capability/,
+  );
 });
 
 test('SQLite preflight rejects permissive, symlinked, and nonfile database siblings', (t) => {
@@ -366,6 +484,9 @@ test('only SQLite files absent at preflight may be tightened to 0600', (t) => {
   const fixture = authority(t);
   fs.writeFileSync(fixture.databasePath, '', { mode: 0o600 });
   const existing = preflightSqliteFiles(fixture.databasePath, { pathTrust: fixture.pathTrust });
+  const secondPreflight = preflightSqliteFiles(fixture.databasePath, {
+    pathTrust: fixture.pathTrust,
+  });
   fs.writeFileSync(`${fixture.databasePath}-wal`, '', { mode: 0o644 });
   fs.writeFileSync(`${fixture.databasePath}-shm`, '', { mode: 0o666 });
 
@@ -376,7 +497,7 @@ test('only SQLite files absent at preflight may be tightened to 0600', (t) => {
 
   fs.chmodSync(fixture.databasePath, 0o644);
   assert.throws(
-    () => secureNewSqliteSideFiles(fixture.databasePath, existing, {
+    () => secureNewSqliteSideFiles(fixture.databasePath, secondPreflight, {
       pathTrust: fixture.pathTrust,
     }),
     /owner-only/,
@@ -443,6 +564,32 @@ test('private initializer atomically creates one value and reuses it without ove
   assert.equal(reused, firstValue);
   assert.equal(createCalls, 1);
   assert.equal(fs.readFileSync(fixture.privatePath, 'utf8'), firstValue);
+});
+
+test('private validator results are detached before input bytes are zeroed', (t) => {
+  const fixture = authority(t);
+  const value = secret('5a');
+  fs.writeFileSync(fixture.privatePath, value, { mode: 0o600 });
+
+  const whole = loadOrInitializePrivateFile({
+    filePath: fixture.privatePath,
+    label: 'Receipt key',
+    createBytes: () => Buffer.from(secret('5b')),
+    validateBytes: (bytes) => bytes,
+    pathTrust: fixture.pathTrust,
+  });
+  assert.equal(Buffer.isBuffer(whole), true);
+  assert.equal(whole.toString('utf8'), value);
+
+  const view = loadOrInitializePrivateFile({
+    filePath: fixture.privatePath,
+    label: 'Receipt key',
+    createBytes: () => Buffer.from(secret('5c')),
+    validateBytes: (bytes) => bytes.subarray(0, 6),
+    pathTrust: fixture.pathTrust,
+  });
+  assert.equal(Buffer.isBuffer(view), true);
+  assert.equal(view.toString('utf8'), 'secret');
 });
 
 test('existing empty, truncated, invalid, symlinked, permissive, and nonfile values fail closed', (t) => {
@@ -557,6 +704,82 @@ test('recovery publishes the lexicographically first valid candidate and ignores
   for (const name of decoys) assert.equal(fs.existsSync(path.join(fixture.directory, name)), true);
 });
 
+test('recovery never publishes or removes a temp name whose validated inode was replaced', (t) => {
+  for (const finalExists of [false, true]) {
+    const fixture = authority(t, `wallet-kernel-identity-${finalExists ? 'unlink' : 'publish'}-`);
+    const basename = path.basename(fixture.privatePath);
+    const name = `.${basename}.tmp-808-${'88'.repeat(16)}`;
+    const candidate = path.join(fixture.directory, name);
+    const moved = `${candidate}.validated-inode`;
+    fs.writeFileSync(candidate, secret('88'), { mode: 0o600 });
+    if (finalExists) fs.writeFileSync(fixture.privatePath, secret('11'), { mode: 0o600 });
+    const candidateInode = fs.statSync(candidate).ino;
+    const originalRead = fs.readSync;
+    let swapped = false;
+    fs.readSync = function swapAfterValidatedRead(descriptor, ...rest) {
+      const inode = fs.fstatSync(descriptor).ino;
+      const read = originalRead.call(fs, descriptor, ...rest);
+      if (!swapped && inode === candidateInode && read > 0) {
+        fs.renameSync(candidate, moved);
+        fs.writeFileSync(candidate, 'unvalidated replacement\n', { mode: 0o600 });
+        swapped = true;
+      }
+      return read;
+    };
+    try {
+      assert.throws(
+        () => loadOrInitializePrivateFile({
+          filePath: fixture.privatePath,
+          label: 'Receipt key',
+          createBytes: () => Buffer.from(secret('22')),
+          validateBytes: validatePrivateValue,
+          pathTrust: fixture.pathTrust,
+        }),
+        /identity changed/,
+      );
+    } finally {
+      fs.readSync = originalRead;
+    }
+    assert.equal(swapped, true);
+    assert.equal(fs.readFileSync(candidate, 'utf8'), 'unvalidated replacement\n');
+    if (finalExists) {
+      assert.equal(fs.readFileSync(fixture.privatePath, 'utf8'), secret('11'));
+    } else {
+      assert.equal(fs.existsSync(fixture.privatePath), false);
+    }
+  }
+});
+
+test('initializer cleanup leaves a replacement of its own validated temp name untouched', (t) => {
+  const fixture = authority(t, 'wallet-kernel-own-cleanup-');
+  const random = Buffer.from('09'.repeat(16), 'hex');
+  const name = `.${path.basename(fixture.privatePath)}.tmp-${process.pid}-${random.toString('hex')}`;
+  const candidate = path.join(fixture.directory, name);
+  const moved = `${candidate}.published-inode`;
+  let swapped = false;
+  assert.throws(
+    () => loadOrInitializePrivateFile({
+      filePath: fixture.privatePath,
+      label: 'Receipt key',
+      createBytes: () => Buffer.from(secret('99')),
+      validateBytes: validatePrivateValue,
+      randomBytes: () => random,
+      faultInjector: (point) => {
+        if (point === 'after_private_directory_fsync') {
+          fs.renameSync(candidate, moved);
+          fs.writeFileSync(candidate, 'replacement cleanup target\n', { mode: 0o600 });
+          swapped = true;
+        }
+      },
+      pathTrust: fixture.pathTrust,
+    }),
+    /identity changed/,
+  );
+  assert.equal(swapped, true);
+  assert.equal(fs.readFileSync(fixture.privatePath, 'utf8'), secret('99'));
+  assert.equal(fs.readFileSync(candidate, 'utf8'), 'replacement cleanup target\n');
+});
+
 test('valid final value wins recovery and validated candidates are removed', (t) => {
   const fixture = authority(t);
   const basename = path.basename(fixture.privatePath);
@@ -612,14 +835,14 @@ test('wrong-owner-like recovery candidate metadata fails closed without chown pr
   const name = `.${path.basename(fixture.privatePath)}.tmp-707-${'77'.repeat(16)}`;
   const candidate = path.join(fixture.directory, name);
   fs.writeFileSync(candidate, secret('11'), { mode: 0o600 });
-  const candidateStat = fs.statSync(candidate);
+  const candidateStat = fs.statSync(candidate, { bigint: true });
   const originalFstat = fs.fstatSync;
   fs.fstatSync = function injectWrongOwner(descriptor, options) {
     const stat = originalFstat.call(fs, descriptor, options);
-    if (options === undefined && stat.isFile() && stat.ino === candidateStat.ino) {
+    if (options?.bigint === true && stat.isFile() && stat.ino === candidateStat.ino) {
       return new Proxy(stat, {
         get(target, property, receiver) {
-          if (property === 'uid') return target.uid + 1;
+          if (property === 'uid') return target.uid + 1n;
           return Reflect.get(target, property, receiver);
         },
       });

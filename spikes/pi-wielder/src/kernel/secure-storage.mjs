@@ -12,7 +12,14 @@ const PRIVATE_TEMP_LIST = Symbol.for(
   'skill-asset-protocol.wallet-kernel.trusted-parent.private-temp-list.v1',
 );
 const SQLITE_SUFFIXES = Object.freeze(['', '-wal', '-shm']);
+const PATH_TRUST_FIELDS = Object.freeze([
+  'mode',
+  'trustedAncestor',
+  'kernelUid',
+  'agentUid',
+]);
 const ABSENT = Symbol('absent-private-file');
+const SQLITE_PREFLIGHTS = new WeakMap();
 
 function assertSecurePlatform() {
   if (typeof process.getuid !== 'function' || !Number.isInteger(NOFOLLOW)) {
@@ -20,13 +27,37 @@ function assertSecurePlatform() {
   }
 }
 
-function assertPathTrust(pathTrust) {
+function capturePathTrust(pathTrust) {
   if (pathTrust === null
       || typeof pathTrust !== 'object'
       || !Object.isFrozen(pathTrust)) {
     throw new Error('Wallet Kernel file access requires an explicit frozen pathTrust object');
   }
-  return pathTrust;
+  const prototype = Object.getPrototypeOf(pathTrust);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new Error('pathTrust must be a plain object with exact fields');
+  }
+  if (Object.getOwnPropertySymbols(pathTrust).length !== 0) {
+    throw new Error('pathTrust must not contain symbols');
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(pathTrust);
+  const keys = Object.keys(descriptors);
+  if (keys.length !== PATH_TRUST_FIELDS.length
+      || PATH_TRUST_FIELDS.some((field) => !Object.hasOwn(descriptors, field))) {
+    throw new Error('pathTrust must contain the exact fields');
+  }
+  for (const field of PATH_TRUST_FIELDS) {
+    const descriptor = descriptors[field];
+    if (!descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) {
+      throw new Error('pathTrust fields must be own enumerable data fields');
+    }
+  }
+  return Object.freeze({
+    mode: descriptors.mode.value,
+    trustedAncestor: descriptors.trustedAncestor.value,
+    kernelUid: descriptors.kernelUid.value,
+    agentUid: descriptors.agentUid.value,
+  });
 }
 
 function inside(parent, child) {
@@ -37,7 +68,7 @@ function inside(parent, child) {
 
 function assertOwner(stat, label) {
   assertSecurePlatform();
-  if (stat.uid !== process.getuid()) {
+  if (Number(stat.uid) !== process.getuid()) {
     throw new Error(`${label} must be owned by the current user`);
   }
 }
@@ -45,14 +76,45 @@ function assertOwner(stat, label) {
 function assertOwnerOnlyRegular(stat, label) {
   assertOwner(stat, label);
   if (!stat.isFile()) throw new Error(`${label} must be a regular file`);
-  if ((stat.mode & 0o777) !== 0o600) {
+  const mode = typeof stat.mode === 'bigint'
+    ? Number(stat.mode & 0o777n)
+    : stat.mode & 0o777;
+  if (mode !== 0o600) {
     throw new Error(`${label} must be an owner-only regular file`);
   }
 }
 
+function fileIdentityFor(stat) {
+  const mode = typeof stat.mode === 'bigint'
+    ? Number(stat.mode & 0o7777n)
+    : stat.mode & 0o7777;
+  const modificationTime = typeof stat.mtimeNs === 'bigint'
+    ? stat.mtimeNs.toString(10)
+    : String(Math.trunc(stat.mtimeMs * 1_000_000));
+  return Object.freeze({
+    device: stat.dev.toString(10),
+    inode: stat.ino.toString(10),
+    uid: Number(stat.uid),
+    gid: Number(stat.gid),
+    mode,
+    size: stat.size.toString(10),
+    modificationTime,
+  });
+}
+
+function sameFileIdentity(left, right) {
+  return left.device === right.device
+    && left.inode === right.inode
+    && left.uid === right.uid
+    && left.gid === right.gid
+    && left.mode === right.mode
+    && left.size === right.size
+    && left.modificationTime === right.modificationTime;
+}
+
 function privateParent(filePath, label, checkoutRoot, pathTrust) {
   assertSecurePlatform();
-  const trust = assertPathTrust(pathTrust);
+  const trust = capturePathTrust(pathTrust);
   if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) {
     throw new Error(`${label} path must be absolute`);
   }
@@ -69,19 +131,64 @@ function privateParent(filePath, label, checkoutRoot, pathTrust) {
   });
 }
 
-function readValidatedDescriptor(descriptor, label, validateBytes) {
-  const stat = fs.fstatSync(descriptor);
-  assertOwnerOnlyRegular(stat, label);
-  if (stat.size <= 0 || stat.size > MAXIMUM_PRIVATE_BYTES) {
+function readBoundedDescriptor(descriptor, maximumBytes, label) {
+  const scratch = Buffer.allocUnsafe(maximumBytes + 1);
+  let total = 0;
+  try {
+    while (total < scratch.length) {
+      const read = fs.readSync(descriptor, scratch, total, scratch.length - total, null);
+      if (read === 0) break;
+      total += read;
+    }
+    if (total > maximumBytes) {
+      throw new Error(`${label} size is outside the allowed boundary`);
+    }
+    return Buffer.from(scratch.subarray(0, total));
+  } finally {
+    scratch.fill(0);
+  }
+}
+
+function detachAliasedValidatorResult(result, bytes, label) {
+  if (result instanceof ArrayBuffer && result === bytes.buffer) {
+    throw new Error(`${label} validator must not return the input ArrayBuffer`);
+  }
+  if (!ArrayBuffer.isView(result) || result.buffer !== bytes.buffer) return result;
+  const inputStart = bytes.byteOffset;
+  const inputEnd = inputStart + bytes.byteLength;
+  const resultStart = result.byteOffset;
+  const resultEnd = resultStart + result.byteLength;
+  if (resultEnd <= inputStart || resultStart >= inputEnd) return result;
+  if (resultStart < inputStart || resultEnd > inputEnd) {
+    throw new Error(`${label} validator must not expose memory outside its input bytes`);
+  }
+  if (Buffer.isBuffer(result)) return Buffer.from(result);
+  if (result instanceof DataView) {
+    const copy = Buffer.from(new Uint8Array(result.buffer, result.byteOffset, result.byteLength));
+    return new DataView(copy.buffer, copy.byteOffset, copy.byteLength);
+  }
+  return new result.constructor(result);
+}
+
+function readValidatedDescriptor(descriptor, label, validateBytes, { includeIdentity = false } = {}) {
+  const before = fs.fstatSync(descriptor, { bigint: true });
+  assertOwnerOnlyRegular(before, label);
+  if (before.size <= 0n || before.size > BigInt(MAXIMUM_PRIVATE_BYTES)) {
     throw new Error(`${label} must not be empty and must remain within the size boundary`);
   }
+  const identity = fileIdentityFor(before);
 
-  const bytes = fs.readFileSync(descriptor);
+  const bytes = readBoundedDescriptor(descriptor, MAXIMUM_PRIVATE_BYTES, label);
   try {
-    if (bytes.length <= 0 || bytes.length > MAXIMUM_PRIVATE_BYTES) {
+    if (bytes.length <= 0) {
       throw new Error(`${label} must not be empty and must remain within the size boundary`);
     }
-    return validateBytes(bytes);
+    const value = detachAliasedValidatorResult(validateBytes(bytes), bytes, label);
+    const after = fileIdentityFor(fs.fstatSync(descriptor, { bigint: true }));
+    if (!sameFileIdentity(identity, after)) {
+      throw new Error(`${label} file identity changed during validation`);
+    }
+    return includeIdentity ? { identity, value } : value;
   } finally {
     bytes.fill(0);
   }
@@ -121,8 +228,10 @@ export function readPrivateInputFile(filePath, label, {
   maximumBytes = MAXIMUM_PRIVATE_BYTES,
   pathTrust,
 } = {}) {
-  if (!Number.isSafeInteger(maximumBytes) || maximumBytes <= 0) {
-    throw new Error(`${label} maximum size must be a positive safe integer`);
+  if (!Number.isSafeInteger(maximumBytes)
+      || maximumBytes <= 0
+      || maximumBytes > MAXIMUM_PRIVATE_BYTES) {
+    throw new Error(`${label} maximum size must be a positive safe integer within the hard ceiling`);
   }
   const guard = privateParent(filePath, label, checkoutRoot, pathTrust);
   let descriptor;
@@ -133,8 +242,8 @@ export function readPrivateInputFile(filePath, label, {
     if (stat.size <= 0 || stat.size > maximumBytes) {
       throw new Error(`${label} size is outside the allowed boundary`);
     }
-    const bytes = fs.readFileSync(descriptor);
-    if (bytes.length <= 0 || bytes.length > maximumBytes) {
+    const bytes = readBoundedDescriptor(descriptor, maximumBytes, label);
+    if (bytes.length <= 0) {
       bytes.fill(0);
       throw new Error(`${label} size is outside the allowed boundary`);
     }
@@ -153,10 +262,9 @@ export function preflightSqliteFiles(databasePath, { pathTrust } = {}) {
     CHECKOUT_ROOT,
     pathTrust,
   );
-  const existing = new Set();
+  const existingSuffixes = new Set();
   try {
     for (const suffix of SQLITE_SUFFIXES) {
-      const target = `${databasePath}${suffix}`;
       let descriptor;
       try {
         descriptor = guard.openSibling(suffix, fs.constants.O_RDONLY | NOFOLLOW);
@@ -167,22 +275,25 @@ export function preflightSqliteFiles(databasePath, { pathTrust } = {}) {
       try {
         const label = `SQLite ${suffix || 'database'}`;
         assertOwnerOnlyRegular(fs.fstatSync(descriptor), label);
-        existing.add(target);
+        existingSuffixes.add(suffix);
       } finally {
         fs.closeSync(descriptor);
       }
     }
     guard.revalidate();
-    return existing;
+    const capability = Object.freeze(Object.create(null));
+    SQLITE_PREFLIGHTS.set(capability, Object.freeze({
+      ancestorMetadataHash: guard.ancestorMetadataHash,
+      databasePath,
+      existingSuffixes,
+    }));
+    return capability;
   } finally {
     guard.close();
   }
 }
 
 export function secureNewSqliteSideFiles(databasePath, existing, { pathTrust } = {}) {
-  if (!(existing instanceof Set)) {
-    throw new Error('SQLite preflight state must be a Set');
-  }
   const guard = privateParent(
     databasePath,
     'Wallet Kernel database',
@@ -190,8 +301,16 @@ export function secureNewSqliteSideFiles(databasePath, existing, { pathTrust } =
     pathTrust,
   );
   try {
+    const preflight = SQLITE_PREFLIGHTS.get(existing);
+    if (!preflight) throw new Error('SQLite repair requires an opaque preflight capability');
+    SQLITE_PREFLIGHTS.delete(existing);
+    if (preflight.databasePath !== databasePath) {
+      throw new Error('SQLite preflight capability belongs to a different database path');
+    }
+    if (preflight.ancestorMetadataHash !== guard.ancestorMetadataHash) {
+      throw new Error('SQLite preflight capability belongs to a different trusted parent');
+    }
     for (const suffix of SQLITE_SUFFIXES) {
-      const target = `${databasePath}${suffix}`;
       let descriptor;
       try {
         descriptor = guard.openSibling(suffix, fs.constants.O_RDONLY | NOFOLLOW);
@@ -204,7 +323,7 @@ export function secureNewSqliteSideFiles(databasePath, existing, { pathTrust } =
         const stat = fs.fstatSync(descriptor);
         assertOwner(stat, label);
         if (!stat.isFile()) throw new Error(`${label} must be regular`);
-        if (existing.has(target)) {
+        if (preflight.existingSuffixes.has(suffix)) {
           if ((stat.mode & 0o777) !== 0o600) {
             throw new Error(`${label} must be owner-only`);
           }
@@ -238,22 +357,31 @@ function validateCandidate(guard, name, label, validateBytes) {
   }
 
   try {
+    let validated;
     try {
-      readValidatedDescriptor(descriptor, `${label} candidate`, validateBytes);
+      validated = readValidatedDescriptor(
+        descriptor,
+        `${label} candidate`,
+        validateBytes,
+        { includeIdentity: true },
+      );
     } catch (error) {
-      if (/owned by|owner-only|regular file|empty|size boundary/.test(error.message)) throw error;
+      if (/owned by|owner-only|regular file|empty|size boundary|identity changed/.test(error.message)) {
+        throw error;
+      }
       throw new Error(`${label} candidate is invalid: ${error.message}`);
     }
     guard.revalidate();
-    return true;
-  } finally {
+    return Object.freeze({ descriptor, identity: validated.identity, name });
+  } catch (error) {
     fs.closeSync(descriptor);
+    throw error;
   }
 }
 
-function unlinkCandidate(guard, name) {
+function unlinkCandidate(guard, candidate) {
   try {
-    guard.unlinkNamed(name);
+    guard.unlinkNamed(candidate.name, candidate.identity);
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
   }
@@ -304,29 +432,44 @@ export function loadOrInitializePrivateFile({
     }
     const names = listPrivateNames();
     const validated = [];
-    for (const name of names) {
-      if (validateCandidate(guard, name, label, validateBytes)) validated.push(name);
-    }
-
-    let existing = readExistingOrAbsent();
-    if (existing === ABSENT && validated.length > 0) {
-      try {
-        guard.linkNamedToLeaf(validated[0]);
-      } catch (error) {
-        if (error.code !== 'EEXIST') throw error;
+    try {
+      for (const name of names) {
+        const candidate = validateCandidate(guard, name, label, validateBytes);
+        if (candidate) validated.push(candidate);
       }
-      guard.fsyncParent();
-      existing = readExisting();
-    }
 
-    if (existing !== ABSENT) {
-      for (const name of validated) unlinkCandidate(guard, name);
+      let existing = readExistingOrAbsent();
+      if (existing === ABSENT && validated.length > 0) {
+        let namespaceChanged = false;
+        for (const candidate of validated) {
+          try {
+            guard.linkNamedToLeaf(candidate.name, candidate.identity);
+            namespaceChanged = true;
+            break;
+          } catch (error) {
+            if (error.code === 'EEXIST') {
+              namespaceChanged = true;
+              break;
+            }
+            if (error.code !== 'ENOENT') throw error;
+          }
+        }
+        if (namespaceChanged) guard.fsyncParent();
+        existing = readExistingOrAbsent();
+      }
+
+      if (existing !== ABSENT) {
+        for (const candidate of validated) unlinkCandidate(guard, candidate);
+      }
+      return existing;
+    } finally {
+      for (const candidate of validated) fs.closeSync(candidate.descriptor);
     }
-    return existing;
   };
 
   let bytes;
   let temporaryCreated = false;
+  let temporaryIdentity;
   let temporaryName;
   try {
     const recovered = recover();
@@ -356,11 +499,15 @@ export function loadOrInitializePrivateFile({
       fs.fsyncSync(descriptor);
       faultInjector('after_private_temp_fsync');
     } finally {
-      fs.closeSync(descriptor);
+      try {
+        temporaryIdentity = fileIdentityFor(fs.fstatSync(descriptor, { bigint: true }));
+      } finally {
+        fs.closeSync(descriptor);
+      }
     }
 
     try {
-      guard.linkNamedToLeaf(temporaryName);
+      guard.linkNamedToLeaf(temporaryName, temporaryIdentity);
       faultInjector('after_private_publish');
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
@@ -371,7 +518,12 @@ export function loadOrInitializePrivateFile({
   } finally {
     try {
       if (bytes) bytes.fill(0);
-      if (temporaryCreated) unlinkCandidate(guard, temporaryName);
+      if (temporaryCreated && temporaryIdentity) {
+        unlinkCandidate(guard, Object.freeze({
+          identity: temporaryIdentity,
+          name: temporaryName,
+        }));
+      }
       guard.revalidate();
     } finally {
       guard.close();
