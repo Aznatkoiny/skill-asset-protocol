@@ -523,6 +523,9 @@ export function openTrustedParent({
           assertExpectedFileIdentity(before, expectedIdentity);
           linkCountBefore = before.nlink;
         }
+        // POSIX has no unlink-if-inode primitive. Live callers rely on the held
+        // Kernel-owned 0700 chain, a distinct Pi UID, and the authority lock;
+        // the checks here detect faults inside that explicit trust boundary.
         fs.unlinkSync(childLocation(name));
         if (descriptor !== undefined) {
           const after = fs.fstatSync(descriptor, { bigint: true });

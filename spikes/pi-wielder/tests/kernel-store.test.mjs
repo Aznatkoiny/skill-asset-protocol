@@ -590,6 +590,24 @@ test('private validator results are detached before input bytes are zeroed', (t)
   });
   assert.equal(Buffer.isBuffer(view), true);
   assert.equal(view.toString('utf8'), 'secret');
+
+  assert.throws(
+    () => loadOrInitializePrivateFile({
+      filePath: fixture.privatePath,
+      label: 'Receipt key',
+      createBytes: () => Buffer.from(secret('5d')),
+      validateBytes: (bytes) => {
+        const inputEnd = bytes.byteOffset + bytes.byteLength;
+        if (bytes.byteOffset > 0) return new Uint8Array(bytes.buffer, 0, 1);
+        if (inputEnd < bytes.buffer.byteLength) {
+          return new Uint8Array(bytes.buffer, inputEnd, 1);
+        }
+        return bytes.buffer;
+      },
+      pathTrust: fixture.pathTrust,
+    }),
+    /outside its input bytes|input ArrayBuffer/,
+  );
 });
 
 test('existing empty, truncated, invalid, symlinked, permissive, and nonfile values fail closed', (t) => {

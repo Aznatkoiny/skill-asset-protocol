@@ -158,7 +158,6 @@ function detachAliasedValidatorResult(result, bytes, label) {
   const inputEnd = inputStart + bytes.byteLength;
   const resultStart = result.byteOffset;
   const resultEnd = resultStart + result.byteLength;
-  if (resultEnd <= inputStart || resultStart >= inputEnd) return result;
   if (resultStart < inputStart || resultEnd > inputEnd) {
     throw new Error(`${label} validator must not expose memory outside its input bytes`);
   }
