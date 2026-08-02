@@ -1,14 +1,59 @@
-# Pi-Wielder spike — Collar-authoritative Invocations
+# Pi-Wielder spike - Agent Spend Control Plane
 
 Design context: [Pi-Wielder design](../../docs/plans/2026-07-11-reframe-and-pi-wielder-design.md).
 
-This is an executable design spike, not a production payment service. Its automated
-proof is fully offline: an unfunded throwaway wallet signs x402 authorizations, an
-injected mock verifies the signatures and synthesizes settlement, and canned model
-responses avoid external APIs. Mock execution is fail-closed and remains the default
-when `MOCK_LLM` is unset.
+This is an executable design spike, not a production payment or custody service. Pi is
+the **Wielder**. The Agent and Operator are local control-plane security roles: the
+Agent may ask the Wallet Kernel to use an operator-approved route, while the Operator
+sets policy, decides approvals, reconciles ambiguous outcomes, and reviews signed
+receipts. Pi never receives the wallet signer, CDP credentials, operator bearer, or a
+caller-selected destination capability.
 
-## Accounting authority
+The directory retains the earlier Collar-authoritative seller proof and now adds a
+durable Wielder-side Wallet Kernel around it. The Kernel authenticates one enrolled Pi
+instance, binds it to one Spend Session, evaluates immutable PolicyVersions, enforces
+per-request, per-seller-session, session, and rolling-24-hour ceilings, persists intent
+state before signing or retrying, and emits signed receipt revisions. The route map —
+root-owned and manifest-covered in live mode — not Pi, selects the method and upstream
+seller.
+
+## Current spend-control status
+
+| Mode | What has been exercised | Honest status |
+|---|---|---|
+| `offline-deterministic` | Real local child processes, SQLite authority, policy/approval paths, restart recovery, deterministic x402 settlement, Pi adapter path, signed per-session projections, and recomputable evidence | **Measured offline**; wallet, deployment, and OS isolation are explicitly simulated. No external provider or chain is contacted. |
+| `cdp-testnet` | Closed configuration, CDP adapter, Base Sepolia observer, release-integrity, systemd, isolation, run-intent, and evidence gates have offline tests | **Not run.** The production listener/secret-delivery composition and Linux lifecycle evidence are incomplete. The installed launch path deliberately stops with `LIVE_LAUNCH_NOT_READY` (exit 78). |
+| Mainnet | No mode, route, deployment, or evidence path exists | **Out of scope and unsupported.** No automated funding, mainnet transaction, or real-funds operation is allowed. |
+
+An offline pass is not evidence of live isolation, CDP payment, wallet funding, or a
+Base Sepolia transaction. The current implementation must not be used to reframe public
+website claims until a fresh, human-authorized, externally anchored testnet evidence
+bundle qualifies. Historical network results remain separately labeled below.
+`run-evidence.mjs --mode base-sepolia-testnet` currently exits 2 with
+`EVIDENCE_TESTNET_NOT_RUN`; it does not construct a real wallet adapter.
+
+The control boundary is:
+
+```text
+Pi (Wielder; Pi-owned Agent credential)
+              |
+              v
+loopback Agent API -> fixed route map -> Wallet Kernel -> CDP wallet adapter
+                                          |                 (testnet only)
+                                          +-> SQLite authority + budgets
+                                          +-> approval queue
+                                          +-> signed receipts/session projections
+
+Operator CLI -> owner-only bearer -> Unix admin socket in live design
+Operator console -> root socket-activated loopback listener -> one-time fragment
+```
+
+The automated proof is fully offline: an unfunded throwaway wallet signs deterministic
+x402 authorizations, injected adapters verify and synthesize settlement, and canned
+model responses avoid external APIs. Mock execution is fail-closed and remains the
+default when `MOCK_LLM` is unset.
+
+## Legacy Collar accounting authority
 
 The Collar's append-only Invocation journal is authoritative for hosted Skill
 Invocations. Payment and execution are independent state machines, so a settled
@@ -44,7 +89,7 @@ Mock transaction hashes and timings are synthetic protocol evidence. They are no
 evidence of live funds, mainnet readiness, production custody, distributed locking, or
 durable production key management.
 
-## Wielder payment policy
+## Legacy one-process Wielder payment policy
 
 The Wielder does not accept the first x402 offer blindly. Before signing, it requires
 the exact Base Sepolia network (`84532`) and Base Sepolia USDC contract, a canonical
@@ -95,7 +140,7 @@ cross-restart budget guarantee. A durable deployment must persist and replay sig
 authorizations, reject nonce and transaction reuse across workers, and reconcile every
 unresolved reservation before it can advertise such a guarantee.
 
-## What the offline proof demonstrates
+## What the legacy offline proof demonstrates
 
 `npm run e2e` exercises one wallet across two paid asset classes without opening a
 socket:
@@ -156,8 +201,14 @@ The quoted execution catalog is immutable and versioned. Its initial rates are l
 
 ## Architecture
 
+The new Wielder-side control plane is composed from `src/control-plane.mjs`. It keeps
+Agent admission, Operator authority, policy decisions, wallet signing, and public
+projections as separate capabilities. The deterministic acceptance runner supplies the
+complete offline dependency graph. The direct production entrypoint refuses to invent
+that graph; live launch remains blocked as described above.
+
 ```text
-Pi or another HTTP client
+Pi or another HTTP client (legacy Collar demonstration)
           │
           ▼
 src/proxy.mjs — Wielder wallet + paying fetch + local receipt view
@@ -174,22 +225,50 @@ Both sellers use an explicitly constructed facilitator transport.
 Offline tests inject src/facilitator-mock.mjs; no arbitrary URL is accepted.
 ```
 
-The proxy demonstrates the wallet-bound HTTP 402 transport shape contemplated by
-ADR-0008 plus a conservative one-process payment policy, but it contains no Story SDK,
-token custody, or Royalty calculator. It is not proof of the complete protocol,
-cross-process spend enforcement, or production readiness.
+The legacy proxy demonstrates the wallet-bound HTTP 402 transport shape contemplated by
+ADR-0008 plus a conservative one-process payment policy. The Wallet Kernel adds durable
+cross-restart spend authority for the Pi Agent, but neither path contains a Story SDK,
+token custody product, hosted policy authority, or Royalty calculator. This spike is not
+proof of the complete protocol or production readiness.
 
 ## Run the verified path
 
+Use a POSIX host and Node 24.18.1 or newer for deterministic development. The future
+attested live release is stricter: it requires Linux/systemd and exactly Node 24.18.1.
+From this directory, install the lockfile exactly and run the complete offline story:
+
 ```bash
-npm install
-npm test
-npm run e2e
+npm ci
+npm run verify:spend-control
 ```
 
-Expected current results are 235 offline unit/integration tests and 41 offline e2e
-checks. Counts can increase as regressions are added; zero failures is the contract.
-The e2e labels all timing output synthetic and uses in-process Hono requests only.
+The acceptance path starts real local child processes where the host permits loopback
+listeners. Results are still **measured offline**: the wallet adapter and settlement are
+deterministic, and identity/deployment isolation is marked simulated. A sandbox that
+forbids local listeners may report those process checks as skipped; a skip is not a
+passing live-host result.
+
+Generate a fresh sanitized offline evidence bundle and keep its manifest digest outside
+the bundle:
+
+```bash
+evidence_parent="$(mktemp -d /tmp/pi-wielder-evidence.XXXXXX)"
+evidence_parent="$(cd "$evidence_parent" && pwd -P)"
+npm run evidence:offline -- \
+  --output "$evidence_parent/bundle" \
+  --anchor-output "$evidence_parent/manifest.sha256"
+manifest_sha256="$(tr -d '\n' < "$evidence_parent/manifest.sha256")"
+npm run evidence:verify -- "$evidence_parent/bundle" \
+  --expect-manifest-sha256 "$manifest_sha256"
+npm run verify:no-secrets
+```
+
+The bundle contains exactly `manifest.json`, `events.jsonl`, `summary.json`,
+`report.md`, and `README.md`. Verification requires the external manifest hash,
+recomputes normalized events, verifies every per-session projection signature, and
+requires the signed receipts to partition exactly once across those projections. It
+never treats a hash read from inside the bundle as its trust anchor. Offline evidence records
+`liveCdp`, `walletFunded`, and `testnetTransaction` as `not-run`.
 
 Focused commands:
 
@@ -200,6 +279,8 @@ npm run test:proxy
 npm run test:policy
 npm run test:payment
 npm run test:economics
+npm run test:kernel
+npm run test:systemd
 ```
 
 For standalone mock processes, persistent trust bootstrapping, and the intentionally
@@ -220,6 +301,14 @@ blocked live boundary, see [RUNBOOK.md](./RUNBOOK.md).
 | `src/facilitator-mock.mjs` | Offline signature verification plus synthetic settlement |
 | `pi-extension/x402.ts` | Manual Pi adapter for provider, Skill tool, and `/ledger` view |
 | `e2e.mjs` | Fully in-process offline proof |
+| `src/control-plane.mjs` | Wallet Kernel composition boundary for Agent and Operator apps; direct live composition fails closed |
+| `src/kernel/wallet-kernel.mjs` | Coordinated intent, policy, approval, budget, payment, execution, reconciliation, and receipt authority |
+| `src/spend-control-proxy.mjs` | Agent-authenticated fixed-route API used by Pi; no caller-selected destination or wallet capability |
+| `src/operator/` | Owner-authenticated local API, CLI, and one-time browser-console launch flow |
+| `src/adapters/` | Deterministic test wallet plus CDP testnet wallet and read-only Base Sepolia observation boundaries |
+| `scripts/lib/spend-control-process-runner.mjs` | Reused real-process deterministic acceptance runner |
+| `src/evidence-bundle.mjs` and `scripts/verify-evidence.mjs` | Sanitized five-file evidence builder and externally anchored independent verifier |
+| `deploy/systemd/` and `scripts/preflight-live-deployment.mjs` | Root-owned deployment contract and explicit `LIVE_LAUNCH_NOT_READY` live gate |
 
 ## Security and operational boundaries
 
@@ -287,8 +376,9 @@ detail.
   not a distributed consensus mechanism.
 - The proxy trusts an operator-pinned public key file and one SHA-256 key ID of its SPKI
   DER. A key ID or key embedded in a receipt cannot authenticate that receipt.
-- The Pi extension is a manual demo adapter and is not type-compiled by this spike;
-  an offline source-contract test pins its fixed Skill route and tool schema.
+- The Pi extension is pinned to Pi `0.80.6`; offline tests import its TypeScript,
+  exercise the real five-argument tool ABI, and pin fixed model/Skill routes plus
+  same-key retry behavior. Installing it into a Pi host remains manual.
 - Successful mock accounting records synthetic-config provider usage and allocates
   execution COGS and settlement cost before the Royalty pool. It is executable evidence
   of ordering and conservation, not a validated production margin model or current

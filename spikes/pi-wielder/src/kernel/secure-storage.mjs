@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { openTrustedParent } from './trusted-path.mjs';
+import { openAgentTrustedParent, openTrustedParent } from './trusted-path.mjs';
 
 const CHECKOUT_ROOT = fs.realpathSync(fileURLToPath(new URL('../../../../', import.meta.url)));
 const MAXIMUM_PRIVATE_BYTES = 1_048_576;
@@ -22,6 +22,11 @@ const PATH_TRUST_FIELDS = Object.freeze([
   'mode',
   'trustedAncestor',
   'kernelUid',
+  'agentUid',
+]);
+const AGENT_PATH_TRUST_FIELDS = Object.freeze([
+  'mode',
+  'trustedAncestor',
   'agentUid',
 ]);
 const ABSENT = Symbol('absent-private-file');
@@ -64,6 +69,31 @@ function capturePathTrust(pathTrust) {
     kernelUid: descriptors.kernelUid.value,
     agentUid: descriptors.agentUid.value,
   });
+}
+
+function captureAgentPathTrust(pathTrust) {
+  if (pathTrust === null
+      || typeof pathTrust !== 'object'
+      || !Object.isFrozen(pathTrust)
+      || Object.getPrototypeOf(pathTrust) !== Object.prototype
+      || Object.getOwnPropertySymbols(pathTrust).length !== 0) {
+    throw new Error('Agent pathTrust must be one frozen plain object');
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(pathTrust);
+  const keys = Object.keys(descriptors);
+  if (keys.length !== AGENT_PATH_TRUST_FIELDS.length
+      || AGENT_PATH_TRUST_FIELDS.some((field) => !Object.hasOwn(descriptors, field))) {
+    throw new Error('Agent pathTrust must contain the exact fields');
+  }
+  const captured = {};
+  for (const field of AGENT_PATH_TRUST_FIELDS) {
+    const descriptor = descriptors[field];
+    if (!descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) {
+      throw new Error('Agent pathTrust fields must be own enumerable data fields');
+    }
+    captured[field] = descriptor.value;
+  }
+  return Object.freeze(captured);
 }
 
 function inside(parent, child) {
@@ -158,6 +188,25 @@ function privateParent(filePath, label, checkoutRoot, pathTrust) {
     terminalOwnerUid: process.getuid(),
     terminalMode: 0o700,
     role: 'kernel-private',
+  });
+}
+
+function agentPrivateParent(filePath, label, checkoutRoot, pathTrust) {
+  assertSecurePlatform();
+  const trust = captureAgentPathTrust(pathTrust);
+  if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) {
+    throw new Error(`${label} path must be absolute`);
+  }
+  const lexicalParent = path.resolve(path.dirname(filePath));
+  if (inside(checkoutRoot, lexicalParent)) {
+    throw new Error(`${label} must be outside the checkout`);
+  }
+  return openAgentTrustedParent({
+    ...trust,
+    targetFile: filePath,
+    terminalOwnerUid: process.getuid(),
+    terminalMode: 0o700,
+    role: 'agent-private',
   });
 }
 
@@ -522,7 +571,7 @@ function unlinkCandidate(guard, candidate) {
   guard.fsyncParent();
 }
 
-export function loadOrInitializePrivateFile({
+function loadOrInitializePrivateFileInternal({
   filePath,
   label,
   createBytes,
@@ -530,7 +579,7 @@ export function loadOrInitializePrivateFile({
   randomBytes = crypto.randomBytes,
   faultInjector = () => {},
   pathTrust,
-}) {
+}, role) {
   if (typeof createBytes !== 'function' || typeof validateBytes !== 'function') {
     throw new Error(`${label} initializer and validator must be functions`);
   }
@@ -538,7 +587,9 @@ export function loadOrInitializePrivateFile({
     throw new Error(`${label} randomness and fault injector must be functions`);
   }
 
-  const guard = privateParent(filePath, label, CHECKOUT_ROOT, pathTrust);
+  const guard = role === 'agent-private'
+    ? agentPrivateParent(filePath, label, CHECKOUT_ROOT, pathTrust)
+    : privateParent(filePath, label, CHECKOUT_ROOT, pathTrust);
   const readExisting = () => {
     const descriptor = guard.openLeaf(fs.constants.O_RDONLY | NOFOLLOW);
     try {
@@ -663,4 +714,12 @@ export function loadOrInitializePrivateFile({
       guard.close();
     }
   }
+}
+
+export function loadOrInitializePrivateFile(options) {
+  return loadOrInitializePrivateFileInternal(options, 'kernel-private');
+}
+
+export function loadOrInitializeAgentPrivateFile(options) {
+  return loadOrInitializePrivateFileInternal(options, 'agent-private');
 }

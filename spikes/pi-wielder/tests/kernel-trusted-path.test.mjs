@@ -5,10 +5,42 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { canonicalJson, sha256 } from '../src/kernel/canonical.mjs';
-import { openTrustedParent } from '../src/kernel/trusted-path.mjs';
+import { openAgentTrustedParent, openTrustedParent } from '../src/kernel/trusted-path.mjs';
 
 test('exports the trusted parent opener', () => {
   assert.equal(typeof openTrustedParent, 'function');
+  assert.equal(typeof openAgentTrustedParent, 'function');
+});
+
+test('Agent trusted roles bind their exact terminal owner and mode', (t) => {
+  const privateFixture = makeFixture(t);
+  for (const [role, terminalMode, wrongMode] of [
+    ['agent-private', 0o700, 0o755],
+    ['agent-handoff', 0o755, 0o700],
+  ]) {
+    const fixture = role === 'agent-private'
+      ? privateFixture
+      : makeFixture(t, { terminalMode: 0o755 });
+    const base = {
+      mode: 'deterministic',
+      trustedAncestor: fixture.trustedAncestor,
+      targetFile: fixture.targetFile,
+      agentUid: CURRENT_UID,
+      terminalOwnerUid: CURRENT_UID,
+      terminalMode,
+      role,
+    };
+    assert.throws(
+      () => openAgentTrustedParent({ ...base, terminalMode: wrongMode }),
+      /exact terminal owner and mode/,
+    );
+    assert.throws(
+      () => openAgentTrustedParent({ ...base, terminalOwnerUid: CURRENT_UID + 1 }),
+      /exact terminal owner and mode/,
+    );
+    const guard = openAgentTrustedParent(base);
+    guard.close();
+  }
 });
 
 const CURRENT_UID = process.getuid();

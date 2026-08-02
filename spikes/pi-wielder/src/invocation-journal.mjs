@@ -5,6 +5,21 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { assertExecutionQuote } from './execution-economics.mjs';
+import {
+  canonicalJson,
+  createReceiptSigner,
+  loadOrCreateReceiptSigner,
+  receiptKeyId,
+  verifySignedReceipt,
+} from './kernel/receipt-signing.mjs';
+
+export {
+  canonicalJson,
+  createReceiptSigner,
+  loadOrCreateReceiptSigner,
+  receiptKeyId,
+  verifySignedReceipt,
+};
 
 const TERMINAL_EXECUTION = new Set(['succeeded', 'failed', 'cancelled']);
 const CHECKOUT_ROOT = fs.realpathSync(fileURLToPath(new URL('../../../', import.meta.url)));
@@ -12,15 +27,6 @@ const LEASE_ID = /^[0-9a-f]{32}$/;
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
 const NOFOLLOW = fs.constants.O_NOFOLLOW ?? 0;
 
-function canonicalize(value) {
-  if (Array.isArray(value)) return value.map(canonicalize);
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalize(value[key])]));
-  }
-  return value;
-}
-
-export const canonicalJson = (value) => JSON.stringify(canonicalize(value));
 const same = (left, right) => canonicalJson(left) === canonicalJson(right);
 const copy = (value) => structuredClone(value);
 
@@ -253,13 +259,6 @@ function withLease(lockPath, operation, hooks = {}) {
   }
 }
 
-export function receiptKeyId(publicKey) {
-  const keyObject = publicKey?.type === 'public' ? publicKey : crypto.createPublicKey(publicKey);
-  return `sha256:${crypto.createHash('sha256')
-    .update(keyObject.export({ type: 'spki', format: 'der' }))
-    .digest('hex')}`;
-}
-
 function normalizeReceiptSigner(signer, { requirePersistent = false } = {}) {
   if (!signer || typeof signer !== 'object' || typeof signer.signHash !== 'function') {
     throw new Error('receipt signer must provide signHash');
@@ -299,67 +298,6 @@ function verifyHashSignature(hashHex, signature, publicKey) {
   if (signatureBytes.length !== 64 || signatureBytes.toString('base64') !== signature) return false;
   try {
     return crypto.verify(null, Buffer.from(hashHex, 'hex'), publicKey, signatureBytes);
-  } catch {
-    return false;
-  }
-}
-
-export function createReceiptSigner(keys = {}, { persistent = false } = {}) {
-  const pair = keys.privateKey && keys.publicKey
-    ? { privateKey: keys.privateKey, publicKey: keys.publicKey }
-    : crypto.generateKeyPairSync('ed25519');
-  const publicKeyPem = pair.publicKey.export({ type: 'spki', format: 'pem' }).toString();
-  const keyId = receiptKeyId(pair.publicKey);
-  return normalizeReceiptSigner({
-    algorithm: 'Ed25519',
-    publicKeyPem,
-    keyId,
-    persistent,
-    signHash(hashHex) {
-      return crypto.sign(null, Buffer.from(hashHex, 'hex'), pair.privateKey).toString('base64');
-    },
-  });
-}
-
-export function loadOrCreateReceiptSigner(keyPath) {
-  const canonicalKeyPath = safePersistentPath(keyPath, 'persistent receipt key');
-  return withLease(`${canonicalKeyPath}.lock`, () => {
-    let privateKey;
-    if (fs.existsSync(canonicalKeyPath)) {
-      privateKey = crypto.createPrivateKey(readPrivateFile(canonicalKeyPath, 'persistent receipt key'));
-    } else {
-      const pair = crypto.generateKeyPairSync('ed25519');
-      privateKey = pair.privateKey;
-      const temporary = `${canonicalKeyPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
-      const descriptor = fs.openSync(
-        temporary,
-        fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | NOFOLLOW,
-        0o600,
-      );
-      try {
-        writeAll(descriptor, Buffer.from(privateKey.export({ type: 'pkcs8', format: 'pem' })));
-        fs.fsyncSync(descriptor);
-      } finally {
-        fs.closeSync(descriptor);
-      }
-      fs.renameSync(temporary, canonicalKeyPath);
-      fsyncDirectory(path.dirname(canonicalKeyPath));
-    }
-    return createReceiptSigner(
-      { privateKey, publicKey: crypto.createPublicKey(privateKey) },
-      { persistent: true },
-    );
-  });
-}
-
-export function verifySignedReceipt(bundle, { publicKeyPem, keyId }) {
-  try {
-    if (bundle?.algorithm !== 'Ed25519' || bundle.keyId !== keyId) return false;
-    const expectedHash = crypto.createHash('sha256').update(canonicalJson(bundle.receipt)).digest('hex');
-    if (bundle.receiptHash !== expectedHash) return false;
-    const publicKey = crypto.createPublicKey(publicKeyPem);
-    return publicKey.asymmetricKeyType === 'ed25519'
-      && verifyHashSignature(expectedHash, bundle.signature, publicKey);
   } catch {
     return false;
   }

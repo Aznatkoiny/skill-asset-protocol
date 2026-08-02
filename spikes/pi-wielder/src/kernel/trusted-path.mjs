@@ -4,7 +4,9 @@ import path from 'node:path';
 import { canonicalJson, sha256 } from './canonical.mjs';
 
 const MODES = new Set(['deterministic', 'cdp-testnet']);
-const ROLES = new Set(['kernel-private', 'root-only']);
+const KERNEL_ROLES = new Set(['kernel-private', 'root-only']);
+const AGENT_ROLES = new Set(['agent-private', 'agent-handoff']);
+const ROLES = new Set([...KERNEL_ROLES, ...AGENT_ROLES]);
 const SQLITE_SUFFIXES = new Set(['', '-wal', '-shm']);
 const METADATA_DOMAIN = 'wallet-kernel/trusted-parent-metadata/v1\0';
 const FILE_IDENTITY_FIELDS = Object.freeze([
@@ -63,6 +65,7 @@ function pathComponents(value, label) {
     fail(`${label} must be a direct canonical path without dot or empty components`);
   }
   const root = path.parse(value).root;
+  if (value === root) return [];
   const components = value.slice(root.length).split(path.sep);
   if (components.some((component) => component === '' || component === '.' || component === '..')) {
     fail(`${label} must be a direct canonical path without dot or empty components`);
@@ -189,13 +192,17 @@ function validatePolicy(projection, {
   mode,
   role,
   kernelUid,
+  agentUid,
   terminalOwnerUid,
   terminalMode,
 }) {
   const terminal = projection.at(-1);
   if (mode === 'deterministic') {
     const currentUid = process.getuid();
-    for (const component of projection) {
+    const deterministicChain = KERNEL_ROLES.has(role)
+      ? projection
+      : projection.slice(0, -1);
+    for (const component of deterministicChain) {
       if (component.uid !== currentUid || component.mode !== 0o700) {
         fail('deterministic trusted path components must be current-UID owner-only directories');
       }
@@ -206,7 +213,7 @@ function validatePolicy(projection, {
         fail('root-only trusted path components must be root-owned and not group/other writable');
       }
     }
-  } else {
+  } else if (role === 'kernel-private') {
     const ancestor = projection[0];
     if (ancestor.uid !== 0 || (ancestor.mode & 0o022) !== 0) {
       fail('live trusted ancestor must be root-owned and not group/other writable');
@@ -215,6 +222,16 @@ function validatePolicy(projection, {
       if ((component.uid !== 0 && component.uid !== kernelUid)
           || (component.mode & 0o022) !== 0) {
         fail('Kernel-private intermediate must be root/Kernel-owned and not group/other writable');
+      }
+    }
+  } else {
+    const ancestor = projection[0];
+    if (ancestor.uid !== 0 || (ancestor.mode & 0o022) !== 0) {
+      fail('live Agent trusted ancestor must be root-owned and not group/other writable');
+    }
+    for (const component of projection.slice(1, -1)) {
+      if (component.uid !== 0 || (component.mode & 0o022) !== 0) {
+        fail('Agent path intermediate must be root-owned and not group/other writable');
       }
     }
   }
@@ -260,7 +277,7 @@ function openDirectory(location, label) {
   }
 }
 
-export function openTrustedParent({
+function openTrustedParentInternal({
   mode,
   trustedAncestor,
   targetFile,
@@ -272,8 +289,8 @@ export function openTrustedParent({
 }) {
   assertPlatformBoundary();
   if (!MODES.has(mode)) fail('trusted path mode must be deterministic or cdp-testnet');
-  if (!ROLES.has(role)) fail('trusted path role must be kernel-private or root-only');
-  assertUid(kernelUid, 'Kernel');
+  if (!ROLES.has(role)) fail('trusted path role is outside the closed role set');
+  if (KERNEL_ROLES.has(role)) assertUid(kernelUid, 'Kernel');
   assertUid(agentUid, 'Agent');
   assertUid(terminalOwnerUid, 'terminal owner');
   assertMode(terminalMode, 'terminal');
@@ -281,19 +298,29 @@ export function openTrustedParent({
   pathComponents(targetFile, 'target file');
 
   if (mode === 'deterministic') {
-    if (kernelUid !== process.getuid() || agentUid !== process.getuid()) {
-      fail('deterministic Kernel and Agent UIDs must both equal the current UID');
+    if (agentUid !== process.getuid()
+        || (KERNEL_ROLES.has(role) && kernelUid !== process.getuid())) {
+      fail('deterministic path identities must equal the current UID');
     }
   } else {
-    if (kernelUid === 0 || agentUid === 0) {
-      fail('live Kernel and Pi UIDs must be nonzero');
-    }
-    if (kernelUid === agentUid) fail('live Kernel and Pi UIDs must be distinct');
-    if (role === 'kernel-private' && terminalOwnerUid !== kernelUid) {
-      fail('Kernel-private terminal owner must be the Kernel UID');
-    }
-    if (role === 'root-only' && terminalOwnerUid !== 0) {
-      fail('root-only terminal owner must be root');
+    if (KERNEL_ROLES.has(role)) {
+      if (kernelUid === 0 || agentUid === 0) {
+        fail('live Kernel and Pi UIDs must be nonzero');
+      }
+      if (kernelUid === agentUid) fail('live Kernel and Pi UIDs must be distinct');
+      if (role === 'kernel-private' && terminalOwnerUid !== kernelUid) {
+        fail('Kernel-private terminal owner must be the Kernel UID');
+      }
+      if (role === 'root-only' && terminalOwnerUid !== 0) {
+        fail('root-only terminal owner must be root');
+      }
+    } else {
+      if (agentUid === 0 || process.getuid() !== agentUid) {
+        fail('live Agent path must run as the configured non-root Agent UID');
+      }
+      if (terminalOwnerUid !== agentUid) {
+        fail('Agent path terminal owner must be the Agent UID');
+      }
     }
     if (process.platform !== 'linux') {
       fail('cdp-testnet trusted paths require Linux');
@@ -334,6 +361,7 @@ export function openTrustedParent({
       mode,
       role,
       kernelUid,
+      agentUid,
       terminalOwnerUid,
       terminalMode,
     });
@@ -642,4 +670,24 @@ export function openTrustedParent({
     if (descriptors.length === 0) state = 'closed';
     throw error;
   }
+}
+
+export function openTrustedParent(options) {
+  if (!options || typeof options !== 'object' || !KERNEL_ROLES.has(options.role)) {
+    fail('Kernel trusted parent requires a kernel-private or root-only role');
+  }
+  return openTrustedParentInternal(options);
+}
+
+export function openAgentTrustedParent(options) {
+  if (!options || typeof options !== 'object' || !AGENT_ROLES.has(options.role)
+      || Object.hasOwn(options, 'kernelUid')) {
+    fail('Agent trusted parent requires a scoped Agent role without Kernel identity');
+  }
+  const requiredMode = options.role === 'agent-private' ? 0o700 : 0o755;
+  if (options.terminalMode !== requiredMode
+      || options.terminalOwnerUid !== options.agentUid) {
+    fail('Agent trusted parent role requires its exact terminal owner and mode');
+  }
+  return openTrustedParentInternal(options);
 }

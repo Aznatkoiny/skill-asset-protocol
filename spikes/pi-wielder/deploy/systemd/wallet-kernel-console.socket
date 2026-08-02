@@ -1,0 +1,12 @@
+[Unit]
+Description=Wallet Kernel local operator console socket
+
+[Socket]
+ListenStream=127.0.0.1:8405
+Accept=no
+Service=wallet-kernel.service
+FileDescriptorName=wallet-kernel-console
+ReusePort=no
+
+[Install]
+WantedBy=sockets.target
