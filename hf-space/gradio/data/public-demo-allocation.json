@@ -1,0 +1,353 @@
+{
+  "corePath": "prototype/atomic-money.mjs",
+  "defaultScenarioId": "intra-org",
+  "evidenceStatus": "synthetic_accounting_illustration",
+  "fixtureSha256": "sha256:5618c710e772fcfb7b8390b87a4b44482bce144343d9bed787a4b71a34767fe8",
+  "generatedBy": "hf-space/scripts/generate-accounting-fixture.mjs",
+  "inputs": {
+    "common": {
+      "executionCostAtomic": "50000",
+      "grossAtomic": "250000",
+      "refundReserveAtomic": "0"
+    },
+    "external": {
+      "executionCostAtomic": "50000",
+      "grossAtomic": "250000",
+      "protocolFeeBps": 250,
+      "refundReserveAtomic": "0",
+      "settlementCostAtomic": "0"
+    },
+    "externalSkills": {
+      "derived-skill": {
+        "holders": [
+          {
+            "bps": 10000,
+            "recipientId": "derived-creator"
+          }
+        ],
+        "inheritBps": 1500,
+        "parentIds": [
+          "source-skill"
+        ]
+      },
+      "source-skill": {
+        "holders": [
+          {
+            "bps": 10000,
+            "recipientId": "source-creator"
+          }
+        ],
+        "inheritBps": 0,
+        "parentIds": []
+      }
+    },
+    "internal": {
+      "executionCostAtomic": "50000",
+      "grossAtomic": "250000",
+      "protocolFeeAtomic": "6250",
+      "refundReserveAtomic": "0"
+    }
+  },
+  "scenarios": [
+    {
+      "accountingLabel": "generated from prototype/atomic-money.mjs; synthetic accounting illustration",
+      "allocation": {
+        "awardCredit": {
+          "amountAtomic": "193750",
+          "recipientId": "employee-creator"
+        },
+        "executionCostAtomic": "50000",
+        "grossAtomic": "250000",
+        "invocationAwardAtomic": "193750",
+        "journalEntries": [
+          {
+            "amountAtomic": "50000",
+            "category": "execution-cogs",
+            "creditAccountId": "provider:execution",
+            "debitAccountId": "employer:invocation-gross"
+          },
+          {
+            "amountAtomic": "6250",
+            "category": "protocol-fee",
+            "creditAccountId": "protocol:treasury",
+            "debitAccountId": "employer:invocation-gross"
+          },
+          {
+            "amountAtomic": "0",
+            "category": "refund-reserve",
+            "creditAccountId": "reserve:refund",
+            "debitAccountId": "employer:invocation-gross"
+          },
+          {
+            "amountAtomic": "193750",
+            "category": "invocation-award",
+            "creditAccountId": "employee:employee-creator",
+            "debitAccountId": "employer:invocation-gross"
+          }
+        ],
+        "protocolFeeAtomic": "6250",
+        "refundReserveAtomic": "0"
+      },
+      "allocationKind": "internal_invocation_award",
+      "conservationEquation": "grossAtomic = executionCostAtomic + protocolFeeAtomic + refundReserveAtomic + invocationAwardAtomic",
+      "executionCostAtomic": "50000",
+      "executionCostUsdc": "0.050000",
+      "expectedGrossDebitAccountId": "employer:invocation-gross",
+      "grossAtomic": "250000",
+      "grossUsdc": "0.250000",
+      "id": "intra-org",
+      "implementationNote": "Illustrative until the internal-award amendment becomes canonical.",
+      "invocationAwardAtomic": "193750",
+      "invocationAwardUsdc": "0.193750",
+      "journalEntryDisplayUsdc": [
+        "0.050000",
+        "0.006250",
+        "0.000000",
+        "0.193750"
+      ],
+      "label": "Intra-org — employer-funded internal Invocation award",
+      "policy": "internal_award",
+      "protocolFeeAtomic": "6250",
+      "protocolFeeUsdc": "0.006250",
+      "refundReserveAtomic": "0",
+      "refundReserveUsdc": "0.000000",
+      "royaltyPoolAtomic": null,
+      "royaltyPoolUsdc": null,
+      "settlementCostAtomic": null,
+      "settlementCostUsdc": null,
+      "settlementNote": "Credited allocation shown; withdrawal and on-chain settlement are not implemented in this demo.",
+      "status": "terminal_product_spike"
+    },
+    {
+      "accountingLabel": "generated from prototype/atomic-money.mjs; synthetic accounting illustration",
+      "allocation": {
+        "allocationPolicy": "lrp-per-hop-v1",
+        "ancestorCredits": [
+          {
+            "amountAtomic": "29062",
+            "depth": 1,
+            "kind": "ancestor",
+            "recipientId": "source-creator",
+            "viaSkillId": "source-skill"
+          }
+        ],
+        "credits": [
+          {
+            "amountAtomic": "164688",
+            "depth": 0,
+            "kind": "holder",
+            "recipientId": "derived-creator",
+            "viaSkillId": "derived-skill"
+          },
+          {
+            "amountAtomic": "29062",
+            "depth": 1,
+            "kind": "ancestor",
+            "recipientId": "source-creator",
+            "viaSkillId": "source-skill"
+          }
+        ],
+        "executionCostAtomic": "50000",
+        "grossAtomic": "250000",
+        "holderCredits": [
+          {
+            "amountAtomic": "164688",
+            "depth": 0,
+            "kind": "holder",
+            "recipientId": "derived-creator",
+            "viaSkillId": "derived-skill"
+          }
+        ],
+        "journalEntries": [
+          {
+            "amountAtomic": "50000",
+            "category": "execution-cogs",
+            "creditAccountId": "provider:execution",
+            "debitAccountId": "wielder:external-gross"
+          },
+          {
+            "amountAtomic": "0",
+            "category": "settlement-cogs",
+            "creditAccountId": "provider:settlement",
+            "debitAccountId": "wielder:external-gross"
+          },
+          {
+            "amountAtomic": "6250",
+            "category": "protocol-fee",
+            "creditAccountId": "protocol:treasury",
+            "debitAccountId": "wielder:external-gross"
+          },
+          {
+            "amountAtomic": "0",
+            "category": "refund-reserve",
+            "creditAccountId": "reserve:refund",
+            "debitAccountId": "wielder:external-gross"
+          },
+          {
+            "amountAtomic": "164688",
+            "category": "royalty-holder",
+            "creditAccountId": "royalty:derived-creator",
+            "debitAccountId": "wielder:external-gross"
+          },
+          {
+            "amountAtomic": "29062",
+            "category": "royalty-ancestor",
+            "creditAccountId": "royalty:source-creator",
+            "debitAccountId": "wielder:external-gross"
+          }
+        ],
+        "protocolFeeAtomic": "6250",
+        "refundReserveAtomic": "0",
+        "royaltyPoolAtomic": "193750",
+        "settlementCostAtomic": "0"
+      },
+      "allocationKind": "external_royalty_claim",
+      "conservationEquation": "grossAtomic = executionCostAtomic + settlementCostAtomic + protocolFeeAtomic + refundReserveAtomic + royaltyPoolAtomic",
+      "executionCostAtomic": "50000",
+      "executionCostUsdc": "0.050000",
+      "expectedGrossDebitAccountId": "wielder:external-gross",
+      "grossAtomic": "250000",
+      "grossUsdc": "0.250000",
+      "id": "education",
+      "implementationNote": "External Royalty-claim allocation generated by the shared accounting kernel.",
+      "invocationAwardAtomic": null,
+      "invocationAwardUsdc": null,
+      "journalEntryDisplayUsdc": [
+        "0.050000",
+        "0.000000",
+        "0.006250",
+        "0.000000",
+        "0.164688",
+        "0.029062"
+      ],
+      "label": "Education — deferred after free re-authoring dominated the tested model",
+      "policy": "LRP",
+      "protocolFeeAtomic": "6250",
+      "protocolFeeUsdc": "0.006250",
+      "refundReserveAtomic": "0",
+      "refundReserveUsdc": "0.000000",
+      "royaltyPoolAtomic": "193750",
+      "royaltyPoolUsdc": "0.193750",
+      "settlementCostAtomic": "0",
+      "settlementCostUsdc": "0.000000",
+      "settlementNote": "Credited allocation shown; withdrawal and on-chain settlement are not implemented in this demo.",
+      "status": "deferred"
+    },
+    {
+      "accountingLabel": "generated from prototype/atomic-money.mjs; synthetic accounting illustration",
+      "allocation": {
+        "allocationPolicy": "lrp-per-hop-v1",
+        "ancestorCredits": [
+          {
+            "amountAtomic": "29062",
+            "depth": 1,
+            "kind": "ancestor",
+            "recipientId": "source-creator",
+            "viaSkillId": "source-skill"
+          }
+        ],
+        "credits": [
+          {
+            "amountAtomic": "164688",
+            "depth": 0,
+            "kind": "holder",
+            "recipientId": "derived-creator",
+            "viaSkillId": "derived-skill"
+          },
+          {
+            "amountAtomic": "29062",
+            "depth": 1,
+            "kind": "ancestor",
+            "recipientId": "source-creator",
+            "viaSkillId": "source-skill"
+          }
+        ],
+        "executionCostAtomic": "50000",
+        "grossAtomic": "250000",
+        "holderCredits": [
+          {
+            "amountAtomic": "164688",
+            "depth": 0,
+            "kind": "holder",
+            "recipientId": "derived-creator",
+            "viaSkillId": "derived-skill"
+          }
+        ],
+        "journalEntries": [
+          {
+            "amountAtomic": "50000",
+            "category": "execution-cogs",
+            "creditAccountId": "provider:execution",
+            "debitAccountId": "wielder:external-gross"
+          },
+          {
+            "amountAtomic": "0",
+            "category": "settlement-cogs",
+            "creditAccountId": "provider:settlement",
+            "debitAccountId": "wielder:external-gross"
+          },
+          {
+            "amountAtomic": "6250",
+            "category": "protocol-fee",
+            "creditAccountId": "protocol:treasury",
+            "debitAccountId": "wielder:external-gross"
+          },
+          {
+            "amountAtomic": "0",
+            "category": "refund-reserve",
+            "creditAccountId": "reserve:refund",
+            "debitAccountId": "wielder:external-gross"
+          },
+          {
+            "amountAtomic": "164688",
+            "category": "royalty-holder",
+            "creditAccountId": "royalty:derived-creator",
+            "debitAccountId": "wielder:external-gross"
+          },
+          {
+            "amountAtomic": "29062",
+            "category": "royalty-ancestor",
+            "creditAccountId": "royalty:source-creator",
+            "debitAccountId": "wielder:external-gross"
+          }
+        ],
+        "protocolFeeAtomic": "6250",
+        "refundReserveAtomic": "0",
+        "royaltyPoolAtomic": "193750",
+        "settlementCostAtomic": "0"
+      },
+      "allocationKind": "external_royalty_claim",
+      "conservationEquation": "grossAtomic = executionCostAtomic + settlementCostAtomic + protocolFeeAtomic + refundReserveAtomic + royaltyPoolAtomic",
+      "executionCostAtomic": "50000",
+      "executionCostUsdc": "0.050000",
+      "expectedGrossDebitAccountId": "wielder:external-gross",
+      "grossAtomic": "250000",
+      "grossUsdc": "0.250000",
+      "id": "marketplace",
+      "implementationNote": "External Royalty-claim allocation generated by the shared accounting kernel.",
+      "invocationAwardAtomic": null,
+      "invocationAwardUsdc": null,
+      "journalEntryDisplayUsdc": [
+        "0.050000",
+        "0.000000",
+        "0.006250",
+        "0.000000",
+        "0.164688",
+        "0.029062"
+      ],
+      "label": "Marketplace — Phase-3 optionality",
+      "policy": "LRP",
+      "protocolFeeAtomic": "6250",
+      "protocolFeeUsdc": "0.006250",
+      "refundReserveAtomic": "0",
+      "refundReserveUsdc": "0.000000",
+      "royaltyPoolAtomic": "193750",
+      "royaltyPoolUsdc": "0.193750",
+      "settlementCostAtomic": "0",
+      "settlementCostUsdc": "0.000000",
+      "settlementNote": "Credited allocation shown; withdrawal and on-chain settlement are not implemented in this demo.",
+      "status": "phase_3_optionality"
+    }
+  ],
+  "schemaVersion": 1
+}

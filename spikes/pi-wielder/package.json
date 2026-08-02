@@ -2,18 +2,43 @@
   "name": "pi-wielder-spike",
   "version": "0.1.0",
   "private": true,
-  "description": "Pi-Wielder spike: one wallet, two asset classes. A coding harness pays per-call x402 for model inference AND a hosted Skill behind a mock collar, with a unified attributed session ledger. Testnet-only (Base Sepolia); fully offline in mock mode.",
+  "description": "Pi-Wielder spike: one wallet pays per-call x402 for model inference and hosted Skill Invocations; the Collar journal is authoritative and the Wielder keeps a signed-receipt view. Testnet-only (Base Sepolia); fully offline in mock mode.",
   "type": "module",
   "scripts": {
-    "e2e": "MOCK_FACILITATOR=1 MOCK_LLM=1 node e2e.mjs",
+    "test": "node --test --test-concurrency=1 tests/*.test.mjs",
+    "test:journal": "node --test tests/invocation-journal.test.mjs",
+    "test:collar": "node --test tests/collar-failure.test.mjs tests/x402-lifecycle.test.mjs",
+    "test:proxy": "node --test tests/proxy-trust.test.mjs",
+    "test:policy": "node --test tests/payment-policy.test.mjs",
+    "test:payment": "node --test tests/payment-policy.test.mjs tests/paying-fetch.test.mjs tests/seller-payment-response.test.mjs",
+    "test:economics": "node --test tests/execution-economics.test.mjs tests/artifact-boundary.test.mjs tests/collar-cogs.test.mjs",
+    "test:systemd": "node --test tests/systemd-units.test.mjs tests/release-integrity.test.mjs tests/agent-isolation.test.mjs",
+    "test:kernel": "node --test --test-concurrency=1 tests/kernel-*.test.mjs tests/wallet-*.test.mjs tests/eip3009-exact.test.mjs tests/x402-v2-transport.test.mjs tests/base-sepolia-observer.test.mjs tests/seller-evidence-resolver.test.mjs tests/config.test.mjs tests/projection-exporter.test.mjs tests/agent-*.test.mjs tests/operator-*.test.mjs tests/spend-control-proxy.test.mjs tests/control-plane.test.mjs",
+    "e2e": "MOCK_LLM=1 node e2e.mjs",
+    "e2e:spend-control": "node spend-control-e2e.mjs",
+    "verify:spend-control": "npm test && npm run e2e && npm run e2e:spend-control",
+    "evidence:offline": "node scripts/run-evidence.mjs --mode offline-deterministic",
+    "evidence:verify": "node scripts/verify-evidence.mjs",
+    "verify:no-secrets": "node scripts/verify-no-tracked-secrets.mjs",
     "collar": "node src/collar.mjs",
     "gateway": "node src/gateway.mjs",
-    "proxy": "node src/proxy.mjs"
+    "proxy": "node src/proxy.mjs",
+    "control-plane": "node src/control-plane.mjs",
+    "operator": "node src/operator/cli.mjs"
   },
-  "license": "Apache-2.0",
+  "license": "MIT",
   "dependencies": {
+    "@coinbase/cdp-sdk": "1.54.0",
     "@hono/node-server": "^2.0.8",
+    "@x402/core": "2.19.0",
+    "@x402/evm": "2.19.0",
     "hono": "^4.12.29",
     "viem": "^2.55.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.80.6"
+  },
+  "engines": {
+    "node": ">=24.18.1"
   }
 }

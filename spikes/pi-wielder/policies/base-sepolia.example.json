@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "network": "eip155:84532",
+  "asset": "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
+  "wallet": "0x1000000000000000000000000000000000000000",
+  "methods": [
+    "GET",
+    "POST"
+  ],
+  "sellers": [
+    {
+      "origin": "https://seller.example",
+      "pathPrefixes": [
+        "/paid/"
+      ],
+      "payTo": "0x2000000000000000000000000000000000000000",
+      "evidencePath": "/.well-known/wallet-kernel/evidence",
+      "executionSigner": "0x2000000000000000000000000000000000000000",
+      "refundSigner": "0x2000000000000000000000000000000000000000",
+      "refundSource": "0x3000000000000000000000000000000000000000",
+      "perRequestMaxAtomic": "500000",
+      "autoApproveAtomic": "100000",
+      "humanApproveAtomic": "500000",
+      "sellerSessionMaxAtomic": "1000000"
+    }
+  ],
+  "sessionMaxAtomic": "2000000",
+  "rolling24hMaxAtomic": "5000000",
+  "challengeMaxAgeMs": 60000,
+  "approvalTtlMs": 300000,
+  "maxPendingApprovals": 20,
+  "defaultAction": "deny"
+}

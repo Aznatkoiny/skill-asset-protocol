@@ -1,2 +1,7 @@
 .env
+
+# Raw provider artifacts can contain private output and always remain local.
 runs/
+
+# Sanitized evidence bundles under evidence/ are intentionally tracked.
+!evidence/**/*.jsonl

@@ -4,12 +4,11 @@
 
 ## Context
 
-An internal adversarial premise review (2026-07-11; six full-corpus readers, four premise critics;
-unpublished) returned a consistent verdict — "shaky, not broken" — and a consistent diagnosis: the
-corpus is honest but **inverted**. The project's internal PRD led with its weakest claims (the
-open-marketplace royalty story) and treated its strongest asset (the off-chain metered ledger +
-co-held, non-transferable claims) as a stepping stone. Four critiques of the marketplace frame
-survived steelmanning:
+An adversarial premise review (2026-07-11; six full-corpus readers, four premise critics) returned
+a consistent verdict — "shaky, not broken" — and a consistent diagnosis: the corpus is honest but
+**inverted**. The PRD leads with its weakest claims (the open-marketplace royalty story) and treats
+its strongest asset (the off-chain metered ledger + co-held, non-transferable claims) as a stepping
+stone. Four critiques of the marketplace frame survived steelmanning:
 
 1. **Success is self-defeating in the open market.** A breakout Skill's own paid I/O pairs are a
    ~30×-cheaper distillation set — ADR-0004's own concession. The addressable middle (too dynamic
@@ -21,9 +20,7 @@ survived steelmanning:
    from "re-authored using what the class taught" — which is nearly free and pays the school
    nothing.
 4. **The likeliest killer was dismissed, not analyzed.** A platform-native skill marketplace
-   (Anthropic/OpenAI/GitHub) had no kill-criterion in the internal PRD's kill list at the time
-   (it is now tracked there as kill-criterion 7: a platform ships a native skill marketplace).
-   The GPT Store (OpenAI, launched Jan 2024) is
+   (Anthropic/OpenAI/GitHub) had no kill-criterion. The GPT Store (OpenAI, launched Jan 2024) is
    the base rate: platforms *do* ship native skill-adjacent marketplaces, and builder monetization
    was weak even with zero-friction distribution to a massive user base (research, 2026-07).
 
@@ -78,8 +75,7 @@ for AI work artifacts" — not a skill marketplace.**
   holds, the school claim must be restructured (living school-maintained content, or direct
   school→employer licensing) or cut.
 - The co-held claim inherits first-class design inputs the marketplace frame ignored: **vesting,
-  clawback, and termination ("when Sam quits")** — tracked in the regulatory section of the
-  project's internal PRD (unpublished).
+  clawback, and termination ("when Sam quits")** — tracked in the PRD's regulatory section.
 - We have NOT validated that employers will buy this. The precedents show institutions *do* share
   invention upside under statute or policy; they do not show demand for a third-party metering
   rail. Design-partner interviews remain the open validation step.

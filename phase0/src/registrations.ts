@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  open,
+  readFile,
+  rename,
+  unlink,
+  type FileHandle,
+} from "node:fs/promises";
 import { dirname } from "node:path";
 
 export const REGISTRATION_SCHEMA_VERSION = 1 as const;
@@ -34,6 +41,7 @@ export interface RegistrationProof {
   tokenId: string;
   txHash: `0x${string}`;
   licenseTermsId: string;
+  licenseTemplate: `0x${string}`;
   parentIpIds: `0x${string}`[];
   defaultMintingFee: string | null;
   maxMintingFee: string | null;
@@ -53,6 +61,12 @@ export interface RegistrationManifest {
 export interface RegistrationStore {
   load(): Promise<RegistrationManifest>;
   save(manifest: RegistrationManifest): Promise<void>;
+}
+
+export interface ManifestWriteHooks {
+  afterTempSync?(): void | Promise<void>;
+  afterRename?(): void | Promise<void>;
+  afterDirectorySync?(): void | Promise<void>;
 }
 
 export function createEmptyRegistrationManifest(): RegistrationManifest {
@@ -133,6 +147,9 @@ function validateProof(value: unknown, stage: DemoStage): RegistrationProof | nu
   if (!isDecimal(value.licenseTermsId)) {
     throw new Error(`${stage}.licenseTermsId must be a decimal string`);
   }
+  if (!isAddress(value.licenseTemplate)) {
+    throw new Error(`${stage}.licenseTemplate must be a 20-byte address`);
+  }
   if (!Array.isArray(value.parentIpIds) || !value.parentIpIds.every(isAddress)) {
     throw new Error(`${stage}.parentIpIds must contain addresses`);
   }
@@ -203,6 +220,13 @@ export function parseRegistrationManifest(value: unknown): RegistrationManifest 
   if (grandchild && child && grandchild.licenseTermsId !== child.licenseTermsId) {
     throw new Error("grandchild.licenseTermsId must inherit the child license terms");
   }
+  if (child && root && child.licenseTemplate.toLowerCase() !== root.licenseTemplate.toLowerCase()) {
+    throw new Error("child.licenseTemplate must inherit the root license template");
+  }
+  if (grandchild && child
+      && grandchild.licenseTemplate.toLowerCase() !== child.licenseTemplate.toLowerCase()) {
+    throw new Error("grandchild.licenseTemplate must inherit the child license template");
+  }
 
   if (value.status === "not-run") {
     if (value.wallet || value.spgNftContract || value.collectionTxHash || root || child || grandchild) {
@@ -223,7 +247,10 @@ export function parseRegistrationManifest(value: unknown): RegistrationManifest 
 }
 
 export class FileRegistrationStore implements RegistrationStore {
-  constructor(private readonly path: string) {}
+  constructor(
+    private readonly path: string,
+    private readonly hooks: ManifestWriteHooks = {},
+  ) {}
 
   async load(): Promise<RegistrationManifest> {
     try {
@@ -239,15 +266,46 @@ export class FileRegistrationStore implements RegistrationStore {
 
   async save(manifest: RegistrationManifest): Promise<void> {
     parseRegistrationManifest(manifest);
-    await mkdir(dirname(this.path), { recursive: true });
+    const directory = dirname(this.path);
+    await mkdir(directory, { recursive: true });
     const temporaryPath = `${this.path}.${process.pid}.${randomUUID()}.tmp`;
-    const contents = `${JSON.stringify(manifest, null, 2)}\n`;
+    const bytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    let temporaryHandle: FileHandle | null = null;
+    let renamed = false;
     try {
-      await writeFile(temporaryPath, contents, { encoding: "utf8", flag: "wx" });
+      temporaryHandle = await open(temporaryPath, "wx", 0o600);
+      await writeAll(temporaryHandle, bytes);
+      await temporaryHandle.sync();
+      await this.hooks.afterTempSync?.();
+      await temporaryHandle.close();
+      temporaryHandle = null;
       await rename(temporaryPath, this.path);
+      renamed = true;
+      await this.hooks.afterRename?.();
+      const directoryHandle = await open(directory, "r");
+      try {
+        await directoryHandle.sync();
+      } finally {
+        await directoryHandle.close();
+      }
+      await this.hooks.afterDirectorySync?.();
     } catch (error) {
-      await unlink(temporaryPath).catch(() => undefined);
+      if (temporaryHandle) await temporaryHandle.close().catch(() => undefined);
+      if (!renamed) await unlink(temporaryPath).catch(() => undefined);
       throw error;
     }
+  }
+}
+
+async function writeAll(handle: FileHandle, bytes: Uint8Array): Promise<void> {
+  let offset = 0;
+  while (offset < bytes.byteLength) {
+    const { bytesWritten } = await handle.write(bytes, offset, bytes.byteLength - offset, offset);
+    if (!Number.isSafeInteger(bytesWritten)
+        || bytesWritten <= 0
+        || bytesWritten > bytes.byteLength - offset) {
+      throw new Error("Manifest temporary write made no progress or returned an invalid byte count");
+    }
+    offset += bytesWritten;
   }
 }

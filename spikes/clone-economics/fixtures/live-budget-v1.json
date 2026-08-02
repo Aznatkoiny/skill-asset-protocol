@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "experimentFamily": "clone-economics-high-n-v1",
+  "approvalStatus": "not_approved",
+  "provider": "anthropic",
+  "model": null,
+  "pricing": {
+    "currency": "USD",
+    "unit": "per_million_tokens",
+    "inputUsdPerMillionTokens": null,
+    "outputUsdPerMillionTokens": null,
+    "asOf": null,
+    "source": null
+  },
+  "tokenCaps": {
+    "maxInputTokens": null,
+    "maxOutputTokens": null
+  }
+}

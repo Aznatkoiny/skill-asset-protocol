@@ -42,7 +42,7 @@ per-invocation metering, and the attestation bridge that feeds on-chain settleme
 ## Update (post-feasibility validation, 2026-06)
 
 Validated against live Story Protocol (chainId 1514, SDK v1.4.4). Confirmed real, with corrections —
-full analysis in the project's internal feasibility study (2026-06, unpublished):
+full analysis in `docs/feasibility/report.md`:
 
 - Flow-through is **pull, not push**: ancestors accrue a claimable balance and must call
   `claimAllRevenue`; a permissionless **keeper** auto-claims on their behalf. "Automatically pays"

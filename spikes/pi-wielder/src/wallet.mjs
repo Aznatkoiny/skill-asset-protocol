@@ -18,7 +18,7 @@ export function accountFromEnv(env = process.env) {
   return privateKeyToAccount(pk.startsWith('0x') ? pk : `0x${pk}`);
 }
 
-/** A fresh, unfunded, in-memory account. Perfectly fine for MOCK_FACILITATOR=1. */
+/** A fresh, unfunded, in-memory account for explicitly injected offline settlement. */
 export function throwawayAccount() {
   return privateKeyToAccount(generatePrivateKey());
 }

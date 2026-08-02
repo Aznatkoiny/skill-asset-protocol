@@ -1,0 +1,11 @@
+{
+  "name": "internal-invocation-awards-spike",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Offline accounting spike for employer-funded internal Invocation awards; no real funds.",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "demo": "node demo.mjs"
+  }
+}

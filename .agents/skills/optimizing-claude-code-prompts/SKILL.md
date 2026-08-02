@@ -154,7 +154,7 @@ Approach: plan first, then implement.
 For the full strategy tables, model-specific behavior (literalism, autonomy, over-eagerness),
 the verification-gating ladder, rich-context input (`@files`, images, URLs, piping), plan-mode
 decisions, mid-task course-correction phrasing, the interview→spec pattern, and reusable prompt
-snippets, read [references/claude-code-prompting-guide.md](references/claude-code-prompting-guide.md).
+snippets, read [references/Codex-prompting-guide.md](references/Codex-prompting-guide.md).
 
-Source material: publicly documented Claude Code prompting guidance
-(https://code.claude.com/docs), summarized in this skill's own words.
+Source material lives at the repo root: `Codex-best-practices.md` and
+`prompting-best-practices.md`.

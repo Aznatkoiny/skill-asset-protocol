@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "routes": [
+    {
+      "id": "example-model",
+      "kind": "openai-chat",
+      "method": "POST",
+      "upstreamUrl": "https://seller.example/paid/chat/completions",
+      "resourceDescription": "Wallet Kernel example model route",
+      "resourceMimeType": "application/json",
+      "purposeLabel": "model.infer",
+      "requestContentTypes": ["application/json"],
+      "maximumRequestBytes": 262144,
+      "maximumResponseBytes": 1048576
+    },
+    {
+      "id": "example-skill",
+      "kind": "tool",
+      "method": "POST",
+      "upstreamUrl": "https://seller.example/paid/skill",
+      "resourceDescription": "Wallet Kernel example Skill route",
+      "resourceMimeType": "application/json",
+      "purposeLabel": "skill.invoke",
+      "requestContentTypes": ["application/json"],
+      "maximumRequestBytes": 262144,
+      "maximumResponseBytes": 1048576
+    }
+  ]
+}

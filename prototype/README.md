@@ -1,7 +1,24 @@
 # Prototype — settlement loop economics
 
 > **Throwaway.** This exists to answer one question, then be deleted or absorbed.
-> `settlement-engine.mjs` is the keeper (pure logic); `settlement-tui.mjs` is the disposable shell.
+> `settlement-engine.mjs` and `settlement-tui.mjs` are historical prototype consumers.
+
+## Accounting kernel status
+
+`atomic-money.mjs` is the tested accounting source for new work. It accepts USDC at
+the display boundary, converts it to six-decimal atomic `bigint` values, and proves
+exact gross and Royalty-pool conservation under deterministic remainder allocation.
+
+The only implemented ancestry allocation policy is the explicitly named
+`lrp-per-hop-v1`, an LRP-like relative split applied once per Derivative hop. LAP
+(whole-ancestry absolute allocation) remains unimplemented and deferred; callers
+must not infer LAP semantics from this spike.
+
+`settlement-engine.mjs` and its TUI are historical prototype consumers that still use
+display-number state. Do not use them for new receipts or public allocation figures.
+The Collar and employer-budget plans migrate their runtime consumers to
+`atomic-money.mjs`; historical results remain labeled as historical rather than being
+silently recomputed.
 
 ## The question
 
@@ -65,8 +82,7 @@ compound per hop. Decision deferred to Phase 2; record as an ADR when committed.
 
 **4. MODEL RESULT (2026-07-12) — the free re-author bypass supersedes Note 1 for Education only.**
 Note 1 compared a declared Derivative with authoring only the fresh uplift. That historical A/B
-outside option is not the Education choice surfaced by the project's internal 2026-07 premise
-review (unpublished): a student-Creator can
+outside option is not the Education choice surfaced by the premise review: a student-Creator can
 re-author the whole $15 candidate using class knowledge, declare no lineage, and pay the school
 nothing. This result supersedes Note 1's inherit recommendation for Education only; it does not
 measure or revise Marketplace or Intra-org behavior.
@@ -126,10 +142,9 @@ First live run of `spike-cma-latency.mjs` (managed-agents beta):
 - WARM (session reuse): stream setup p50 170ms; **send→first answer p50
   1534ms** (one 7730ms outlier of three trials — needs more samples).
 
-Kill-criterion-2 reading (the project's internal PRD tracks this kill test:
-cold-start latency makes pay-then-run unusable): pay-then-run-async is
-comfortably usable — ~2.5s cold to visible output on top of a ~0.8s testnet
-x402 gate (see `spikes/pi-wielder/README.md`). n=3, one model, no effort sweep; treat as a
+Kill-criterion-2 reading: pay-then-run-async is comfortably usable — ~2.5s
+cold to visible output on top of a ~0.8s testnet x402 gate (see
+`spikes/pi-wielder/README.md`). n=3, one model, no effort sweep; treat as a
 first bound, not a distribution. Reviewer caveat: the warm path assumes the
 events stream tails rather than replays history; no near-zero samples
 appeared (consistent with tailing), but the assumption is undocumented in

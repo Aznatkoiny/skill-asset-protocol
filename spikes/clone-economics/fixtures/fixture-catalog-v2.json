@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "fixtureSet": "v2",
+  "trainDomains": [
+    {"slug":"checkout","path":"@src/checkout/totals.ts","command":"npm test -- src/checkout/totals.test.ts","constraint":"preserve tax rounding exactly"},
+    {"slug":"auth","path":"@src/auth/logout.ts","command":"npm test -- src/auth/logout.test.ts","constraint":"reuse the existing session invalidation path"},
+    {"slug":"billing","path":"@src/billing/renewal.ts","command":"npm test -- src/billing/renewal.test.ts","constraint":"do not change invoice JSON"},
+    {"slug":"worker","path":"@src/jobs/retry.ts","command":"npm test -- src/jobs/retry.test.ts","constraint":"keep retry attempts idempotent"},
+    {"slug":"export","path":"@src/export/csv.ts","command":"npm test -- src/export/csv.test.ts","constraint":"add no new dependencies"},
+    {"slug":"webhook","path":"@src/webhooks/verify.ts","command":"npm test -- src/webhooks/verify.test.ts","constraint":"reject invalid signatures without logging secrets"},
+    {"slug":"search","path":"@src/search/query.ts","command":"npm test -- src/search/query.test.ts","constraint":"preserve the public query API"},
+    {"slug":"profile","path":"@src/profile/update.ts","command":"npm test -- src/profile/update.test.ts","constraint":"leave unrelated profile fields untouched"},
+    {"slug":"migration","path":"@src/db/migrations/042-orders.ts","command":"npm test -- src/db/migrations/042-orders.test.ts","constraint":"keep the migration reversible"},
+    {"slug":"notifications","path":"@src/notifications/digest.ts","command":"npm test -- src/notifications/digest.test.ts","constraint":"send at most one digest per account"}
+  ],
+  "heldoutDomains": [
+    {"slug":"cache","path":"@src/cache/invalidate.ts","command":"npm test -- src/cache/invalidate.test.ts","constraint":"keep the cache API backward-compatible"},
+    {"slug":"session","path":"@src/session/timeout.ts","command":"npm test -- src/session/timeout.test.ts","constraint":"fix the root cause without suppressing the error"},
+    {"slug":"report","path":"@src/reports/download.ts","command":"npm test -- src/reports/download.test.ts","constraint":"preserve the download response headers"},
+    {"slug":"audit","path":"@src/audit/append.ts","command":"npm test -- src/audit/append.test.ts","constraint":"make audit entries append-only"},
+    {"slug":"orders","path":"@src/orders/filter.ts","command":"npm test -- src/orders/filter.test.ts","constraint":"preserve the JSON response shape exactly"},
+    {"slug":"upload","path":"@src/uploads/limits.ts","command":"npm test -- src/uploads/limits.test.ts","constraint":"reject oversized files before persistence"},
+    {"slug":"flags","path":"@src/flags/evaluate.ts","command":"npm test -- src/flags/evaluate.test.ts","constraint":"keep evaluation deterministic"},
+    {"slug":"tokens","path":"@src/tokens/rotate.ts","command":"npm test -- src/tokens/rotate.test.ts","constraint":"never log token material"},
+    {"slug":"queue","path":"@src/queue/claim.ts","command":"npm test -- src/queue/claim.test.ts","constraint":"prevent two workers from claiming one job"},
+    {"slug":"ledger","path":"@src/ledger/reconcile.ts","command":"npm test -- src/ledger/reconcile.test.ts","constraint":"do not mutate settled entries"}
+  ],
+  "trainTemplates": [
+    {"mode":"Optimize","text":"Tighten the request for {slug} while preserving behavior."},
+    {"mode":"Generate","text":"Write an implementation request for the {slug} change."},
+    {"mode":"Diagnose","text":"The {slug} change spread beyond scope; rewrite the request to fix the root cause."},
+    {"mode":"Spec","text":"Turn the broad {slug} idea into the next implementation specification."},
+    {"mode":"Optimize","text":"Make the {slug} prompt explicit about verification and constraints."},
+    {"mode":"Generate","text":"Ask for the smallest test-driven {slug} patch."},
+    {"mode":"Diagnose","text":"The first {slug} attempt hid the error; produce a diagnostic request."},
+    {"mode":"Spec","text":"Specify the {slug} behavior without starting implementation."},
+    {"mode":"Optimize","text":"Remove ambiguity from this {slug} maintenance request."},
+    {"mode":"Generate","text":"Create a repository-grounded request for {slug}."}
+  ],
+  "heldoutTemplates": [
+    {"mode":"Optimize","text":"Optimize this {slug} request without breaking callers.","maxQuestions":0},
+    {"mode":"Diagnose","text":"The {slug} implementation masked a failure; rewrite the request.","maxQuestions":0},
+    {"mode":"Generate","text":"Generate the smallest verified change request for {slug}.","maxQuestions":0}
+  ]
+}

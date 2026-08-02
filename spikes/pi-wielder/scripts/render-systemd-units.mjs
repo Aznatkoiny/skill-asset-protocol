@@ -1,0 +1,192 @@
+#!/usr/bin/env node
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { exactRecord, frozenCopy, KernelError, sha256 } from '../src/kernel/canonical.mjs';
+
+const SERVICE_TEMPLATE = fileURLToPath(new URL('../deploy/systemd/wallet-kernel.service', import.meta.url));
+const SOCKET_TEMPLATE = fileURLToPath(new URL('../deploy/systemd/wallet-kernel-console.socket', import.meta.url));
+const POSITIVE = /^[1-9][0-9]*$/;
+const INPUT_FIELDS = Object.freeze([
+  'schemaVersion', 'kernelUid', 'kernelGid', 'agentUid', 'agentGid', 'releaseRoot',
+  'nodePath', 'environmentPath', 'authorityRoot', 'evidenceRoot', 'runtimeRoot',
+  'agentRunOutboxPath', 'enrollmentInboxPath', 'serviceOutputPath', 'socketOutputPath',
+]);
+
+function fail(code, message, cause) {
+  throw new KernelError(code, message, cause ? { cause } : undefined);
+}
+
+function identity(value, label) {
+  if (typeof value !== 'string' || !POSITIVE.test(value)
+      || !Number.isSafeInteger(Number(value)) || String(Number(value)) !== value) {
+    fail('SYSTEMD_RENDER_IDENTITY', `${label} must be canonical positive numeric text`);
+  }
+  return value;
+}
+
+function absoluteToken(value, label) {
+  if (typeof value !== 'string' || !path.isAbsolute(value) || path.resolve(value) !== value
+      || /[\s\0'"`$;&|<>\\]/.test(value)) {
+    fail('SYSTEMD_RENDER_PATH', `${label} must be one canonical absolute systemd token`);
+  }
+  return value;
+}
+
+function assertDirectPath(value, label, { directory = false, regular = false } = {}) {
+  absoluteToken(value, label);
+  let stat;
+  try {
+    stat = fs.lstatSync(value);
+  } catch (cause) {
+    fail('SYSTEMD_RENDER_PATH', `${label} must already exist`, cause);
+  }
+  if (stat.isSymbolicLink() || (directory && !stat.isDirectory()) || (regular && !stat.isFile())) {
+    fail('SYSTEMD_RENDER_PATH', `${label} has the wrong filesystem type`);
+  }
+  return value;
+}
+
+function closedInput(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    fail('SYSTEMD_RENDER_INPUT', 'systemd render input must be one plain object');
+  }
+  const allowed = new Set([...INPUT_FIELDS, 'install', 'expectedOwnerUid']);
+  const keys = Reflect.ownKeys(value);
+  if (INPUT_FIELDS.some((field) => !Object.hasOwn(value, field))
+      || keys.some((field) => typeof field !== 'string' || !allowed.has(field))) {
+    fail('SYSTEMD_RENDER_INPUT', 'systemd render input fields do not match the closed schema');
+  }
+  const base = exactRecord(Object.fromEntries(INPUT_FIELDS.map((field) => [field, value[field]])),
+    INPUT_FIELDS, [], 'SYSTEMD_RENDER_INPUT', 'systemd render input');
+  return Object.freeze({
+    ...base,
+    install: value.install === undefined ? false : value.install,
+    expectedOwnerUid: value.expectedOwnerUid === undefined ? 0 : value.expectedOwnerUid,
+  });
+}
+
+function readEnvironmentNames(environmentPath) {
+  const bytes = fs.readFileSync(environmentPath);
+  if (bytes.length > 64 * 1024 || bytes.includes(0)) {
+    fail('SYSTEMD_RENDER_ENVIRONMENT', 'Kernel environment file is not bounded text');
+  }
+  const text = bytes.toString('utf8');
+  for (const line of text.split('\n')) {
+    if (line === '' || line.startsWith('#')) continue;
+    const equals = line.indexOf('=');
+    if (equals < 1) fail('SYSTEMD_RENDER_ENVIRONMENT', 'Kernel environment line is malformed');
+    const name = line.slice(0, equals);
+    if (!/^[A-Z][A-Z0-9_]*$/.test(name)
+        || name === 'NODE_OPTIONS' || name === 'NODE_PATH' || name.startsWith('LD_')
+        || name.startsWith('DYLD_') || name === 'GCONV_PATH' || name === 'GLIBC_TUNABLES') {
+      fail('SYSTEMD_RENDER_ENVIRONMENT', 'Kernel environment contains a loader-control field');
+    }
+  }
+}
+
+function substitute(template, replacements) {
+  let output = template;
+  for (const [marker, value] of Object.entries(replacements)) {
+    output = output.replaceAll(`{{${marker}}}`, value);
+  }
+  if (/\{\{[A-Z0-9_]+\}\}/.test(output)) {
+    fail('SYSTEMD_RENDER_TEMPLATE', 'systemd template contains an unresolved marker');
+  }
+  return Buffer.from(output, 'utf8');
+}
+
+function exclusiveInstall(filePath, bytes, expectedOwnerUid) {
+  const parent = path.dirname(filePath);
+  const parentStat = fs.lstatSync(parent);
+  if (!parentStat.isDirectory() || parentStat.isSymbolicLink()
+      || parentStat.uid !== expectedOwnerUid || (parentStat.mode & 0o022) !== 0) {
+    fail('SYSTEMD_INSTALL_PATH', 'unit install parent must be expected-owner and immutable to group/other');
+  }
+  let descriptor;
+  try {
+    descriptor = fs.openSync(filePath,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
+      0o644);
+    fs.writeFileSync(descriptor, bytes);
+    fs.fsyncSync(descriptor);
+  } catch (cause) {
+    fail('SYSTEMD_INSTALL_FAILED', 'unit output already exists or could not be installed', cause);
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+  const directory = fs.openSync(parent, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY);
+  try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }
+}
+
+export function renderSystemdUnits(value) {
+  const input = closedInput(value);
+  if (input.schemaVersion !== 1 || typeof input.install !== 'boolean'
+      || !Number.isSafeInteger(input.expectedOwnerUid) || input.expectedOwnerUid < 0) {
+    fail('SYSTEMD_RENDER_INPUT', 'systemd render input values are invalid');
+  }
+  for (const [field, label] of [
+    ['kernelUid', 'Kernel UID'], ['kernelGid', 'Kernel GID'],
+    ['agentUid', 'Agent UID'], ['agentGid', 'Agent GID'],
+  ]) identity(input[field], label);
+  if (input.kernelUid === input.agentUid) fail('SYSTEMD_RENDER_IDENTITY', 'Kernel and Agent UIDs must differ');
+  assertDirectPath(input.releaseRoot, 'release root', { directory: true });
+  if (path.basename(input.releaseRoot) === 'current') {
+    fail('SYSTEMD_RENDER_PATH', 'release root must be immutable and version-addressed');
+  }
+  assertDirectPath(input.nodePath, 'Node executable', { regular: true });
+  assertDirectPath(input.environmentPath, 'environment file', { regular: true });
+  readEnvironmentNames(input.environmentPath);
+  for (const field of [
+    'authorityRoot', 'evidenceRoot', 'runtimeRoot', 'agentRunOutboxPath', 'enrollmentInboxPath',
+  ]) assertDirectPath(input[field], field, { directory: true });
+  for (const field of ['serviceOutputPath', 'socketOutputPath']) {
+    absoluteToken(input[field], field);
+    assertDirectPath(path.dirname(input[field]), `${field} parent`, { directory: true });
+  }
+  const directional = [input.authorityRoot, input.evidenceRoot, input.runtimeRoot,
+    input.agentRunOutboxPath, input.enrollmentInboxPath];
+  if (new Set(directional).size !== directional.length
+      || directional.some((candidate) => candidate === input.releaseRoot
+        || candidate.startsWith(`${input.releaseRoot}${path.sep}`))) {
+    fail('SYSTEMD_RENDER_PATH', 'writable and directional roots must be distinct and outside the release');
+  }
+  const replacements = {
+    KERNEL_UID: input.kernelUid, KERNEL_GID: input.kernelGid,
+    RELEASE_ROOT: input.releaseRoot, NODE_PATH: input.nodePath,
+    ENVIRONMENT_PATH: input.environmentPath, AUTHORITY_ROOT: input.authorityRoot,
+    EVIDENCE_ROOT: input.evidenceRoot, RUNTIME_ROOT: input.runtimeRoot,
+    AGENT_RUN_OUTBOX_PATH: input.agentRunOutboxPath,
+  };
+  const serviceBytes = substitute(fs.readFileSync(SERVICE_TEMPLATE, 'utf8'), replacements);
+  const socketBytes = substitute(fs.readFileSync(SOCKET_TEMPLATE, 'utf8'), replacements);
+  if (input.install) {
+    exclusiveInstall(input.serviceOutputPath, serviceBytes, input.expectedOwnerUid);
+    try {
+      exclusiveInstall(input.socketOutputPath, socketBytes, input.expectedOwnerUid);
+    } catch (cause) {
+      // The first file remains visible and auditable; privileged install cleanup owns removal.
+      throw cause;
+    }
+  }
+  const expectedEffectiveConfig = frozenCopy({
+    kernelUid: input.kernelUid, kernelGid: input.kernelGid,
+    releaseRoot: input.releaseRoot, nodePath: input.nodePath,
+    environmentPath: input.environmentPath,
+    servicePath: input.serviceOutputPath, socketPath: input.socketOutputPath,
+    readWritePaths: [input.authorityRoot, input.evidenceRoot, input.runtimeRoot,
+      input.agentRunOutboxPath],
+  });
+  return Object.freeze({
+    serviceBytes, socketBytes,
+    service: Object.freeze({ path: input.serviceOutputPath, sha256: sha256(serviceBytes) }),
+    socket: Object.freeze({ path: input.socketOutputPath, sha256: sha256(socketBytes) }),
+    expectedEffectiveConfig,
+  });
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  process.stderr.write('render-systemd-units.mjs is a library entrypoint; invoke it through the privileged installer\n');
+  process.exitCode = 2;
+}
