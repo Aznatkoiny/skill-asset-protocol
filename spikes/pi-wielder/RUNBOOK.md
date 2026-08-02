@@ -314,12 +314,19 @@ cp <this-repo>/spikes/pi-wielder/pi-extension/x402.ts .pi/extensions/
 
 With the Wallet Kernel's loopback Agent API running, start the exact compatible Pi
 version and reload extensions. The extension points model calls and `invoke_skill` at
-fixed local routes. Model retries retain one logical call ID until success or final
-failure. The tool uses its real `toolCallId` to derive a stable call ID and performs at
-most one same-key retry after a transport/read failure. A completed replay returns a
-non-success JSON envelope: the charge and signed receipt remain available, but provider
-output is not fabricated or retained. `npm run e2e:spend-control` exercises this path
-fully offline without external providers or chain access.
+fixed local routes. A new logical model call gets a fresh call ID; its hook retains
+that ID across an error until Pi reports a terminal outcome, then rotates it. The tool
+uses its real `toolCallId` to derive a stable call ID and performs at most one automatic
+same-key retry only when its local `fetch` throws or response-body reading fails. It
+never automatically retries a received invalid content type, malformed JSON, or any
+HTTP/application result, including `payment_approval_required`. A completed replay
+returns a non-success JSON envelope: the charge and signed receipt remain available,
+but provider output is not fabricated or retained. Later legitimate model and Skill
+calls use fresh IDs even when their ordinary payloads are identical. For an identical
+payload, a fresh ID creates a new intent only when no active retry-matchable intent or
+prior alias exists; otherwise the Kernel resolves it to the active or previously bound
+intent. `npm run e2e:spend-control` exercises this path fully offline without external
+providers or chain access.
 
 ## 7. Manual-only boundaries
 
@@ -340,9 +347,15 @@ HTTP method, seller, payee, amount, policy, Spend Session, approval ID, payment
 idempotency key, or payment header. Those values come from the active PolicyVersion,
 fixed route map, durable intent, and wallet adapter. Pi must provide a separate
 32-byte `x-agent-call-id`; it grants no spend authority, never reaches the seller, and
-is bound by the Kernel to the exact session, route, method, body, allowlisted headers,
-and purpose. Reusing it for the same completed call cannot pay again; reusing it for a
-different request fails with `CORRELATION_CONFLICT`.
+is bound by the Kernel to the authenticated Agent credential, exact Spend Session,
+route, method, body, allowlisted headers, and purpose. It cannot convey an Approval,
+wallet, payee, amount, policy, payment idempotency key, signature, or payment header.
+Reusing it for the same completed call cannot pay again; reusing it for a different
+request fails with `CORRELATION_CONFLICT`. A later legitimate call, including an
+identical one, must use a fresh key. While an exact fingerprint remains active, a fresh
+key is atomically recorded as its correlation alias before signing rather than creating
+a second intent. Only a fresh unbound key with no active exact fingerprint can create a
+later identical intent.
 
 The policy decision is made before signing and enforces all of these independent
 limits:
@@ -569,9 +582,19 @@ npm run operator -- approvals deny <approval-id> \
   --confirm sha256:<expected-intent-hash> --reason OPERATOR_DENIED --json
 ```
 
+The Agent request that creates the approval returns
+`payment_approval_required` immediately. Do not add `Prefer: wait`, keep that request
+connected, poll the Operator API from Pi, or automatically replay the application
+request. After Operator approval, the Wielder deliberately repeats the exact
+ordinary request, preferably reusing its `x-agent-call-id`. If Pi supplies a fresh call
+ID, the Kernel atomically binds it as a correlation alias to the active exact
+fingerprint before signing, so a same-ID response-loss replay cannot spend twice. Pi
+never sends the approval ID, wallet identity, or payment authority.
+
 Use only IDs and confirmation hashes from a fresh authenticated projection. Approval is
 compare-and-swap, scoped to the exact intent, and bounded by its expiry. An expired
-approval is not renewed or widened; the Agent must submit a fresh ordinary request.
+approval is not renewed or widened; the Agent must submit a fresh ordinary request with
+a fresh call ID.
 
 ### Receipt and session observation
 

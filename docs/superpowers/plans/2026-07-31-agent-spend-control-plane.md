@@ -12,6 +12,16 @@
 `@coinbase/cdp-sdk` 1.54.0, `@x402/core` 2.19.0, `@x402/evm` 2.19.0, viem, Pi
 0.80.6; Base Sepolia and test USDC only.
 
+**Approved protocol amendment (2026-08-02):** Approval is asynchronous at the
+application boundary. The proxy immediately returns `payment_approval_required`; it
+does not hold the request open or poll. If the Operator approves, the Wielder repeats
+the ordinary request, preferably with the retained non-authorizing `x-agent-call-id`.
+A fresh call ID must be atomically aliased to the active exact fingerprint before
+signing. Exactly one same-key automatic retry is allowed only when the local Skill
+fetch throws or reading its response body fails. This amendment supersedes any
+implementation behavior that uses a
+connected approval wait or application-level automatic replay.
+
 ---
 
 ## Scope, ordering, and baseline
@@ -115,7 +125,7 @@ prelaunch contract before it can claim `cdp-testnet` support.
   digest enrollment, revocation, and distinct-identity binding.
 - `spikes/pi-wielder/src/kernel/intent-builder.mjs` — kernel-issued Spend Sessions,
   exact request capture, intent hashing, and retry matching without caller-owned
-  payment headers.
+  payment headers; Agent call IDs are non-authorizing correlation inputs.
 - `spikes/pi-wielder/src/kernel/budget-ledger.mjs` — atomic reserve, commit, release,
   unresolved hold, per-seller/session, full-session, and rolling-24-hour accounting.
 - `spikes/pi-wielder/src/kernel/approval-queue.mjs` — exact one-time approvals,
@@ -2115,10 +2125,18 @@ assert.equal(intents.matchRetry({ sessionId: 'another-session', request }), null
 assert.equal(intents.matchRetry({ sessionId: session.id, request: changedBody }), null);
 ```
 
-Race two initial captures with the same session, normalized ordinary request, and
-purpose. Assert both resolve to the same persisted intent/request ID, exactly one
-`intent.captured` event exists, and no second approval can later be created. A
-different session or fingerprint still creates its own intent.
+Race two initial captures with the same session, correlation ID derived from one
+`x-agent-call-id`, normalized ordinary request, and purpose. Assert both resolve to the
+same persisted intent/request ID, exactly one `intent.captured` event exists, and no
+second approval can later be created. The correlation input grants no authority: a
+different fingerprint in that credential/session scope fails closed, and presenting
+the key through another credential/session cannot access the prior intent. While that
+intent is retry-matchable, repeat the exact request with a fresh call ID and assert the
+same transaction binds the ID as a correlation alias to the existing intent before any
+signing can begin. Same-key replay through that alias returns the existing result. Once
+no matching retryable intent remains, a fresh unbound call ID creates a new intent for
+a later legitimate call even when its ordinary payload is identical; either old bound
+ID continues to resolve to the prior terminal result.
 
 - [ ] **Step 2: Run the focused test and observe the missing module**
 
@@ -2262,8 +2280,11 @@ the full URL or search text. The allowlist is
 exactly `accept`, `content-type`, and `user-agent`; values are trimmed, but order is
 canonicalized. Retry matching recomputes the URL hash. Generate the session ID, intent
 ID, public request ID, correlation identifier fallback, and `wk_` idempotency key
-inside the repository. The request ID is opaque and safe to return to Pi; it is not an
-approval capability and cannot authorize a retry by itself.
+inside the repository. For the production Agent API, the proxy supplies a bounded
+internal correlation ID derived from the authenticated request's canonical
+`x-agent-call-id`; the raw key is not a payment-idempotency key and never reaches a
+seller. The request ID and call ID are opaque and safe to return to or receive from Pi,
+but neither is an approval capability nor can either authorize spending by itself.
 Derive and persist `ordinaryFingerprint` from route ID, canonical method, normalized
 URL, allowlisted-header hash, body hash, and purpose label; it deliberately excludes the
 Kernel-issued request ID and correlation ID. The partial unique index permits at most
@@ -2277,6 +2298,10 @@ late identical follower always resolves to the existing request ID and receives 
 terminal result or `REQUEST_IN_FLIGHT`; it can never create a second signing path.
 Only terminalization after settlement/rejection, a safe unsigned failure/denial, or
 trusted reconciliation may release the fingerprint for a later identical request.
+Before that release, a fresh `x-agent-call-id` for the exact fingerprint is atomically
+recorded as a correlation alias to the active intent, not captured as a second intent.
+After release, a later legitimate request must use a fresh ID with no prior alias;
+reusing any old bound ID continues to resolve to its prior terminal result.
 Derive `intentHash` from:
 
 ```js
@@ -6156,7 +6181,11 @@ GET  /agent/v1/receipts/:receiptId
 The proxy owns one durable Kernel Spend Session for the authenticated Pi identity.
 Assert Pi cannot
 choose a target URL, method, upstream headers, wallet, session ID, approval ID,
-idempotency key, payment header, policy, amount, or payee. Reject unknown route IDs,
+payment idempotency key, payment header, policy, amount, or payee. Require one
+canonical 32-byte `x-agent-call-id` as a correlation/deduplication key and bind it to
+the authenticated Agent credential, Kernel-owned Spend Session, and exact normalized
+request fingerprint. It cannot convey Approval, wallet, payment, or routing authority,
+and it never reaches the seller. Reject unknown route IDs,
 wrong methods/content types, oversized bodies, forbidden headers, URL-like path
 segments, and operator paths.
 
@@ -6209,9 +6238,14 @@ settled-but-undeliverable `execution_unknown` to `502`.
 Both execution outcomes retain the committed-payment receipt. The resource body is the
 byte-bounded upstream output held only in process memory; return only its declared content type and no upstream cookies, authorization,
 or hop-by-hop headers. Never journal that body or return raw signed bytes, approval ID,
-operator identity, provider error, or internal database identifier. An exact ordinary
-retry after approval resolves via the proxy’s durable credential-bound session and request
-fingerprint. Agent receipt/status lookup is restricted to the proxy-owned current
+operator identity, provider error, or internal database identifier. Return
+`payment_approval_required` immediately; never honor `Prefer: wait`, keep the request
+connected, or poll the Operator plane. An exact ordinary request repeated by the
+Wielder after approval resolves via the proxy's durable credential-bound Spend
+Session and request fingerprint. Reusing its prior call ID is preferred. If the repeat
+uses a fresh ID, the Kernel atomically binds it as a correlation alias to that active
+fingerprint before signing; response-loss replay with the new ID is then safe. Agent
+receipt/status lookup is restricted to the proxy-owned current
 Spend Session and uses opaque identifiers.
 
 The OpenAI-compatible route passes through a bounded valid OpenAI response body only
@@ -6370,7 +6404,9 @@ ordinary OpenAI/tool JSON plus `Content-Type` and the local-only
 `Authorization: WalletKernelAgent <token>` loaded from the owner-only credential file;
 the proxy authenticates then strips that header before seller contact. Neither sets any
 forbidden payment, idempotency, approval, session, or wallet header. The extension
-receives only `WALLET_KERNEL_AGENT_CREDENTIAL_FILE`, opens it once with `O_NOFOLLOW`,
+also assigns one canonical `x-agent-call-id` to each logical execution request; the
+proxy consumes that non-authorizing key locally and never forwards it upstream. The
+extension receives only `WALLET_KERNEL_AGENT_CREDENTIAL_FILE`, opens it once with `O_NOFOLLOW`,
 validates the credential file's regular-file/current-owner/`0600` state, parses the closed
 credential from those bounded bytes, and keeps the token in memory. It never validates
 a path and then reopens it.
@@ -6385,10 +6421,23 @@ memory. Contract tests prove a hostile origin cannot
 receive or cause a read of the credential.
 
 Render `payment_approval_required` with seller, amount, purpose, and expiry, then tell
-the Wielder to retry the same tool call after an operator decision. Render denial and
-definite payment failure separately from unresolved reason codes, with a compact
-receipt ID/hash. Never auto-poll, auto-retry, or
-open the operator console.
+the Wielder to repeat the same ordinary tool call after an operator approval, reusing
+its prior call ID when retained. A fresh ID remains valid through the Kernel's atomic
+active-fingerprint aliasing. Return that result immediately: never set a connected-wait
+preference, auto-poll, perform an application-level automatic retry, or open the
+operator console. Render denial and definite payment failure separately from
+unresolved reason codes, with a compact receipt ID/hash.
+
+The Skill tool derives one stable `x-agent-call-id` from the validated Pi `toolCallId`.
+It may perform exactly one automatic same-key replay only when `fetch` throws or
+response-body reading fails. It never retries a received response with an invalid
+content type or malformed JSON, nor a received approval, denial, failure, or other
+application result. The model hook
+generates a fresh key for a new logical model call, retains it across an error until Pi
+reports a terminal outcome, and then rotates it. Every later legitimate Skill or model
+call gets a fresh key even if its ordinary request bytes are identical to an earlier
+terminal call. That key creates a new intent only when no active retry-matchable exact
+fingerprint and no prior binding for the key exists.
 
 Extend `pi-extension-contract.test.mjs` to scan the extension source for all forbidden
 headers and imports, assert the fixed `/agent/v1/openai/` and `/agent/v1/invoke/`
@@ -6596,7 +6645,9 @@ separate children on dynamically assigned loopback ports. Drive and assert:
 ```text
 1. policy-allowed exact payment settles once and returns a verifiable receipt
 2. untrusted seller and over-budget request deny before signer call
-3. approval-needed survives Kernel restart; operator approves; exact Pi retry settles
+3. approval-needed returns immediately and survives Kernel restart; operator approves;
+   a deliberate exact Pi request settles through the active fingerprint, both with its
+   retained call ID and with a fresh ID atomically bound as an alias before signing
 4. operator denial and approval expiry never sign
 5. a changed challenge after approval terminalizes the old approval and never signs it
 6. table-driven settled HTTP 302/404/500 commits spend, opens refund-pending, never follows redirect, and blocks new wallet spend

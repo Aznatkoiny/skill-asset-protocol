@@ -15,9 +15,6 @@ const SHA256 = /^sha256:[0-9a-f]{64}$/;
 const RECEIPT_HASH = /^[0-9a-f]{64}$/;
 const EVM_TRANSACTION = /^0x[0-9a-f]{64}$/;
 const ATOMIC = /^(0|[1-9][0-9]*)$/;
-const APPROVAL_POLL_INTERVAL_MS = 25;
-const MAXIMUM_CONNECTED_APPROVAL_WAIT_MS = 300_000;
-const MAXIMUM_APPROVAL_TRANSITIONS = 8;
 const PUBLIC_OUTCOMES = new Set([
   'completed',
   'upstream_failed',
@@ -62,8 +59,6 @@ const PUBLIC_ERROR_STATUS = Object.freeze({
   CORRELATION_CONFLICT: 409,
   AGENT_RESPONSE_INVALID: 502,
   AGENT_READ_NOT_FOUND: 404,
-  AGENT_REQUEST_ABORTED: 503,
-  AGENT_APPROVAL_WAIT_TIMEOUT: 503,
 });
 
 const DEPENDENCY_FIELDS = Object.freeze([
@@ -205,13 +200,11 @@ function publicError(error) {
     AGENT_BODY_SCHEMA: 'Agent request body must be one valid JSON object',
     AGENT_BODY_TOO_LARGE: 'Agent request body exceeds its byte limit',
     AGENT_CALL_ID_INVALID: 'Agent call ID must be one canonical 32-byte token',
-    AGENT_PREFER_INVALID: 'Agent approval wait preference is invalid',
+    AGENT_PREFER_INVALID: 'Agent approval wait preference is forbidden',
     AGENT_FORBIDDEN_HEADER: 'Agent request contains a forbidden authority header',
     CORRELATION_CONFLICT: 'Agent call ID is already bound to a different request',
     AGENT_RESPONSE_INVALID: 'Upstream response could not be delivered safely',
     AGENT_READ_NOT_FOUND: 'Agent resource was not found',
-    AGENT_REQUEST_ABORTED: 'Agent request ended before approval completed',
-    AGENT_APPROVAL_WAIT_TIMEOUT: 'Agent approval wait reached its safety bound',
     AGENT_INTERNAL: 'Agent request failed',
   }[code];
   return Object.freeze({ code, message });
@@ -318,19 +311,10 @@ function requiredAgentCallId(request) {
   return value;
 }
 
-function requestedApprovalWaitMs(request) {
-  const value = request.headers.get('prefer');
-  if (value === null) return 0;
-  if (!/^wait=(?:[1-9]|[1-9][0-9]|[12][0-9]{2}|300)$/u.test(value)) {
-    fail('AGENT_PREFER_INVALID', 'approval wait preference is malformed or out of bounds');
+function requireNoApprovalWaitPreference(request) {
+  if (request.headers.has('prefer')) {
+    fail('AGENT_PREFER_INVALID', 'approval wait preference is forbidden');
   }
-  const milliseconds = Number(value.slice('wait='.length)) * 1_000;
-  if (!Number.isSafeInteger(milliseconds)
-      || milliseconds < 1_000
-      || milliseconds > MAXIMUM_CONNECTED_APPROVAL_WAIT_MS) {
-    fail('AGENT_PREFER_INVALID', 'approval wait preference is outside its safety bound');
-  }
-  return milliseconds;
 }
 
 function correlationIdForAgentCall(agentCallId) {
@@ -737,26 +721,6 @@ function validOpenAiEventStreamBody(value, maximum) {
   return bytes;
 }
 
-function approvalWaitDelay(milliseconds, signal) {
-  if (signal.aborted) {
-    fail('AGENT_REQUEST_ABORTED', 'agent disconnected during approval wait');
-  }
-  return new Promise((resolve, reject) => {
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(new KernelError(
-        'AGENT_REQUEST_ABORTED',
-        'agent disconnected during approval wait',
-      ));
-    };
-    const timer = setTimeout(() => {
-      signal.removeEventListener('abort', onAbort);
-      resolve();
-    }, milliseconds);
-    signal.addEventListener('abort', onAbort, { once: true });
-  });
-}
-
 export function createSpendControlProxy(value) {
   const dependencies = captureDependencies(value);
   const app = new Hono({ strict: true });
@@ -795,7 +759,7 @@ export function createSpendControlProxy(value) {
     const session = await authorize(context);
     requireNoQueryOrEncoding(context);
     const route = requireRoute(dependencies, context.req.param('routeId'), kind);
-    const approvalWaitMs = requestedApprovalWaitMs(context.req.raw);
+    requireNoApprovalWaitPreference(context.req.raw);
     const headers = forwardHeaders(context.req.raw);
     const agentCallId = requiredAgentCallId(context.req.raw);
     const bodyBytes = await readJsonObjectBody(
@@ -826,22 +790,13 @@ export function createSpendControlProxy(value) {
       }
       return status;
     };
-    const executeExact = async () => {
-      const result = capturedExecutionResult(
-        await dependencies.execute(executionInput()),
-      );
-      canonicalToken(result.requestId, 'Kernel request ID');
-      return Object.freeze({ result, status: await readStatus(result.requestId) });
-    };
-    let { result, status } = await executeExact();
+    const result = capturedExecutionResult(
+      await dependencies.execute(executionInput()),
+    );
+    canonicalToken(result.requestId, 'Kernel request ID');
+    const status = await readStatus(result.requestId);
 
-    const approvalHardDeadline = approvalWaitMs === 0 ? null : Date.now() + approvalWaitMs;
-    let approvalTransitions = 0;
-    while (result.status === 'payment_approval_required') {
-      approvalTransitions += 1;
-      if (approvalTransitions > MAXIMUM_APPROVAL_TRANSITIONS) {
-        fail('AGENT_APPROVAL_WAIT_TIMEOUT', 'approval transition count reached its safety bound');
-      }
+    if (result.status === 'payment_approval_required') {
       if (result.receipt !== null || result.reasonCode !== 'HUMAN_APPROVAL_REQUIRED') {
         fail('AGENT_RESPONSE_INVALID', 'Kernel approval projections disagree');
       }
@@ -850,49 +805,56 @@ export function createSpendControlProxy(value) {
       } catch {
         fail('AGENT_RESPONSE_INVALID', 'Kernel approval result expiry is invalid');
       }
-      const requestId = result.requestId;
       if (status.outcome !== null) {
         if (status.approval !== null || status.receipt === null) {
           fail('AGENT_RESPONSE_INVALID', 'Kernel raced terminal approval projection is invalid');
         }
-      } else {
-        const approval = approvalProjection(status.approval, { allowApproved: true });
-        if (status.receipt !== null || result.expiresAt !== approval.expiresAt) {
-          fail('AGENT_RESPONSE_INVALID', 'Kernel approval projections disagree');
+        const outcome = canonicalPublicOutcome(status.outcome);
+        const projected = projectReceipt(status.receipt, status.remainingSessionAtomic, {
+          sessionId: session.id,
+          route,
+        });
+        if (projected.requestId !== result.requestId
+            || projected.reasonCode !== outcome.reasonCode
+            || projected.revision !== outcome.revision
+            || projected.compact.terminalState !== outcome.status) {
+          fail('AGENT_RESPONSE_INVALID', 'Kernel raced terminal approval projection disagrees');
         }
-        if (approvalWaitMs === 0) {
+        const receipt = projected.compact;
+        if (outcome.status === 'completed') {
           return context.json({
-            status: 'payment_approval_required',
+            status: 'completed_replay',
+            terminalStatus: 'completed',
             requestId: result.requestId,
-            approval: {
-              expiresAt: approval.expiresAt,
-              amountAtomic: approval.amountAtomic,
-              sellerOrigin: new URL(route.upstreamUrl).origin,
-              purposeLabel: route.purposeLabel,
+            reasonCode: outcome.reasonCode,
+            projections: {
+              request: `/agent/v1/intents/${encodeURIComponent(result.requestId)}`,
+              receipt: `/agent/v1/receipts/${encodeURIComponent(receipt.id)}`,
             },
+            receipt,
           }, 409);
         }
-        while (status.approval?.state === 'pending') {
-          const now = Date.now();
-          if (now >= Date.parse(approval.expiresAt)
-              || now >= approvalHardDeadline) break;
-          await approvalWaitDelay(Math.min(
-            APPROVAL_POLL_INTERVAL_MS,
-            Date.parse(approval.expiresAt) - now,
-            approvalHardDeadline - now,
-          ), context.req.raw.signal);
-          status = await readStatus(requestId);
-        }
-        if (Date.now() >= approvalHardDeadline
-            && Date.now() < Date.parse(approval.expiresAt)
-            && status.outcome === null) {
-          fail('AGENT_APPROVAL_WAIT_TIMEOUT', 'connected approval wait reached its bound');
-        }
+        return context.json({
+          status: outcome.status,
+          requestId: result.requestId,
+          reasonCode: outcome.reasonCode,
+          receipt,
+        }, terminalHttpStatus(outcome.status, projected.httpStatus));
       }
-      if (context.req.raw.signal.aborted) {
-        fail('AGENT_REQUEST_ABORTED', 'agent disconnected before approval resume');
+      const approval = approvalProjection(status.approval, { allowApproved: true });
+      if (status.receipt !== null || result.expiresAt !== approval.expiresAt) {
+        fail('AGENT_RESPONSE_INVALID', 'Kernel approval projections disagree');
       }
-      ({ result, status } = await executeExact());
+      return context.json({
+        status: 'payment_approval_required',
+        requestId: result.requestId,
+        approval: {
+          expiresAt: approval.expiresAt,
+          amountAtomic: approval.amountAtomic,
+          sellerOrigin: new URL(route.upstreamUrl).origin,
+          purposeLabel: route.purposeLabel,
+        },
+      }, 409);
     }
 
     if (result.status === 'request_in_flight') {

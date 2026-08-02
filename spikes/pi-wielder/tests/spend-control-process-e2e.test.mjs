@@ -7,7 +7,10 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import test from 'node:test';
 
-import { runSpendControlProcessAcceptance } from '../scripts/lib/spend-control-process-runner.mjs';
+import {
+  runSpendControlProcessAcceptance,
+  SPEND_CONTROL_PROCESS_CHILD_NAMES,
+} from '../scripts/lib/spend-control-process-runner.mjs';
 
 const execFileAsync = promisify(execFile);
 const ROOT = path.resolve(import.meta.dirname, '..');
@@ -35,6 +38,26 @@ const EXPECTED_INVARIANTS = Object.freeze([
   'tighter-policy-requires-guarded-transition',
   'revocation-recovery-and-replacement',
 ]);
+
+const EXPECTED_CHILD_PROCESSES = Object.freeze([
+  'model',
+  'seller',
+  'bootstrap',
+  'control-initial',
+  'control-restarted',
+  'pi-tool-approval-first',
+  'pi-tool-approval-second',
+  'pi-model-approval-first',
+  'pi-model-approval-second',
+  'control-recovery',
+  'bootstrap-replacement',
+  'control-replacement',
+  'control-verifier',
+]);
+
+test('process acceptance tracks both ordinary Pi attempts for each approval path', () => {
+  assert.deepEqual(SPEND_CONTROL_PROCESS_CHILD_NAMES, EXPECTED_CHILD_PROCESSES);
+});
 
 async function supportsLoopbackListener() {
   const server = net.createServer();
@@ -156,11 +179,21 @@ test('real pinned-Pi process acceptance proves all eighteen invariants', async (
     result.evidenceInput.acceptance.invariants.every(({ passed }) => passed === true),
     true,
   );
-  assert.equal(
-    Object.values(result.evidenceInput.acceptance.processExitCodes)
-      .every((code) => code === 0),
-    true,
-  );
+  assert.deepEqual(result.evidenceInput.acceptance.processExitCodes, {
+    model: 0,
+    seller: 0,
+    bootstrap: 0,
+    'control-initial': 0,
+    'control-restarted': 0,
+    'pi-tool-approval-first': 0,
+    'pi-tool-approval-second': 0,
+    'pi-model-approval-first': 1,
+    'pi-model-approval-second': 0,
+    'control-recovery': 0,
+    'bootstrap-replacement': 0,
+    'control-replacement': 0,
+    'control-verifier': 0,
+  });
   assert.equal(new Set(result.evidenceInput.acceptance.transactionIds).size,
     result.evidenceInput.acceptance.transactionIds.length);
   assert.equal(result.evidenceInput.acceptance.rawSettlementTransactionIds.length > 1, true);
@@ -173,14 +206,23 @@ test('real pinned-Pi process acceptance proves all eighteen invariants', async (
   assert.equal(result.evidenceInput.acceptance.piOutputObserved, 'PI_WALLET_OK');
   for (const kind of ['tool', 'model']) {
     assert.deepEqual(result.evidenceInput.acceptance.piApprovalResume[kind], {
-      pendingObserved: true,
-      originalRequestHeld: true,
+      firstAttempt: {
+        pendingObserved: true,
+        exitedBeforeOperatorApproval: true,
+        signerDelta: 0,
+        paidRequestDelta: 0,
+        outputObserved: kind === 'tool' ? 'PI_APPROVAL_REQUIRED' : 'approval-required-error',
+        processExitCode: kind === 'tool' ? 0 : 1,
+      },
       operatorApprovalStatus: 200,
-      signerDelta: 1,
-      paidRequestDelta: 1,
-      duplicatePaymentSignatureDelta: 0,
-      outputObserved: 'PI_WALLET_OK',
-      processExitCode: 0,
+      secondAttempt: {
+        sameRequestFingerprint: true,
+        signerDelta: 1,
+        paidRequestDelta: 1,
+        duplicatePaymentSignatureDelta: 0,
+        outputObserved: 'PI_WALLET_OK',
+        processExitCode: 0,
+      },
     });
   }
   assert.equal(result.evidenceInput.freshVerification.authorityEventChain, true);

@@ -53,6 +53,37 @@ x402 authorizations, injected adapters verify and synthesize settlement, and can
 model responses avoid external APIs. Mock execution is fail-closed and remains the
 default when `MOCK_LLM` is unset.
 
+## Agent approval and call identity
+
+Approval is asynchronous at the Agent boundary. Pi receives
+`payment_approval_required` immediately, and the Operator decides through the separate
+Operator interface. If approved, the Wielder repeats the ordinary request. Neither
+the proxy nor Pi keeps the original HTTP request connected, polls for approval, or
+performs an application-level automatic replay.
+
+Each logical call carries a canonical 32-byte `x-agent-call-id`. It is only a durable
+deduplication/correlation key, scoped beneath the authenticated Agent credential and
+Kernel-owned Spend Session, then bound to the exact request fingerprint. It cannot
+identify or authorize an Approval, wallet, seller, payee, amount, policy, payment
+idempotency key, signature, or payment header, and the proxy never forwards it to the
+seller. The approval continuation repeats the exact ordinary request and preferably
+reuses its call ID when Pi retains it. A fresh continuation ID is also valid: while the
+exact fingerprint remains retry-matchable, the Kernel atomically binds that ID as a
+correlation alias to the active intent before signing. Changing the fingerprint under
+an already bound ID fails closed, while another credential/session cannot use the key
+to access the prior intent.
+
+The only automatic same-key replay is one lower-level retry when the local Skill's
+`fetch` throws or reading the response body fails. This lets a settled response loss
+resolve to the existing receipt instead of spending twice. A received invalid content
+type, malformed JSON, `payment_approval_required`, or any other application result is
+never automatically retried. The model hook retains its call key across an error until
+Pi reports a terminal outcome. Every later legitimate Skill or model call receives a
+fresh key, even when its ordinary payload is identical to an earlier terminal call.
+For an identical payload, that key creates a new intent only when no active
+retry-matchable intent exists and the key has no prior binding or alias; otherwise it
+resolves to the existing intent.
+
 ## Legacy Collar accounting authority
 
 The Collar's append-only Invocation journal is authoritative for hosted Skill
@@ -377,8 +408,8 @@ detail.
 - The proxy trusts an operator-pinned public key file and one SHA-256 key ID of its SPKI
   DER. A key ID or key embedded in a receipt cannot authenticate that receipt.
 - The Pi extension is pinned to Pi `0.80.6`; offline tests import its TypeScript,
-  exercise the real five-argument tool ABI, and pin fixed model/Skill routes plus
-  same-key retry behavior. Installing it into a Pi host remains manual.
+  exercise the real five-argument tool ABI, and pin fixed model/Skill routes plus the
+  single transport-loss same-key retry. Installing it into a Pi host remains manual.
 - Successful mock accounting records synthetic-config provider usage and allocates
   execution COGS and settlement cost before the Royalty pool. It is executable evidence
   of ordering and conservation, not a validated production margin model or current

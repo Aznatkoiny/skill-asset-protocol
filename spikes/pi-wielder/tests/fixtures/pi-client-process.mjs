@@ -9,6 +9,12 @@ const EXTENSION = path.resolve(ROOT, 'pi-extension/x402.ts');
 const TOTAL_DEADLINE_MS = 30_000;
 const TERMINATION_GRACE_MS = 2_000;
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u;
+const PI_PROMPT_MODES = new Set(['tool', 'model']);
+const PI_EXPECTED_OUTPUTS = new Set([
+  'PI_APPROVAL_REQUIRED',
+  'approval-required-error',
+  'PI_WALLET_OK',
+]);
 
 function fail(code) {
   const error = new Error(code);
@@ -135,7 +141,14 @@ async function runPi() {
   canonicalPath(EXTENSION, 'PI_EXTENSION_INVALID', { executable: true });
   const env = childEnvironment();
   const piVersion = exactVersion(env);
-  const scriptedPrompt = 'Use invoke_skill once with input commercial acceptance, then report the final result.';
+  const promptMode = process.env.WALLET_KERNEL_PI_PROMPT_MODE;
+  const expectedOutput = process.env.WALLET_KERNEL_PI_EXPECTED_OUTPUT;
+  if (!PI_PROMPT_MODES.has(promptMode) || !PI_EXPECTED_OUTPUTS.has(expectedOutput)) {
+    fail('PI_EXPECTATION_INVALID');
+  }
+  const scriptedPrompt = promptMode === 'tool'
+    ? 'Use invoke_skill once with input commercial acceptance, then report the final result.'
+    : 'Report PI_WALLET_OK without invoking any tool.';
   const child = spawn(PI_BIN, [
     '-p', scriptedPrompt,
     '--no-session',
@@ -193,25 +206,36 @@ async function runPi() {
   const stdoutBytesValue = Buffer.concat(stdout);
   const stderrBytesValue = Buffer.concat(stderr);
   const output = new TextDecoder('utf-8', { fatal: false }).decode(stdoutBytesValue);
-  const outputObserved = output.includes('PI_WALLET_OK') ? 'PI_WALLET_OK' : 'missing';
-  const success = !deadlineExpired && result.code === 0 && result.signal === null
-    && outputObserved === 'PI_WALLET_OK';
+  const errorOutput = new TextDecoder('utf-8', { fatal: false }).decode(stderrBytesValue);
+  const outputObserved = output.includes('PI_WALLET_OK')
+    ? 'PI_WALLET_OK'
+    : output.includes('PI_APPROVAL_REQUIRED')
+      ? 'PI_APPROVAL_REQUIRED'
+      : /payment_approval_required|Approval required:|\b409 status code\b/u.test(errorOutput)
+        ? 'approval-required-error'
+        : 'missing';
+  const rawExitCode = deadlineExpired ? 124 : (result.code ?? 1);
+  const expectedExitCode = expectedOutput === 'approval-required-error' ? 1 : 0;
+  const expectationMatched = !deadlineExpired && result.signal === null
+    && rawExitCode === expectedExitCode && outputObserved === expectedOutput;
   const message = Object.freeze({
     type: 'result',
-    exitCode: success ? 0 : (deadlineExpired ? 124 : (result.code ?? 1)),
+    exitCode: rawExitCode,
     signal: result.signal,
     piVersion,
     outputObserved,
     stdoutHash: sha256(stdoutBytesValue),
     stderrHash: sha256(stderrBytesValue),
-    failureCode: success ? null : (deadlineExpired ? 'PROCESS_DEADLINE' : 'PI_PROCESS_FAILED'),
+    failureCode: expectationMatched
+      ? null
+      : (deadlineExpired ? 'PROCESS_DEADLINE' : 'PI_PROCESS_FAILED'),
   });
   stdoutBytesValue.fill(0);
   stderrBytesValue.fill(0);
   for (const chunk of stdout) chunk.fill(0);
   for (const chunk of stderr) chunk.fill(0);
   if (typeof process.send === 'function') process.send(message);
-  if (!success) process.stderr.write(`${message.failureCode}\n`);
+  if (!expectationMatched) process.stderr.write(`${message.failureCode}\n`);
   process.exitCode = message.exitCode;
   if (typeof process.disconnect === 'function' && process.connected) process.disconnect();
 }

@@ -1982,16 +1982,10 @@ export function createWalletKernel(value) {
       purposeLabel: invocation.purposeLabel,
       correlationId: invocation.correlationId,
     };
-    const matchedIntentId = intents.matchRetry({
+    const intent = await runMutation(() => intents.captureIntent({
       sessionId: invocation.sessionId,
-      request: intentRequest,
-    });
-    const intent = matchedIntentId === null
-      ? await runMutation(() => intents.captureIntent({
-        sessionId: invocation.sessionId,
-        ...intentRequest,
-      }))
-      : intents.getIntent(matchedIntentId);
+      ...intentRequest,
+    }));
     if (intent.state === 'terminal') {
       const existing = persistedResult(intent);
       if (existing === null) {

@@ -1444,6 +1444,95 @@ test('Slice B RED: approved exact retry freshly probes then consumes approval wi
   assert.equal(context.receipts.assertParity(), true);
 });
 
+test('approved fresh-call retry is durably aliased before settlement replay', async (t) => {
+  const challenge = paymentRequired('50000');
+  const paymentPayload = signedPaymentPayload(challenge);
+  let probes = 0;
+  let signerCalls = 0;
+  let paidRetries = 0;
+  const context = setupKernel(t, {
+    autoApproveAtomic: '10000',
+    walletAdapter: Object.freeze({
+      async walletIdentity() {
+        return { provider: 'deterministic', walletId: 'wallet-1', address: WALLET, network: NETWORK };
+      },
+      async signX402Exact() {
+        signerCalls += 1;
+        return { paymentPayload };
+      },
+    }),
+    transport: Object.freeze({
+      async probe() {
+        probes += 1;
+        return { kind: 'payment_required', paymentRequired: challenge };
+      },
+      encodePayment() { return 'fixture-payment-header'; },
+      async retryPaid({ binding }) {
+        paidRetries += 1;
+        return Object.freeze({
+          kind: 'settled_response',
+          settlement: Object.freeze({
+            source: 'x402-payment-response',
+            headerHash: sha256(Buffer.from('fresh-call-payment-response', 'ascii')),
+            success: true,
+            transaction: `0x${'ce'.repeat(32)}`,
+            network: NETWORK,
+            payer: WALLET,
+            amountAtomic: '50000',
+            paymentHash: binding.paymentHash,
+          }),
+          status: 200,
+          body: Buffer.from('{"output":"paid"}'),
+          executionState: 'succeeded',
+        });
+      },
+    }),
+  });
+  const session = await context.kernel.openOrResumeSession({
+    agentInstanceId: DESCRIPTOR.agentInstanceId,
+    walletAddress: WALLET,
+    policyVersionId: context.activePolicy.id,
+  });
+  const callA = {
+    sessionId: session.id,
+    routeId: 'paid-infer',
+    request: ordinaryRequest('approved-fresh-call-replay'),
+    purposeLabel: 'skill.invoke',
+    correlationId: 'pi-call-approved-alias-a',
+  };
+  const pending = await context.kernel.execute(callA);
+  const approval = context.store.readOne('SELECT id, intent_hash FROM approvals');
+  await context.kernel.approvePending({
+    approvalId: approval.id,
+    expectedIntentHash: approval.intent_hash,
+    operatorIdHash: OPERATOR_HASH,
+  });
+
+  const callB = { ...callA, correlationId: 'pi-call-approved-alias-b' };
+  const completed = await context.kernel.execute(callB);
+  const eventsAfterSettlement = context.store.events().length;
+  const replay = await context.kernel.execute(callB);
+
+  assert.equal(completed.requestId, pending.requestId);
+  assert.equal(completed.status, 'completed');
+  assert.deepEqual(Object.keys(replay), ['requestId', 'status', 'reasonCode', 'receipt']);
+  assert.equal(replay.requestId, completed.requestId);
+  assert.equal(replay.status, completed.status);
+  assert.equal(replay.reasonCode, completed.reasonCode);
+  assert.equal(replay.receipt.receiptHash, completed.receipt.receiptHash);
+  assert.equal(probes, 2);
+  assert.equal(signerCalls, 1);
+  assert.equal(paidRetries, 1);
+  assert.equal(context.store.events().length, eventsAfterSettlement);
+  assert.equal(context.store.readAll('SELECT * FROM spend_intents').length, 1);
+  assert.equal(context.store.events().filter(
+    (event) => event.event_type === 'intent.correlation_bound',
+  ).length, 1);
+  assert.equal(context.store.readAll('SELECT * FROM payment_attempts').length, 1);
+  assert.equal(context.store.readAll('SELECT * FROM signed_receipts').length, 1);
+  assert.equal(context.receipts.assertParity(), true);
+});
+
 test('Slice C RED: exact branded pre-signer rejection releases the claimed reservation', async (t) => {
   const challenge = paymentRequired('50000');
   let retryCalls = 0;

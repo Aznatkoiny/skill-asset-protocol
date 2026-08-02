@@ -89,7 +89,32 @@ function chunk(id, delta, finishReason = null) {
   });
 }
 
-function sendStreaming(response, ordinal) {
+function messageText(message) {
+  if (!message || typeof message !== 'object') return '';
+  if (typeof message.content === 'string') return message.content;
+  if (!Array.isArray(message.content)) return '';
+  return message.content
+    .map((part) => (part && typeof part === 'object' && typeof part.text === 'string'
+      ? part.text
+      : ''))
+    .join('');
+}
+
+function responseKind(messages) {
+  const toolText = messages
+    .filter((message) => message?.role === 'tool')
+    .map(messageText)
+    .join('\n');
+  if (toolText.includes('Approval required:')) return 'approval-required';
+  if (toolText.length > 0) return 'completed';
+  const userText = messages
+    .filter((message) => message?.role === 'user')
+    .map(messageText)
+    .join('\n');
+  return userText.includes('without invoking any tool') ? 'model-only' : 'tool-call';
+}
+
+function sendStreaming(response, ordinal, kind) {
   const id = `chatcmpl-wallet-kernel-${ordinal}`;
   response.writeHead(200, {
     'cache-control': 'no-store',
@@ -97,7 +122,7 @@ function sendStreaming(response, ordinal) {
     'content-type': 'text/event-stream; charset=utf-8',
     'x-content-type-options': 'nosniff',
   });
-  if (ordinal === 1) {
+  if (kind === 'tool-call') {
     response.write(`data: ${chunk(id, {
       role: 'assistant',
       tool_calls: [{
@@ -112,7 +137,10 @@ function sendStreaming(response, ordinal) {
     })}\n\n`);
     response.write(`data: ${chunk(id, {}, 'tool_calls')}\n\n`);
   } else {
-    response.write(`data: ${chunk(id, { role: 'assistant', content: 'PI_WALLET_OK' })}\n\n`);
+    const content = kind === 'approval-required'
+      ? 'PI_APPROVAL_REQUIRED'
+      : 'PI_WALLET_OK';
+    response.write(`data: ${chunk(id, { role: 'assistant', content })}\n\n`);
     response.write(`data: ${chunk(id, {}, 'stop')}\n\n`);
   }
   response.end('data: [DONE]\n\n');
@@ -160,7 +188,7 @@ const server = http.createServer(async (request, response) => {
       toolResultObserved: state.toolResultObserved || toolResultObserved,
     });
     persistState();
-    sendStreaming(response, ordinal);
+    sendStreaming(response, ordinal, responseKind(parsed.messages));
   } catch (error) {
     sendJson(response, error?.code === 'FIXTURE_BODY_TOO_LARGE' ? 413 : 400, {
       error: { code: typeof error?.code === 'string' ? error.code : 'MODEL_REQUEST_FAILED' },

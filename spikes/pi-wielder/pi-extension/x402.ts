@@ -21,7 +21,6 @@ const DEFAULT_SKILL_ROUTE = "example-skill";
 const MAXIMUM_CREDENTIAL_BYTES = 256;
 const MAXIMUM_TOOL_INPUT_BYTES = 262_144;
 const MAXIMUM_RESPONSE_BYTES = 1_048_576;
-const APPROVAL_WAIT_PREFERENCE = "wait=300";
 const TOKEN_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const INSTANCE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{21}$/;
 const CREDENTIAL_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
@@ -452,7 +451,12 @@ async function readBoundedOutcome(response: Response): Promise<unknown> {
   if (!/^application\/json(?:;[ \t]*charset=[A-Za-z0-9._-]+)?$/i.test(contentType)) {
     fail("PI_KERNEL_RESPONSE_INVALID", "Wallet Kernel response is not JSON");
   }
-  const text = await response.text();
+  let text: string;
+  try {
+    text = await response.text();
+  } catch {
+    fail("PI_KERNEL_RESPONSE_READ_FAILED", "Wallet Kernel response body could not be read");
+  }
   if (Buffer.byteLength(text, "utf8") > MAXIMUM_RESPONSE_BYTES) {
     fail("PI_KERNEL_RESPONSE_INVALID", "Wallet Kernel response is oversized");
   }
@@ -508,6 +512,12 @@ function replaceHeader(
   headers[name] = value;
 }
 
+function removeHeader(headers: Record<string, string | null>, name: string) {
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === name) delete headers[key];
+  }
+}
+
 function throwIfAborted(signal: AbortSignal | undefined) {
   if (signal?.aborted) {
     throw new DOMException("Wallet Kernel call aborted", "AbortError");
@@ -535,7 +545,6 @@ export default function activate(
   const headers = Object.freeze({
     Authorization: `WalletKernelAgent ${config.credential.token}`,
     "Content-Type": "application/json",
-    Prefer: APPROVAL_WAIT_PREFERENCE,
   });
   const walletAuthorization = headers.Authorization;
   let pendingModelCallId: string | null = null;
@@ -543,7 +552,7 @@ export default function activate(
   pi.on("before_provider_headers", (event) => {
     if (exactHeader(event.headers, "authorization") !== walletAuthorization) return;
     pendingModelCallId ??= randomAgentCallId();
-    replaceHeader(event.headers, "Prefer", APPROVAL_WAIT_PREFERENCE);
+    removeHeader(event.headers, "prefer");
     replaceHeader(event.headers, "x-agent-call-id", pendingModelCallId);
   });
   pi.on("message_end", (event) => {
@@ -616,8 +625,9 @@ export default function activate(
       });
       for (let attempt = 0; attempt < 2; attempt += 1) {
         throwIfAborted(signal);
+        let response: Response;
         try {
-          const response = await fetchFn(
+          response = await fetchFn(
             `${config.origin}/agent/v1/invoke/${config.skillRoute}`,
             {
               method: "POST",
@@ -626,9 +636,24 @@ export default function activate(
               signal,
             },
           );
+        } catch {
+          throwIfAborted(signal);
+          if (attempt === 1) {
+            return agentToolText(
+              "Wallet Kernel unavailable after one same-key retry.",
+              "unavailable",
+            );
+          }
+          continue;
+        }
+        try {
           const outcome = await readBoundedOutcome(response);
           return agentToolText(renderWalletKernelOutcome(outcome), "returned");
-        } catch {
+        } catch (error) {
+          if (!(error instanceof PiBoundaryError)
+              || error.code !== "PI_KERNEL_RESPONSE_READ_FAILED") {
+            throw error;
+          }
           throwIfAborted(signal);
           if (attempt === 1) {
             return agentToolText(

@@ -274,7 +274,6 @@ test('activation registers one fixed provider and one fixed Skill route with onl
   assert.deepEqual(providers[0].config.headers, {
     Authorization: `WalletKernelAgent ${TOKEN}`,
     'Content-Type': 'application/json',
-    Prefer: 'wait=300',
   });
   assert.equal(providers[0].config.models.length, 1);
   assert.equal(providers[0].config.models[0].id, 'scripted-local');
@@ -304,7 +303,6 @@ test('activation registers one fixed provider and one fixed Skill route with onl
   assert.deepEqual(requests[0].options.headers, {
     Authorization: `WalletKernelAgent ${TOKEN}`,
     'Content-Type': 'application/json',
-    Prefer: 'wait=300',
     'x-agent-call-id': toolAgentCallId(toolCallId),
   });
   assert.equal(requests[0].options.signal, controller.signal);
@@ -329,14 +327,17 @@ test('model request keys survive transient retry and rotate only on success or f
 
   const providerHeaders = () => ({
     type: 'before_provider_headers',
-    headers: { Authorization: `WalletKernelAgent ${TOKEN}` },
+    headers: {
+      Authorization: `WalletKernelAgent ${TOKEN}`,
+      Prefer: 'wait=999',
+    },
   });
   const first = providerHeaders();
   handlers.get('before_provider_headers')(first, Object.freeze({}));
   const firstId = first.headers['x-agent-call-id'];
   assert.match(firstId, /^[A-Za-z0-9_-]{43}$/u);
   assert.equal(Buffer.from(firstId, 'base64url').length, 32);
-  assert.equal(first.headers.Prefer, 'wait=300');
+  assert.equal(Object.hasOwn(first.headers, 'Prefer'), false);
 
   handlers.get('message_end')({
     type: 'message_end',
@@ -491,6 +492,169 @@ test('one controlled tool retry reuses its call key and renders terminal replay 
     }],
     details: { boundaryStatus: 'returned' },
   });
+});
+
+test('returned invalid Kernel content is never retried as a transport loss', async (t) => {
+  for (const fixture of [
+    {
+      label: 'invalid content type',
+      response: () => new Response('not-json', {
+        status: 502,
+        headers: { 'content-type': 'text/plain' },
+      }),
+    },
+    {
+      label: 'malformed JSON',
+      response: () => new Response('not-json', {
+        status: 502,
+        headers: { 'content-type': 'application/json' },
+      }),
+    },
+  ]) {
+    await t.test(fixture.label, async (st) => {
+      const credentialPath = temporaryCredential(st);
+      const tools = [];
+      let fetchCalls = 0;
+      activate({
+        registerProvider() {},
+        registerTool(tool) { tools.push(tool); },
+        on() {},
+      }, {
+        env: environment(credentialPath),
+        fetchFn: async () => {
+          fetchCalls += 1;
+          return fixture.response();
+        },
+      });
+
+      await assert.rejects(
+        tools[0].execute(
+          `call_invalid_kernel_response_${fetchCalls}`,
+          { input: 'ordinary input' },
+          undefined,
+          undefined,
+          Object.freeze({}),
+        ),
+        (error) => error?.code === 'PI_KERNEL_RESPONSE_INVALID',
+      );
+      assert.equal(fetchCalls, 1);
+    });
+  }
+});
+
+test('a Kernel response-body transport loss receives one same-key retry', async (t) => {
+  const credentialPath = temporaryCredential(t);
+  const tools = [];
+  const requests = [];
+  const replay = {
+    status: 'completed_replay',
+    terminalStatus: 'completed',
+    requestId: 'request_public_1',
+    reasonCode: 'PAYMENT_SETTLED',
+    projections: {
+      request: '/agent/v1/intents/request_public_1',
+      receipt: '/agent/v1/receipts/receipt_public_1',
+    },
+    receipt: receipt(),
+  };
+  activate({
+    registerProvider() {},
+    registerTool(tool) { tools.push(tool); },
+    on() {},
+  }, {
+    env: environment(credentialPath),
+    fetchFn: async (url, options) => {
+      requests.push({ url, options });
+      if (requests.length === 1) {
+        return {
+          headers: new Headers({ 'content-type': 'application/json' }),
+          async text() { throw new TypeError('simulated body transport loss'); },
+        };
+      }
+      return new Response(JSON.stringify(replay), {
+        status: 409,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+
+  const output = await tools[0].execute(
+    'call_paid_body_lost',
+    { input: 'ordinary input' },
+    undefined,
+    undefined,
+    Object.freeze({}),
+  );
+
+  assert.equal(requests.length, 2);
+  assert.equal(
+    requests[0].options.headers['x-agent-call-id'],
+    requests[1].options.headers['x-agent-call-id'],
+  );
+  assert.deepEqual(output.details, { boundaryStatus: 'returned' });
+  assert.match(output.content[0].text, /^Completed replay:/u);
+});
+
+test('application approval and denial responses never trigger a Skill transport retry', async (t) => {
+  for (const fixture of [
+    {
+      label: 'approval',
+      httpStatus: 409,
+      outcome: {
+        status: 'payment_approval_required',
+        requestId: 'request_public_1',
+        approval: {
+          expiresAt: '2026-08-01T12:00:00.000Z',
+          amountAtomic: '1200',
+          sellerOrigin: 'https://seller.example',
+          purposeLabel: 'skill.invoke',
+        },
+      },
+      output: /^Approval required:/u,
+    },
+    {
+      label: 'denial',
+      httpStatus: 403,
+      outcome: {
+        status: 'payment_denied',
+        requestId: 'request_public_1',
+        reasonCode: 'OPERATOR_DENIED',
+        receipt: receipt(),
+      },
+      output: /^Payment denied:/u,
+    },
+  ]) {
+    await t.test(fixture.label, async (st) => {
+      const credentialPath = temporaryCredential(st);
+      const tools = [];
+      let fetchCalls = 0;
+      activate({
+        registerProvider() {},
+        registerTool(tool) { tools.push(tool); },
+        on() {},
+      }, {
+        env: environment(credentialPath),
+        fetchFn: async () => {
+          fetchCalls += 1;
+          return new Response(JSON.stringify(fixture.outcome), {
+            status: fixture.httpStatus,
+            headers: { 'content-type': 'application/json' },
+          });
+        },
+      });
+
+      const output = await tools[0].execute(
+        `call_application_${fixture.label}`,
+        { input: 'ordinary input' },
+        undefined,
+        undefined,
+        Object.freeze({}),
+      );
+      assert.equal(fetchCalls, 1);
+      assert.deepEqual(output.details, { boundaryStatus: 'returned' });
+      assert.match(output.content[0].text, fixture.output);
+    });
+  }
 });
 
 test('stable outcome rendering separates approval, denial, expiry, failure, refund, and uncertainty', () => {

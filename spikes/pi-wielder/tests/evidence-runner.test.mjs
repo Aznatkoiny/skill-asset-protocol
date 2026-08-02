@@ -35,9 +35,14 @@ const INVARIANT_IDS = Object.freeze([
 ]);
 const CHILD_NAMES = Object.freeze([
   'model', 'seller', 'bootstrap', 'control-initial', 'control-restarted',
-  'pi-tool-approval', 'pi-model-approval', 'control-recovery',
+  'pi-tool-approval-first', 'pi-tool-approval-second',
+  'pi-model-approval-first', 'pi-model-approval-second', 'control-recovery',
   'bootstrap-replacement', 'control-replacement', 'control-verifier',
 ]);
+
+const EXPECTED_PROCESS_EXIT_CODES = Object.freeze(Object.fromEntries(
+  CHILD_NAMES.map((name) => [name, name === 'pi-model-approval-first' ? 1 : 0]),
+));
 
 function temporaryDirectory(t) {
   const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'evidence-runner-')));
@@ -83,18 +88,29 @@ function acceptanceResult(sequence, anchorOutput) {
           passed: true,
           evidenceHash: sha256(`accepted:${id}`),
         })),
-        processExitCodes: Object.fromEntries(CHILD_NAMES.map((name) => [name, 0])),
+        processExitCodes: { ...EXPECTED_PROCESS_EXIT_CODES },
         transactionIds: [`0x${'ab'.repeat(32)}`],
         rawSettlementTransactionIds: [`0x${'ab'.repeat(32)}`],
         piApprovalResume: Object.fromEntries(['tool', 'model'].map((kind) => [kind, {
-          pendingObserved: true,
-          originalRequestHeld: true,
+          firstAttempt: {
+            pendingObserved: true,
+            exitedBeforeOperatorApproval: true,
+            signerDelta: 0,
+            paidRequestDelta: 0,
+            outputObserved: kind === 'tool'
+              ? 'PI_APPROVAL_REQUIRED'
+              : 'approval-required-error',
+            processExitCode: kind === 'tool' ? 0 : 1,
+          },
           operatorApprovalStatus: 200,
-          signerDelta: 1,
-          paidRequestDelta: 1,
-          duplicatePaymentSignatureDelta: 0,
-          outputObserved: 'PI_WALLET_OK',
-          processExitCode: 0,
+          secondAttempt: {
+            sameRequestFingerprint: true,
+            signerDelta: 1,
+            paidRequestDelta: 1,
+            duplicatePaymentSignatureDelta: 0,
+            outputObserved: 'PI_WALLET_OK',
+            processExitCode: 0,
+          },
         }])),
       },
       sessionProjections: [signedProjection],
@@ -299,6 +315,7 @@ test('offline evidence rejects a diluted self-consistent acceptance result', asy
 test('offline evidence rejects nonzero or incomplete child-process authority before build', async (t) => {
   for (const mutate of [
     (result) => { result.evidenceInput.acceptance.processExitCodes.seller = 1; },
+    (result) => { result.evidenceInput.acceptance.processExitCodes['pi-model-approval-first'] = 0; },
     (result) => { delete result.evidenceInput.acceptance.processExitCodes['control-verifier']; },
   ]) {
     const parent = temporaryDirectory(t);
@@ -350,7 +367,11 @@ test('offline evidence rejects missing or altered pinned Pi approval proof befor
   const mutations = [
     (result) => { delete result.evidenceInput.acceptance.piApprovalResume.model; },
     (result) => {
-      result.evidenceInput.acceptance.piApprovalResume.tool.originalRequestHeld = false;
+      result.evidenceInput.acceptance.piApprovalResume.tool.firstAttempt.signerDelta = 1;
+    },
+    (result) => {
+      result.evidenceInput.acceptance.piApprovalResume.model.secondAttempt.sameRequestFingerprint
+        = false;
     },
   ];
   for (const mutate of mutations) {

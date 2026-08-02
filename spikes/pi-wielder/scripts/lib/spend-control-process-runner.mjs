@@ -61,13 +61,21 @@ export const SPEND_CONTROL_PROCESS_CHILD_NAMES = Object.freeze([
   'bootstrap',
   'control-initial',
   'control-restarted',
-  'pi-tool-approval',
-  'pi-model-approval',
+  'pi-tool-approval-first',
+  'pi-tool-approval-second',
+  'pi-model-approval-first',
+  'pi-model-approval-second',
   'control-recovery',
   'bootstrap-replacement',
   'control-replacement',
   'control-verifier',
 ]);
+export const SPEND_CONTROL_PROCESS_EXPECTED_EXIT_CODES = Object.freeze(Object.fromEntries(
+  SPEND_CONTROL_PROCESS_CHILD_NAMES.map((name) => Object.freeze([
+    name,
+    name === 'pi-model-approval-first' ? 1 : 0,
+  ])),
+));
 
 const buyerAccount = privateKeyToAccount(
   keccak256(toBytes('wallet-kernel-deterministic-adapter-test-only')),
@@ -1637,40 +1645,71 @@ export async function runSpendControlProcessAcceptance({
       name,
       modelRoute,
       skillRoute,
-      modelRequestsBeforeApproval,
-      modelRequestsAfterCompletion,
+      promptMode,
+      expectedFirstExitCode,
+      expectedFirstOutput,
+      modelRequestsFirstAttempt,
+      modelRequestsSecondAttempt,
     }) => {
       const baseline = await processOverview();
       const knownApprovalIds = new Set(
         (baseline.data?.approvals ?? []).map(({ approvalId }) => approvalId),
       );
+      const knownIntentHashes = new Set(
+        (baseline.projection?.intents ?? []).map(({ intentHash }) => intentHash),
+      );
       const beforeSigner = signerCount(kernelStatePath);
       const beforeSeller = sellerState(sellerStatePath);
       const beforeModel = modelState(modelStatePath);
-      const pi = start({
-        name,
-        nodeExecutable: node,
-        script: PI_PROCESS,
-        env: childEnvironment(node, PRELOAD, egressLogs[name], {
-          WALLET_KERNEL_FIXTURE_PI_DIRECTORY: piDirectory,
-          WALLET_KERNEL_AGENT_CREDENTIAL_FILE: credentialPath,
-          WALLET_KERNEL_FIXTURE_PRELOAD: PRELOAD,
-          WALLET_KERNEL_ORIGIN: running.ready.agentOrigin,
-          WALLET_KERNEL_PROVIDER_NAME: 'wallet-kernel-e2e',
-          WALLET_KERNEL_MODEL_NAME: 'scripted-local',
-          WALLET_KERNEL_MODEL_ROUTE: modelRoute,
-          WALLET_KERNEL_SKILL_ROUTE: skillRoute,
-        }),
-      });
-      let exited = false;
-      void pi.exited.then(() => { exited = true; });
+      const startPiAttempt = (attempt, expectedOutput) => {
+        const childName = `${name}-${attempt}`;
+        return start({
+          name: childName,
+          nodeExecutable: node,
+          script: PI_PROCESS,
+          env: childEnvironment(node, PRELOAD, egressLogs[childName], {
+            WALLET_KERNEL_FIXTURE_PI_DIRECTORY: piDirectory,
+            WALLET_KERNEL_AGENT_CREDENTIAL_FILE: credentialPath,
+            WALLET_KERNEL_FIXTURE_PRELOAD: PRELOAD,
+            WALLET_KERNEL_ORIGIN: running.ready.agentOrigin,
+            WALLET_KERNEL_PROVIDER_NAME: 'wallet-kernel-e2e',
+            WALLET_KERNEL_MODEL_NAME: 'scripted-local',
+            WALLET_KERNEL_MODEL_ROUTE: modelRoute,
+            WALLET_KERNEL_SKILL_ROUTE: skillRoute,
+            WALLET_KERNEL_PI_PROMPT_MODE: promptMode,
+            WALLET_KERNEL_PI_EXPECTED_OUTPUT: expectedOutput,
+          }),
+        });
+      };
+      const firstPi = startPiAttempt('first', expectedFirstOutput);
+      let firstResult;
+      try {
+        firstResult = await firstPi.waitMessage((message) => message.type === 'result');
+      } catch {
+        firstResult = Object.freeze({
+          exitCode: 1,
+          piVersion: '0.80.6',
+          outputObserved: 'missing',
+        });
+      }
+      const firstExit = await firstPi.waitExit();
+      processExitCodes[`${name}-first`] = firstExit.code;
       const observed = await waitForFreshPendingApproval(knownApprovalIds);
-      await delay(150);
-      const modelWhilePending = modelState(modelStatePath);
-      const originalRequestHeld = observed.pending !== null
-        && exited === false
-        && modelWhilePending.requestCount
-          === beforeModel.requestCount + modelRequestsBeforeApproval;
+      const overviewAfterFirst = observed.overview ?? await processOverview();
+      const afterFirstSigner = signerCount(kernelStatePath);
+      const afterFirstSeller = sellerState(sellerStatePath);
+      const afterFirstModel = modelState(modelStatePath);
+      const firstIntent = (overviewAfterFirst.projection?.intents ?? []).find(
+        ({ intentHash }) => intentHash === observed.pending?.intentHash,
+      ) ?? null;
+      const firstAttempt = Object.freeze({
+        pendingObserved: observed.pending !== null,
+        exitedBeforeOperatorApproval: firstExit.code === expectedFirstExitCode,
+        signerDelta: afterFirstSigner - beforeSigner,
+        paidRequestDelta: afterFirstSeller.paidRequestCount - beforeSeller.paidRequestCount,
+        outputObserved: firstResult.outputObserved ?? 'missing',
+        processExitCode: firstExit.code,
+      });
       let operatorApprovalStatus = 0;
       if (observed.pending !== null) {
         const approved = await operatorRequest(
@@ -1684,36 +1723,54 @@ export async function runSpendControlProcessAcceptance({
         );
         operatorApprovalStatus = approved.status;
       }
-      let result;
+      const secondPi = startPiAttempt('second', 'PI_WALLET_OK');
+      let secondResult;
       try {
-        result = await pi.waitMessage((message) => message.type === 'result');
+        secondResult = await secondPi.waitMessage((message) => message.type === 'result');
       } catch {
-        result = Object.freeze({
+        secondResult = Object.freeze({
           exitCode: 1,
           piVersion: '0.80.6',
           outputObserved: 'missing',
         });
       }
-      const exit = await pi.waitExit();
-      processExitCodes[name] = exit.code;
+      const secondExit = await secondPi.waitExit();
+      processExitCodes[`${name}-second`] = secondExit.code;
+      const overviewAfterSecond = await processOverview();
       const afterSeller = sellerState(sellerStatePath);
       const afterModel = modelState(modelStatePath);
+      const matchingIntent = (overviewAfterSecond.projection?.intents ?? []).find(
+        ({ intentHash }) => intentHash === firstIntent?.intentHash,
+      ) ?? null;
+      const retryRouteIntentCount = (overviewAfterSecond.projection?.intents ?? []).filter(
+        ({ intentHash, routeHash }) => !knownIntentHashes.has(intentHash)
+          && routeHash === firstIntent?.routeHash,
+      ).length;
       const publicResult = Object.freeze({
-        pendingObserved: observed.pending !== null,
-        originalRequestHeld,
+        firstAttempt,
         operatorApprovalStatus,
-        signerDelta: signerCount(kernelStatePath) - beforeSigner,
-        paidRequestDelta: afterSeller.paidRequestCount - beforeSeller.paidRequestCount,
-        duplicatePaymentSignatureDelta: afterSeller.duplicatePaymentSignatureCount
-          - beforeSeller.duplicatePaymentSignatureCount,
-        outputObserved: result.outputObserved ?? 'missing',
-        processExitCode: exit.code,
+        secondAttempt: Object.freeze({
+          sameRequestFingerprint: firstIntent !== null
+            && firstIntent.intentHash === observed.pending?.intentHash
+            && matchingIntent !== null
+            && matchingIntent.outcome?.status === 'completed'
+            && retryRouteIntentCount === 1,
+          signerDelta: signerCount(kernelStatePath) - afterFirstSigner,
+          paidRequestDelta: afterSeller.paidRequestCount - afterFirstSeller.paidRequestCount,
+          duplicatePaymentSignatureDelta: afterSeller.duplicatePaymentSignatureCount
+            - afterFirstSeller.duplicatePaymentSignatureCount,
+          outputObserved: secondResult.outputObserved ?? 'missing',
+          processExitCode: secondExit.code,
+        }),
       });
       return Object.freeze({
         publicResult,
-        modelRequestDelta: afterModel.requestCount - beforeModel.requestCount,
-        expectedModelRequestDelta: modelRequestsAfterCompletion,
-        result,
+        firstModelRequestDelta: afterFirstModel.requestCount - beforeModel.requestCount,
+        secondModelRequestDelta: afterModel.requestCount - afterFirstModel.requestCount,
+        modelRequestsFirstAttempt,
+        modelRequestsSecondAttempt,
+        firstResult,
+        secondResult,
       });
     };
 
@@ -1721,30 +1778,44 @@ export async function runSpendControlProcessAcceptance({
       name: 'pi-tool-approval',
       modelRoute: 'free-model',
       skillRoute: 'approval',
-      modelRequestsBeforeApproval: 1,
-      modelRequestsAfterCompletion: 2,
+      promptMode: 'tool',
+      expectedFirstExitCode: 0,
+      expectedFirstOutput: 'PI_APPROVAL_REQUIRED',
+      modelRequestsFirstAttempt: 2,
+      modelRequestsSecondAttempt: 2,
     });
     const piModelApproval = await runPinnedPiApproval({
       name: 'pi-model-approval',
       modelRoute: 'approval-model',
       skillRoute: 'example-skill',
-      modelRequestsBeforeApproval: 0,
-      modelRequestsAfterCompletion: 1,
+      promptMode: 'model',
+      expectedFirstExitCode: 1,
+      expectedFirstOutput: 'approval-required-error',
+      modelRequestsFirstAttempt: 0,
+      modelRequestsSecondAttempt: 1,
     });
     piApprovalResume = Object.freeze({
       tool: piToolApproval.publicResult,
       model: piModelApproval.publicResult,
     });
     const piApprovalProved = [piToolApproval, piModelApproval].every((entry) => (
-      entry.publicResult.pendingObserved === true
-        && entry.publicResult.originalRequestHeld === true
+      entry.publicResult.firstAttempt.pendingObserved === true
+        && entry.publicResult.firstAttempt.exitedBeforeOperatorApproval === true
+        && entry.publicResult.firstAttempt.signerDelta === 0
+        && entry.publicResult.firstAttempt.paidRequestDelta === 0
+        && entry.publicResult.firstAttempt.outputObserved
+          === (entry === piToolApproval ? 'PI_APPROVAL_REQUIRED' : 'approval-required-error')
+        && entry.publicResult.firstAttempt.processExitCode
+          === (entry === piToolApproval ? 0 : 1)
         && entry.publicResult.operatorApprovalStatus === 200
-        && entry.publicResult.signerDelta === 1
-        && entry.publicResult.paidRequestDelta === 1
-        && entry.publicResult.duplicatePaymentSignatureDelta === 0
-        && entry.publicResult.outputObserved === 'PI_WALLET_OK'
-        && entry.publicResult.processExitCode === 0
-        && entry.modelRequestDelta === entry.expectedModelRequestDelta
+        && entry.publicResult.secondAttempt.sameRequestFingerprint === true
+        && entry.publicResult.secondAttempt.signerDelta === 1
+        && entry.publicResult.secondAttempt.paidRequestDelta === 1
+        && entry.publicResult.secondAttempt.duplicatePaymentSignatureDelta === 0
+        && entry.publicResult.secondAttempt.outputObserved === 'PI_WALLET_OK'
+        && entry.publicResult.secondAttempt.processExitCode === 0
+        && entry.firstModelRequestDelta === entry.modelRequestsFirstAttempt
+        && entry.secondModelRequestDelta === entry.modelRequestsSecondAttempt
     ));
     const approvalObservation = observations.get('approval-survives-restart');
     recordObservation(
@@ -1754,17 +1825,24 @@ export async function runSpendControlProcessAcceptance({
       [
         ...(approvalObservation?.facts ?? ['not_exercised']),
         ...Object.values(piApprovalResume).flatMap((entry) => [
-          entry.pendingObserved,
-          entry.originalRequestHeld,
+          entry.firstAttempt.pendingObserved,
+          entry.firstAttempt.exitedBeforeOperatorApproval,
+          entry.firstAttempt.signerDelta,
+          entry.firstAttempt.paidRequestDelta,
+          entry.firstAttempt.outputObserved,
+          entry.firstAttempt.processExitCode,
           entry.operatorApprovalStatus,
-          entry.signerDelta,
-          entry.paidRequestDelta,
-          entry.duplicatePaymentSignatureDelta,
-          entry.outputObserved,
-          entry.processExitCode,
+          entry.secondAttempt.sameRequestFingerprint,
+          entry.secondAttempt.signerDelta,
+          entry.secondAttempt.paidRequestDelta,
+          entry.secondAttempt.duplicatePaymentSignatureDelta,
+          entry.secondAttempt.outputObserved,
+          entry.secondAttempt.processExitCode,
         ]),
-        piToolApproval.modelRequestDelta,
-        piModelApproval.modelRequestDelta,
+        piToolApproval.firstModelRequestDelta,
+        piToolApproval.secondModelRequestDelta,
+        piModelApproval.firstModelRequestDelta,
+        piModelApproval.secondModelRequestDelta,
       ],
     );
     piResult = Object.freeze({
@@ -2146,13 +2224,15 @@ export async function runSpendControlProcessAcceptance({
   const finalModelState = modelState(modelStatePath);
   const exactChildProcessSet = canonicalJson(Object.keys(processExitCodes))
     === canonicalJson(SPEND_CONTROL_PROCESS_CHILD_NAMES);
-  const allChildProcessesExitedCleanly = exactChildProcessSet
-    && SPEND_CONTROL_PROCESS_CHILD_NAMES.every((name) => processExitCodes[name] === 0);
+  const allChildProcessesExitedAsExpected = exactChildProcessSet
+    && SPEND_CONTROL_PROCESS_CHILD_NAMES.every((name) => (
+      processExitCodes[name] === SPEND_CONTROL_PROCESS_EXPECTED_EXIT_CODES[name]
+    ));
   const freshProcessObservation = observations.get('fresh-process-verifies-authority');
   recordObservation(
     observations,
     'fresh-process-verifies-authority',
-    freshProcessObservation?.passed === true && allChildProcessesExitedCleanly,
+    freshProcessObservation?.passed === true && allChildProcessesExitedAsExpected,
     [
       ...(freshProcessObservation?.facts ?? ['not_exercised']),
       exactChildProcessSet,
@@ -2191,12 +2271,17 @@ export async function runSpendControlProcessAcceptance({
     'pi-carries-no-authority-headers',
     piResult.exitCode === 0
       && piResult.outputObserved === 'PI_WALLET_OK'
-      && processExitCodes['pi-tool-approval'] === 0
-      && processExitCodes['pi-model-approval'] === 0
+      && processExitCodes['pi-tool-approval-first'] === 0
+      && processExitCodes['pi-tool-approval-second'] === 0
+      && processExitCodes['pi-model-approval-first'] === 1
+      && processExitCodes['pi-model-approval-second'] === 0
       && finalModelState.forbiddenAuthorityHeaderCount === 0
       && finalSellerState.forbiddenForwardedHeaderCount === 0,
     [piResult.exitCode, piResult.outputObserved,
-      processExitCodes['pi-tool-approval'], processExitCodes['pi-model-approval'],
+      processExitCodes['pi-tool-approval-first'],
+      processExitCodes['pi-tool-approval-second'],
+      processExitCodes['pi-model-approval-first'],
+      processExitCodes['pi-model-approval-second'],
       finalModelState.forbiddenAuthorityHeaderCount,
       finalSellerState.forbiddenForwardedHeaderCount],
   );

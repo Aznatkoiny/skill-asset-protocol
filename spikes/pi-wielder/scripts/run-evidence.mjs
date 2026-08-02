@@ -15,6 +15,7 @@ import { canonicalJson, sha256 } from '../src/kernel/canonical.mjs';
 import {
   runSpendControlProcessAcceptance,
   SPEND_CONTROL_PROCESS_CHILD_NAMES,
+  SPEND_CONTROL_PROCESS_EXPECTED_EXIT_CODES,
   SPEND_CONTROL_PROCESS_INVARIANT_IDS,
 } from './lib/spend-control-process-runner.mjs';
 
@@ -219,8 +220,10 @@ function validateAcceptanceOutput(result) {
   if (!exits || typeof exits !== 'object' || Array.isArray(exits)
       || canonicalJson(Object.keys(exits).sort())
         !== canonicalJson([...SPEND_CONTROL_PROCESS_CHILD_NAMES].sort())
-      || SPEND_CONTROL_PROCESS_CHILD_NAMES.some((name) => exits[name] !== 0)) {
-    fail('EVIDENCE_ACCEPTANCE_RESULT', 'process acceptance child set did not exit cleanly');
+      || SPEND_CONTROL_PROCESS_CHILD_NAMES.some((name) => (
+        exits[name] !== SPEND_CONTROL_PROCESS_EXPECTED_EXIT_CODES[name]
+      ))) {
+    fail('EVIDENCE_ACCEPTANCE_RESULT', 'process acceptance child exits did not match policy');
   }
   const rawSettlementIds = acceptance.rawSettlementTransactionIds;
   const normalizedTransactionIds = acceptance.transactionIds;
@@ -234,23 +237,34 @@ function validateAcceptanceOutput(result) {
       || new Set(normalizedTransactionIds).size !== normalizedTransactionIds.length) {
     fail('EVIDENCE_ACCEPTANCE_RESULT', 'process acceptance transaction authority was reused');
   }
-  const expectedPiApproval = canonicalJson({
-    pendingObserved: true,
-    originalRequestHeld: true,
-    operatorApprovalStatus: 200,
-    signerDelta: 1,
-    paidRequestDelta: 1,
-    duplicatePaymentSignatureDelta: 0,
-    outputObserved: 'PI_WALLET_OK',
-    processExitCode: 0,
-  });
   const piApprovalResume = acceptance.piApprovalResume;
   if (!piApprovalResume || typeof piApprovalResume !== 'object'
       || Array.isArray(piApprovalResume)
       || ['tool', 'model'].some((kind) => {
         const entry = piApprovalResume[kind];
+        const expected = {
+          firstAttempt: {
+            pendingObserved: true,
+            exitedBeforeOperatorApproval: true,
+            signerDelta: 0,
+            paidRequestDelta: 0,
+            outputObserved: kind === 'tool'
+              ? 'PI_APPROVAL_REQUIRED'
+              : 'approval-required-error',
+            processExitCode: kind === 'tool' ? 0 : 1,
+          },
+          operatorApprovalStatus: 200,
+          secondAttempt: {
+            sameRequestFingerprint: true,
+            signerDelta: 1,
+            paidRequestDelta: 1,
+            duplicatePaymentSignatureDelta: 0,
+            outputObserved: 'PI_WALLET_OK',
+            processExitCode: 0,
+          },
+        };
         return !entry || typeof entry !== 'object' || Array.isArray(entry)
-          || canonicalJson(entry) !== expectedPiApproval;
+          || canonicalJson(entry) !== canonicalJson(expected);
       })) {
     fail('EVIDENCE_ACCEPTANCE_RESULT', 'pinned Pi approval resumption was not proven');
   }

@@ -1,6 +1,7 @@
 # Agent Spend Control Plane — Design
 
 - **Status:** Approved in design review on 2026-07-31
+- **Approval-flow amendment:** Approved on 2026-08-02
 - **Implementation base:** `codex/prd-execution` at
   `6f7006055cd14ca0b5c5961c7d0a3d09eff044ef`
 - **Initial network:** Base Sepolia (`eip155:84532`)
@@ -160,6 +161,23 @@ The proxy returns one of:
 - `payment_approval_required` with a request ID and expiry;
 - a stable policy or protocol denial;
 - a stable unresolved-payment or reconciliation error.
+
+Every Agent execution request carries a stable, canonical 32-byte
+`x-agent-call-id`. It is only a deduplication and correlation key. The proxy scopes it
+beneath the authenticated Agent credential and resulting Spend Session, then binds it
+to the exact ordinary-request fingerprint. Within that scope, reuse for a different
+fingerprint fails closed; presenting the same key through another credential or session
+cannot access the prior intent. The key cannot select or convey an Approval, wallet,
+seller, payee, amount, PolicyVersion, Spend Session, payment idempotency key, payment
+signature, or other spending authority, and it is never forwarded to the resource
+server.
+
+If an exact request arrives under a fresh call ID while a retry-matchable intent for
+that fingerprint remains active, the Kernel atomically binds the fresh ID as a
+correlation alias to the existing intent before any signing transition. It does not
+create a second intent. A fresh ID creates a later legitimate identical intent only
+when no active retry-matchable fingerprint exists and that ID has no prior binding or
+alias.
 
 The agent cannot supply `PAYMENT-SIGNATURE`, payment identity, idempotency, or
 approval headers. The proxy exclusively owns those fields.
@@ -368,9 +386,16 @@ received
    boundary.
 4. Persist the policy decision.
 5. For `deny`, terminate without reservation or signature.
-6. For `approval_required`, persist the challenge and wait for an exact operator
-   decision. Expiry terminates the approval; it does not create reusable authority.
-7. For `allow` or exact approval, atomically reserve the maximum amount.
+6. For `approval_required`, persist the challenge and immediately return
+   `payment_approval_required`. Do not keep the Agent request connected and do not
+   poll for a decision. Expiry terminates the approval; it does not create reusable
+   authority.
+7. For `allow`, atomically reserve the maximum amount. After an exact operator
+   approval, the Wielder deliberately repeats the same ordinary request, preferably
+   retaining its `x-agent-call-id`. If it arrives with a fresh call ID, the Kernel
+   atomically binds that ID as an alias to the active exact fingerprint before any
+   signing transition. It then revalidates the approved intent and atomically reserves
+   the maximum amount.
 8. Claim the one-time signing transition and call the Wallet Adapter.
 9. Persist the exact signature and payment payload before any paid retry.
 10. Perform exactly one paid retry.
@@ -389,6 +414,9 @@ received
   unresolved.
 - Missing response, timeout, or crash never causes a replacement signature or
   blind paid retry.
+- An Agent-level response loss may repeat the exact request with the same
+  `x-agent-call-id`; this resolves to the existing intent and cannot create a second
+  signing path. A different request with that key fails closed.
 - A settled payment followed by failed execution remains settled and enters
   `refund_pending` or `reconciliation_required`.
 - An execution response without matching settlement evidence is withheld.
@@ -427,10 +455,27 @@ ID.
 
 Pi receives `payment_approval_required` with a request ID and expiry. The local
 console shows seller, resource, request hash, amount ceiling, wallet, policy
-mismatch, and expiry. The operator approves once or denies. Pi then repeats only
-the exact ordinary request while the approval remains valid. The proxy resolves
-that retry against the exact approved intent using its kernel-owned session and
-idempotency mapping; Pi does not send an approval or idempotency header.
+mismatch, and expiry. The response is immediate: neither Pi nor the proxy keeps the
+request connected, polls the approval, or performs an application-level automatic
+retry. The operator approves once or denies. If approved, the Wielder makes a new
+ordinary request with the exact prior fingerprint while the approval remains valid. It
+should reuse the prior `x-agent-call-id` when retained, but a fresh ID is accepted: the
+Kernel atomically records it as an alias to the active exact intent before signing. The
+proxy resolves either form using the bound Agent credential, kernel-owned Spend
+Session, request fingerprint, and idempotency mapping; Pi does not send an approval or
+payment-idempotency header.
+
+The sole automatic replay exception is inside the local Skill fetch: a thrown fetch or
+a failure while reading the response body may trigger exactly one retry with the same
+`x-agent-call-id`. A received response with an invalid content type, malformed JSON,
+or any application result—including `payment_approval_required`—is not retryable.
+This is transport-loss recovery, not approval handling or application-level retry. The
+Kernel's durable deduplication means a settled response loss cannot spend twice. The
+model-provider hook likewise retains one call key across an error until Pi reports a
+terminal outcome; it does not poll or replay an approval response itself. A later
+legitimate invocation uses a fresh `x-agent-call-id`; for an identical payload, it
+creates a new Spend Intent only when no active retry-matchable intent or binding for
+that fresh key exists.
 
 ### Local console
 

@@ -182,6 +182,16 @@ async function json(response) {
   return await response.json();
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return Object.freeze({ promise, resolve, reject });
+}
+
 test('proxy construction exposes only the four agent route capabilities', () => {
   const { app, calls } = create();
 
@@ -675,7 +685,7 @@ test('completed output requires one signed bounded upstream status', async (t) =
   }
 });
 
-test('connected Pi model and Skill calls wait for approval and resume exact authority once', async (t) => {
+test('model and Skill approvals return immediately and resume only on a later same-key request', async (t) => {
   for (const fixture of [
     {
       label: 'model',
@@ -700,7 +710,6 @@ test('connected Pi model and Skill calls wait for approval and resume exact auth
         expiresAt: new Date(Date.now() + 5_000).toISOString(),
         amountAtomic: '250000',
       });
-      const approved = Object.freeze({ ...approval, state: 'approved' });
       const receipt = signedReceipt({
         resourcePath: fixture.resourcePath,
         purposeLabel: fixture.purposeLabel,
@@ -709,11 +718,12 @@ test('connected Pi model and Skill calls wait for approval and resume exact auth
       const executions = [];
       let statusReads = 0;
       let signerCalls = 0;
+      let approved = false;
       const { app } = create({
         kernel: {
           async execute(input) {
             executions.push(input);
-            if (executions.length === 1) {
+            if (!approved) {
               return Object.freeze({
                 requestId: 'request-1',
                 status: 'payment_approval_required',
@@ -734,25 +744,34 @@ test('connected Pi model and Skill calls wait for approval and resume exact auth
           },
           statusByRequestId() {
             statusReads += 1;
-            if (executions.length > 1) {
+            if (approved) {
               return statusView(receipt, { purposeLabel: fixture.purposeLabel });
             }
             return statusView(null, {
-              approval: statusReads === 1 ? approval : approved,
+              approval,
               purposeLabel: fixture.purposeLabel,
             });
           },
         },
       });
 
-      const response = await app.request(`${ORIGIN}${fixture.path}`, {
-        method: 'POST', headers: agentHeaders({ Prefer: 'wait=1' }), body: fixture.body,
+      const request = () => app.request(`${ORIGIN}${fixture.path}`, {
+        method: 'POST', headers: agentHeaders(), body: fixture.body,
       });
 
-      assert.equal(response.status, 200, await response.clone().text());
+      const first = await request();
+      assert.equal(first.status, 409, await first.clone().text());
+      assert.equal((await json(first)).status, 'payment_approval_required');
+      assert.equal(executions.length, 1);
+      assert.equal(signerCalls, 0);
+      assert.equal(statusReads, 1);
+
+      approved = true;
+      const second = await request();
+      assert.equal(second.status, 200, await second.clone().text());
       assert.equal(executions.length, 2);
       assert.equal(signerCalls, 1);
-      assert.ok(statusReads >= 3);
+      assert.equal(statusReads, 2);
       assert.deepEqual(executions[1], executions[0]);
       assert.notEqual(executions[1], executions[0]);
       assert.notEqual(executions[1].request.bodyBytes, executions[0].request.bodyBytes);
@@ -764,13 +783,14 @@ test('connected Pi model and Skill calls wait for approval and resume exact auth
   }
 });
 
-test('ordinary raw callers receive bounded approval state unless they opt into waiting', async () => {
+test('approval-required is bounded after one Kernel execution and one status read', async () => {
   const approval = {
     state: 'pending',
     expiresAt: new Date(Date.now() + 20).toISOString(),
     amountAtomic: '250000',
   };
   let executeCalls = 0;
+  let statusReads = 0;
   const { app } = create({
     kernel: {
       async execute() {
@@ -783,7 +803,10 @@ test('ordinary raw callers receive bounded approval state unless they opt into w
           receipt: null,
         });
       },
-      statusByRequestId() { return statusView(null, { approval }); },
+      statusByRequestId() {
+        statusReads += 1;
+        return statusView(null, { approval });
+      },
     },
   });
   const response = await app.request(`${ORIGIN}/agent/v1/invoke/example-skill`, {
@@ -802,10 +825,13 @@ test('ordinary raw callers receive bounded approval state unless they opt into w
     },
   });
   assert.equal(executeCalls, 1);
+  assert.equal(statusReads, 1);
 });
 
-test('approval wait preference uses one exact bounded grammar before Kernel execution', async (t) => {
+test('every approval wait preference is forbidden before Kernel execution', async (t) => {
   for (const preference of [
+    'wait=1',
+    'wait=300',
     'wait=0',
     'wait=01',
     'wait=301',
@@ -827,7 +853,62 @@ test('approval wait preference uses one exact bounded grammar before Kernel exec
   }
 });
 
-test('an operator denial racing the first approval status read returns its terminal receipt', async () => {
+test('denial and expiry races return the signed terminal projection without another execute', async (t) => {
+  for (const reasonCode of ['OPERATOR_DENIED', 'APPROVAL_EXPIRED']) {
+    await t.test(reasonCode, async () => {
+      const approval = Object.freeze({
+        state: 'pending',
+        expiresAt: new Date(Date.now() + 5_000).toISOString(),
+        amountAtomic: '250000',
+      });
+      const receipt = signedReceipt({
+        status: 'payment_denied',
+        reasonCode,
+        paymentState: 'none',
+        transactionId: null,
+        budgetDisposition: 'released',
+        resourcePath: '/paid/skill',
+        purposeLabel: 'skill.invoke',
+        executionState: 'none',
+        httpStatus: null,
+      });
+      let executeCalls = 0;
+      let statusReads = 0;
+      const { app } = create({
+        kernel: {
+          async execute() {
+            executeCalls += 1;
+            return Object.freeze({
+              requestId: 'request-1',
+              status: 'payment_approval_required',
+              reasonCode: 'HUMAN_APPROVAL_REQUIRED',
+              expiresAt: approval.expiresAt,
+              receipt: null,
+            });
+          },
+          statusByRequestId() {
+            statusReads += 1;
+            return statusView(receipt, { purposeLabel: 'skill.invoke' });
+          },
+        },
+      });
+
+      const response = await app.request(`${ORIGIN}/agent/v1/invoke/example-skill`, {
+        method: 'POST', headers: agentHeaders(), body: '{"input":"hello"}',
+      });
+
+      assert.equal(response.status, 403, await response.clone().text());
+      const outcome = await json(response);
+      assert.equal(outcome.status, 'payment_denied');
+      assert.equal(outcome.reasonCode, reasonCode);
+      assert.equal(outcome.receipt.id, 'receipt-1');
+      assert.equal(executeCalls, 1);
+      assert.equal(statusReads, 1);
+    });
+  }
+});
+
+test('a raced terminal approval rejects an outcome that disagrees with its signed receipt state', async () => {
   const approval = Object.freeze({
     state: 'pending',
     expiresAt: new Date(Date.now() + 5_000).toISOString(),
@@ -844,123 +925,9 @@ test('an operator denial racing the first approval status read returns its termi
     executionState: 'none',
     httpStatus: null,
   });
-  let executeCalls = 0;
-  let signerCalls = 0;
   const { app } = create({
     kernel: {
       async execute() {
-        executeCalls += 1;
-        if (executeCalls === 1) {
-          return Object.freeze({
-            requestId: 'request-1',
-            status: 'payment_approval_required',
-            reasonCode: 'HUMAN_APPROVAL_REQUIRED',
-            expiresAt: approval.expiresAt,
-            receipt: null,
-          });
-        }
-        return Object.freeze({
-          requestId: 'request-1',
-          status: 'payment_denied',
-          reasonCode: 'OPERATOR_DENIED',
-          receipt,
-        });
-      },
-      statusByRequestId() {
-        return statusView(receipt, {
-          outcome: { status: 'payment_denied', reasonCode: 'OPERATOR_DENIED', revision: 1 },
-          purposeLabel: 'skill.invoke',
-        });
-      },
-    },
-  });
-  const response = await app.request(`${ORIGIN}/agent/v1/invoke/example-skill`, {
-    method: 'POST',
-    headers: agentHeaders({ Prefer: 'wait=1' }),
-    body: '{"input":"hello"}',
-  });
-
-  assert.equal(response.status, 403, await response.clone().text());
-  assert.equal((await json(response)).reasonCode, 'OPERATOR_DENIED');
-  assert.equal(executeCalls, 2);
-  assert.equal(signerCalls, 0);
-});
-
-test('approval expiry resumes the exact request only to terminalize without signing', async () => {
-  const approval = Object.freeze({
-    state: 'pending',
-    expiresAt: new Date(Date.now() - 1).toISOString(),
-    amountAtomic: '250000',
-  });
-  const receipt = signedReceipt({
-    status: 'payment_denied',
-    reasonCode: 'APPROVAL_EXPIRED',
-    paymentState: 'none',
-    transactionId: null,
-    budgetDisposition: 'released',
-    resourcePath: '/paid/skill',
-    purposeLabel: 'skill.invoke',
-    executionState: 'none',
-    httpStatus: null,
-  });
-  const executions = [];
-  let signerCalls = 0;
-  const { app } = create({
-    kernel: {
-      async execute(input) {
-        executions.push(input);
-        if (executions.length === 1) {
-          return Object.freeze({
-            requestId: 'request-1',
-            status: 'payment_approval_required',
-            reasonCode: 'HUMAN_APPROVAL_REQUIRED',
-            expiresAt: approval.expiresAt,
-            receipt: null,
-          });
-        }
-        return Object.freeze({
-          requestId: 'request-1',
-          status: 'payment_denied',
-          reasonCode: 'APPROVAL_EXPIRED',
-          receipt,
-        });
-      },
-      statusByRequestId() {
-        return executions.length === 1
-          ? statusView(null, { approval, purposeLabel: 'skill.invoke' })
-          : statusView(receipt, {
-            outcome: { status: 'payment_denied', reasonCode: 'APPROVAL_EXPIRED', revision: 1 },
-            purposeLabel: 'skill.invoke',
-          });
-      },
-    },
-  });
-  const response = await app.request(`${ORIGIN}/agent/v1/invoke/example-skill`, {
-    method: 'POST',
-    headers: agentHeaders({ Prefer: 'wait=1' }),
-    body: '{"input":"hello"}',
-  });
-
-  assert.equal(response.status, 403, await response.clone().text());
-  assert.equal((await json(response)).reasonCode, 'APPROVAL_EXPIRED');
-  assert.equal(executions.length, 2);
-  assert.deepEqual(executions[1], executions[0]);
-  assert.equal(signerCalls, 0);
-});
-
-test('disconnect aborts an opted-in approval wait before any resume or signer authority', async () => {
-  const approval = Object.freeze({
-    state: 'pending',
-    expiresAt: new Date(Date.now() + 5_000).toISOString(),
-    amountAtomic: '250000',
-  });
-  let observedPending;
-  const pendingObserved = new Promise((resolve) => { observedPending = resolve; });
-  let executeCalls = 0;
-  const { app } = create({
-    kernel: {
-      async execute() {
-        executeCalls += 1;
         return Object.freeze({
           requestId: 'request-1',
           status: 'payment_approval_required',
@@ -970,37 +937,32 @@ test('disconnect aborts an opted-in approval wait before any resume or signer au
         });
       },
       statusByRequestId() {
-        observedPending();
-        return statusView(null, { approval, purposeLabel: 'skill.invoke' });
+        return statusView(receipt, {
+          purposeLabel: 'skill.invoke',
+          outcome: {
+            status: 'payment_failed',
+            reasonCode: 'OPERATOR_DENIED',
+            revision: 1,
+          },
+        });
       },
     },
   });
-  const controller = new AbortController();
-  const responsePromise = app.request(new Request(
-    `${ORIGIN}/agent/v1/invoke/example-skill`,
-    {
-      method: 'POST',
-      headers: agentHeaders({ Prefer: 'wait=1' }),
-      body: '{"input":"hello"}',
-      signal: controller.signal,
-    },
-  ));
-  await pendingObserved;
-  controller.abort();
-  const response = await responsePromise;
 
-  assert.equal(response.status, 503);
-  assert.equal((await json(response)).error.code, 'AGENT_REQUEST_ABORTED');
-  assert.equal(executeCalls, 1);
+  const response = await app.request(`${ORIGIN}/agent/v1/invoke/example-skill`, {
+    method: 'POST', headers: agentHeaders(), body: '{"input":"hello"}',
+  });
+
+  assert.equal(response.status, 502);
+  assert.equal((await json(response)).error.code, 'AGENT_RESPONSE_INVALID');
 });
 
-test('disconnect racing an approved status prevents authority consumption', async () => {
+test('an approval decision racing the first status read cannot trigger connected replay', async () => {
   const approval = Object.freeze({
     state: 'approved',
     expiresAt: new Date(Date.now() + 5_000).toISOString(),
     amountAtomic: '250000',
   });
-  const controller = new AbortController();
   let executeCalls = 0;
   let signerCalls = 0;
   const { app } = create({
@@ -1017,28 +979,25 @@ test('disconnect racing an approved status prevents authority consumption', asyn
         });
       },
       statusByRequestId() {
-        controller.abort();
         return statusView(null, { approval, purposeLabel: 'skill.invoke' });
       },
     },
   });
-  const response = await app.request(new Request(
-    `${ORIGIN}/agent/v1/invoke/example-skill`,
-    {
-      method: 'POST',
-      headers: agentHeaders({ Prefer: 'wait=1' }),
-      body: '{"input":"hello"}',
-      signal: controller.signal,
-    },
-  ));
+  const response = await app.request(`${ORIGIN}/agent/v1/invoke/example-skill`, {
+    method: 'POST',
+    headers: agentHeaders(),
+    body: '{"input":"hello"}',
+  });
 
-  assert.equal(response.status, 503);
-  assert.equal((await json(response)).error.code, 'AGENT_REQUEST_ABORTED');
+  assert.equal(response.status, 409, await response.clone().text());
+  assert.equal((await json(response)).status, 'payment_approval_required');
   assert.equal(executeCalls, 1);
   assert.equal(signerCalls, 0);
 });
 
-test('duplicate opted-in retries permit one signer and fail closed for followers', async () => {
+test('concurrent fresh-call retries remain separate requests and one alias replays terminal state', async () => {
+  const callB = Buffer.alloc(32, 0x43).toString('base64url');
+  const callC = Buffer.alloc(32, 0x44).toString('base64url');
   const approval = Object.freeze({
     state: 'pending',
     expiresAt: new Date(Date.now() + 5_000).toISOString(),
@@ -1050,18 +1009,17 @@ test('duplicate opted-in retries permit one signer and fail closed for followers
     purposeLabel: 'skill.invoke',
     amountAtomic: approval.amountAtomic,
   });
-  const executions = [];
+  const leaderStarted = deferred();
+  const leaderRelease = deferred();
+  const correlations = [];
   let approved = false;
   let leaderInFlight = false;
   let completed = false;
   let signerCalls = 0;
-  let pendingReads = 0;
-  let bothPending;
-  const bothPendingObserved = new Promise((resolve) => { bothPending = resolve; });
   const { app } = create({
     kernel: {
       async execute(input) {
-        executions.push(input);
+        correlations.push(input.correlationId);
         if (completed) {
           return Object.freeze({
             requestId: 'request-1', status: 'completed', reasonCode: 'PAYMENT_SETTLED', receipt,
@@ -1086,7 +1044,8 @@ test('duplicate opted-in retries permit one signer and fail closed for followers
         }
         leaderInFlight = true;
         signerCalls += 1;
-        await new Promise((resolve) => setTimeout(resolve, 40));
+        leaderStarted.resolve();
+        await leaderRelease.promise;
         completed = true;
         return Object.freeze({
           requestId: 'request-1',
@@ -1099,107 +1058,127 @@ test('duplicate opted-in retries permit one signer and fail closed for followers
       },
       statusByRequestId() {
         if (completed) return statusView(receipt, { purposeLabel: 'skill.invoke' });
-        if (!approved) {
-          pendingReads += 1;
-          if (pendingReads >= 2) bothPending();
-          return statusView(null, { approval, purposeLabel: 'skill.invoke' });
-        }
-        return statusView(null, { approval: approvedApproval, purposeLabel: 'skill.invoke' });
-      },
-    },
-  });
-  const request = () => app.request(`${ORIGIN}/agent/v1/invoke/example-skill`, {
-    method: 'POST',
-    headers: agentHeaders({ Prefer: 'wait=1' }),
-    body: '{"input":"hello"}',
-  });
-  const responses = [request(), request()];
-  await bothPendingObserved;
-  approved = true;
-  const settled = await Promise.all(responses);
-
-  assert.deepEqual(settled.map(({ status }) => status).sort(), [200, 409]);
-  assert.equal(signerCalls, 1);
-  assert.equal(executions.every(
-    ({ correlationId }) => correlationId === correlationForAgentCall(AGENT_CALL_ID),
-  ), true);
-  const replay = await request();
-  assert.equal(replay.status, 409);
-  assert.equal((await json(replay)).status, 'completed_replay');
-  assert.equal(signerCalls, 1);
-});
-
-test('changed challenge re-approval stays inside one bounded exact-request wait', async () => {
-  const firstApproval = Object.freeze({
-    state: 'pending',
-    expiresAt: new Date(Date.now() + 5_000).toISOString(),
-    amountAtomic: '250000',
-  });
-  const secondApproval = Object.freeze({
-    state: 'pending',
-    expiresAt: new Date(Date.now() + 5_000).toISOString(),
-    amountAtomic: '260000',
-  });
-  const receipt = signedReceipt({
-    requestId: 'request-2',
-    resourcePath: '/paid/skill',
-    purposeLabel: 'skill.invoke',
-    amountAtomic: secondApproval.amountAtomic,
-  });
-  const executions = [];
-  const readsByRequest = new Map();
-  let signerCalls = 0;
-  const { app } = create({
-    kernel: {
-      async execute(input) {
-        executions.push(input);
-        if (executions.length <= 2) {
-          const current = executions.length === 1 ? firstApproval : secondApproval;
-          return Object.freeze({
-            requestId: `request-${executions.length}`,
-            status: 'payment_approval_required',
-            reasonCode: 'HUMAN_APPROVAL_REQUIRED',
-            expiresAt: current.expiresAt,
-            receipt: null,
-          });
-        }
-        signerCalls += 1;
-        return Object.freeze({
-          requestId: 'request-2',
-          status: 'completed',
-          reasonCode: 'PAYMENT_SETTLED',
-          upstreamStatus: 200,
-          body: Buffer.from('{"output":"ok"}'),
-          receipt,
-        });
-      },
-      statusByRequestId({ requestId }) {
-        if (executions.length > 2) {
-          return statusView(receipt, { requestId, purposeLabel: 'skill.invoke' });
-        }
-        const reads = (readsByRequest.get(requestId) ?? 0) + 1;
-        readsByRequest.set(requestId, reads);
-        const pending = requestId === 'request-1' ? firstApproval : secondApproval;
         return statusView(null, {
-          requestId,
-          approval: reads === 1 ? pending : { ...pending, state: 'approved' },
+          approval: approved ? approvedApproval : approval,
           purposeLabel: 'skill.invoke',
         });
       },
     },
   });
-  const response = await app.request(`${ORIGIN}/agent/v1/invoke/example-skill`, {
+  const request = (agentCallId) => app.request(`${ORIGIN}/agent/v1/invoke/example-skill`, {
     method: 'POST',
-    headers: agentHeaders({ Prefer: 'wait=1' }),
+    headers: agentHeaders({ 'x-agent-call-id': agentCallId }),
     body: '{"input":"hello"}',
   });
 
-  assert.equal(response.status, 200, await response.clone().text());
-  assert.equal(executions.length, 3);
+  const pending = await request(AGENT_CALL_ID);
+  assert.equal(pending.status, 409);
+  approved = true;
+  const leader = request(callB);
+  await leaderStarted.promise;
+  const follower = await request(callC);
+  assert.equal(follower.status, 409);
+  assert.equal((await json(follower)).status, 'request_in_flight');
+  leaderRelease.resolve();
+  assert.equal((await leader).status, 200);
+  const replay = await request(callC);
+  assert.equal(replay.status, 409);
+  assert.equal((await json(replay)).status, 'completed_replay');
   assert.equal(signerCalls, 1);
-  assert.equal(executions.every((input) => Object.isFrozen(input)), true);
-  assert.deepEqual(executions[1], executions[0]);
-  assert.deepEqual(executions[2], executions[0]);
+  assert.deepEqual(correlations, [
+    correlationForAgentCall(AGENT_CALL_ID),
+    correlationForAgentCall(callB),
+    correlationForAgentCall(callC),
+    correlationForAgentCall(callC),
+  ]);
+});
+
+test('a changed challenge requires separate ordinary requests for replacement approval', async () => {
+  const callB = Buffer.alloc(32, 0x45).toString('base64url');
+  const callC = Buffer.alloc(32, 0x46).toString('base64url');
+  const firstApproval = Object.freeze({
+    state: 'pending',
+    expiresAt: new Date(Date.now() + 5_000).toISOString(),
+    amountAtomic: '250000',
+  });
+  const replacementApproval = Object.freeze({
+    state: 'pending',
+    expiresAt: new Date(Date.now() + 5_000).toISOString(),
+    amountAtomic: '260000',
+  });
+  const changedReceipt = signedReceipt({
+    status: 'payment_denied',
+    reasonCode: 'APPROVAL_CHALLENGE_CHANGED',
+    paymentState: 'none',
+    transactionId: null,
+    budgetDisposition: 'released',
+    resourcePath: '/paid/skill',
+    purposeLabel: 'skill.invoke',
+    executionState: 'none',
+    httpStatus: null,
+  });
+  let executeCalls = 0;
+  const { app } = create({
+    kernel: {
+      async execute() {
+        executeCalls += 1;
+        if (executeCalls === 1) {
+          return Object.freeze({
+            requestId: 'request-1',
+            status: 'payment_approval_required',
+            reasonCode: 'HUMAN_APPROVAL_REQUIRED',
+            expiresAt: firstApproval.expiresAt,
+            receipt: null,
+          });
+        }
+        if (executeCalls === 2) {
+          return Object.freeze({
+            requestId: 'request-1',
+            status: 'payment_denied',
+            reasonCode: 'APPROVAL_CHALLENGE_CHANGED',
+            receipt: changedReceipt,
+            replacementRequestId: 'request-2',
+            replacementExpiresAt: replacementApproval.expiresAt,
+          });
+        }
+        return Object.freeze({
+          requestId: 'request-2',
+          status: 'payment_approval_required',
+          reasonCode: 'HUMAN_APPROVAL_REQUIRED',
+          expiresAt: replacementApproval.expiresAt,
+          receipt: null,
+        });
+      },
+      statusByRequestId({ requestId }) {
+        if (requestId === 'request-2') {
+          return statusView(null, { requestId, approval: replacementApproval });
+        }
+        return executeCalls === 1
+          ? statusView(null, { approval: firstApproval })
+          : statusView(changedReceipt, { purposeLabel: 'skill.invoke' });
+      },
+    },
+  });
+  const request = (agentCallId) => app.request(`${ORIGIN}/agent/v1/invoke/example-skill`, {
+    method: 'POST',
+    headers: agentHeaders({ 'x-agent-call-id': agentCallId }),
+    body: '{"input":"hello"}',
+  });
+
+  const first = await request(AGENT_CALL_ID);
+  const changed = await request(callB);
+  const replacement = await request(callC);
+
+  assert.equal(first.status, 409);
+  assert.equal((await json(first)).status, 'payment_approval_required');
+  assert.equal(changed.status, 403);
+  assert.equal((await json(changed)).reasonCode, 'APPROVAL_CHALLENGE_CHANGED');
+  assert.equal(replacement.status, 409);
+  const replacementOutcome = await json(replacement);
+  assert.equal(replacementOutcome.status, 'payment_approval_required');
+  assert.equal(replacementOutcome.requestId, 'request-2');
+  assert.equal(replacementOutcome.approval.amountAtomic, '260000');
+  assert.equal(executeCalls, 3);
 });
 
 test('terminal buyer outcomes use the fixed public HTTP mapping and never return seller bodies', async (t) => {
