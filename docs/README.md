@@ -1,8 +1,16 @@
 # Documentation
 
-## Product review
+## Current v1 product design
 
-- [Onboarding, retention, and monetization recommendations](product-onboarding-retention-and-monetization.md)
+- [Agent Spend Control Plane — approved design](superpowers/specs/2026-07-31-agent-spend-control-plane-design.md)
+  — the current wallet-native direction: a customer-hosted **Wallet Kernel**
+  for x402 spending policy, exact approvals, signed receipts, and reconciliation.
+
+## Deferred expansion research
+
+- [Employer onboarding, retention, and monetization recommendations](product-onboarding-retention-and-monetization.md)
+  — superseded for v1 and retained as research for a possible future Skill
+  attribution and Creator-compensation module.
 
 ## Security
 

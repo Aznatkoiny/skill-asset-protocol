@@ -1,11 +1,24 @@
 # Skill Asset Protocol site
 
+**Release status:** pre-release candidate. The approved design's implementation
+and fresh-evidence gate is not cleared; do not deploy this candidate as the
+public homepage yet.
+
 The site has two deliberately separate paths:
 
-- `/` is the employer-facing product preview and deterministic attribution
-  sandbox. It needs no account, wallet, API key, network call, or payment.
-- `/proof` preserves the original manifesto and optional Base Sepolia x402
-  invocation proof.
+- `/` is the wallet-native **Agent Spend Control Plane** preview and
+  deterministic **Wallet Kernel** sandbox. It needs no account, wallet, API
+  key, network call, payment, or saved data.
+- `/proof` preserves the original manifesto, one bounded historical Base
+  Sepolia receipt, and the retired x402 invocation experiment as a static
+  archive. The site exposes no wallet connection or paid endpoint.
+
+The approved v1 product is a customer-hosted Wallet Kernel for spending policy,
+exact human approval, signed receipts, and reconciliation. The employer Skill
+attribution and reward experience remains in the repository as deferred
+expansion research; it is not linked from the current homepage and does not set
+the v1 interface. See the
+[approved design](../docs/superpowers/specs/2026-07-31-agent-spend-control-plane-design.md).
 
 ## Local product preview
 
@@ -20,32 +33,32 @@ npm run dev
 Open <http://localhost:3000>. The full seeded sandbox works with no environment
 file and never calls the payment or model API.
 
-The sample organization, people, Invocations, outcome evidence, and provisional
-reward are fictional. Refreshing or choosing **Restart sandbox** returns to the
-same deterministic fixture.
+The sample Agent, customer-owned wallet, policy, Spend Intents, decisions,
+approval, and receipt projection are fictional. The sandbox never creates a
+wallet payment signature or broadcasts a transaction. Refreshing or choosing
+**Restart sandbox** returns to the same deterministic fixture.
 
 ## Optional configuration
 
-Copy the template only when you need to change the pilot CTA or operate the
-testnet proof:
+Copy the template only when you need to change the Wallet Kernel pilot CTA:
 
 ```bash
 cp .env.example .env.local
 ```
 
-| Variable | Required for `/` | Required for paid `/proof` invocation |
-|---|---:|---:|
-| `NEXT_PUBLIC_PILOT_CONTACT_URL` | No | No |
-| `ENABLE_PAID_PROOF=true` | No | Yes |
-| `PAY_TO_ADDRESS` | No | Yes |
-| `ANTHROPIC_API_KEY` | No | Yes |
-| `FACILITATOR_URL` | No | No (testnet default provided) |
+| Variable | Required | Purpose |
+|---|---:|---|
+| `NEXT_PUBLIC_PILOT_CONTACT_URL` | No | Override the design-partner CTA destination |
 
-The proof path uses testnet USDC only. Use a throwaway testnet wallet and never
-put a wallet private key in the site environment. Paid proof invocation is
-disabled by default because free testnet funds can still trigger real model
-spend. Keep it disabled until the deployment has persistent rate limiting and
-an Anthropic spend cap.
+Never put a wallet key, facilitator credential, or model-provider secret in the
+site environment. The customer-hosted Wallet Kernel—not the website—owns any
+future payment integration.
+
+The historical receipt is evidence only that one test-USDC transfer settled on
+Base Sepolia. It does not prove that the endpoint is currently live, that model
+execution succeeded, that a declared split occurred, that customer demand
+exists, or that the Wallet Kernel is production-ready. The offline homepage
+sandbox is illustrative, not live settlement evidence.
 
 ## Verification
 
@@ -56,21 +69,20 @@ npm run build
 npm audit --omit=dev
 ```
 
-`npm test` covers the sandbox fixture and transition guards with Node's built-in
-test runner. The build must pass without secrets because `/` is an offline
-product preview; the proof API validates its seller configuration at request
-time. The production audit is expected to report zero vulnerabilities. See the
-[dependency security audit](../docs/dependency-security-audit.md) for the
-remaining dev-only advisory and the intentionally pinned transitive fixes.
+`npm test` covers the spend-control sandbox and public-claim quarantine with
+Node's built-in test runner. The build must pass
+without secrets because both routes are static product/research surfaces. The
+final-head production audit must report zero vulnerabilities before merge. See the
+[dependency security audit](../docs/dependency-security-audit.md) for the prior
+audit record, the remaining dev-only advisory, and the intentionally pinned
+transitive fixes.
 
 ## Relevant files
 
 | Path | Role |
 |---|---|
-| `app/page.tsx` | Employer-facing landing page composition |
+| `app/page.tsx` | Wallet-native Agent Spend Control landing page |
 | `app/landing.module.css` | Industrial product-page design system |
-| `app/components/landing/AttributionSandbox.tsx` | Client-only sandbox UI |
-| `app/components/landing/sandbox-model.ts` | Deterministic fixture and reducer |
-| `app/components/InvokeControls.tsx` | Wallet/invocation client island on `/proof` |
-| `app/proof/page.tsx` | Preserved manifesto and x402 proof route |
-| `app/api/invoke/[skillId]/route.ts` | Optional testnet Collar endpoint |
+| `app/components/landing/SpendControlSandbox.tsx` | Current client-only Wallet Kernel sandbox |
+| `app/components/landing/spend-control-model.ts` | Deterministic spend-policy fixture and reducer |
+| `app/proof/page.tsx` | Static archive with one bounded historical receipt |

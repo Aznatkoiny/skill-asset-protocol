@@ -8,7 +8,7 @@
     "build": "next build --turbopack",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --experimental-strip-types --test app/components/landing/sandbox-model.test.mjs"
+    "test": "node --experimental-strip-types --test app/components/landing/*.test.mjs"
   },
   "dependencies": {
     "next": "15.5.22",

@@ -4,14 +4,14 @@ import { manifesto } from '../content';
 import Manifesto from '../manifesto';
 
 export const metadata: Metadata = {
-  title: 'The proof',
+  title: 'Archived protocol proof',
   description:
-    'Ten principles, real testnet receipts, and the original x402 Skill invocation proof.',
+    'An archived manifesto and one bounded historical Base Sepolia test-USDC receipt. No live payment endpoint.',
   alternates: { canonical: '/proof' },
   openGraph: {
     title: '“THE PROOF” — a manifesto for the sovereignty of authored work',
     description:
-      'Ten principles. Real on-chain receipts. A live x402 endpoint.',
+      'Ten historical principles and one bounded Base Sepolia test-USDC receipt in a static archive.',
     url: '/proof',
   },
 };

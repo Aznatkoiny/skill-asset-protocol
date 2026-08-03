@@ -1,11 +1,24 @@
 # Product onboarding, retention, and monetization recommendations
 
-**Status:** Proposal
+**Status:** Superseded for v1 on 2026-08-02
 **Reviewed:** 2026-07-25
 **Scope:** Repository, public site, offline proofs, accepted ADRs, and current market
 benchmarks
 
-## Executive recommendation
+> **Historical product research.** The employer attribution, governance, and
+> reward program below is not the current v1 product or homepage direction. The
+> approved v1 is the customer-hosted, wallet-native **Agent Spend Control
+> Plane**, centered on a **Wallet Kernel** for x402 spending policy, exact human
+> approval, signed receipts, and reconciliation. Skill attribution and Creator
+> compensation are deferred expansion modules that may later consume Wallet
+> Kernel receipts. See the
+> [approved spend-control design](superpowers/specs/2026-07-31-agent-spend-control-plane-design.md).
+>
+> This document remains useful as a hypothesis ledger for that deferred
+> expansion. Its buyer, pricing, roadmap, and homepage recommendations are not
+> implementation commitments for v1.
+
+## Superseded executive recommendation
 
 Make the closed-mode product a **B2B attribution and compensation control plane for
 employee-authored AI Skills**:
@@ -212,12 +225,11 @@ entire product onboarding job.
 
 ### 2. Replace the first paid experience with a truthful free one
 
-The public Skill promises to inspect a repository and resolve actual files, patterns, and
-verification commands
-([Skill source](../site/app/api/invoke/%5BskillId%5D/skill.md)). The API sends only a text
-input and the Skill prompt to a model; it provides no repository, files, search tools, or
-execution tools
-([invoke route](../site/app/api/invoke/%5BskillId%5D/route.ts)).
+At the time of this review, the public Skill promised to inspect a repository
+and resolve actual files, patterns, and verification commands, while the hosted
+API sent only text and no repository, files, search tools, or execution tools.
+That mismatched paid endpoint was retired from the website on 2026-08-02; this
+observation remains here as the rationale.
 
 That means the paid first experience cannot reliably fulfill the Skill's defining
 contract.
@@ -273,11 +285,11 @@ Recommended repository changes:
 
 ### 5. Make paid failures explicit and recoverable
 
-The repository measured paid upstream failures and a settled-but-rejected payment with no
-output. The live route also settles before execution and can return a paid receipt with an
-error. The UI throws before preserving that error receipt
-([hook](../site/app/components/useInvoke.ts),
-[route](../site/app/api/invoke/%5BskillId%5D/route.ts)).
+The repository measured paid upstream failures and a settled-but-rejected
+payment with no output. At the time of this review, the hosted route settled
+before execution while its UI discarded some paid-failure state. The website
+payment surface was retired on 2026-08-02 instead of carrying that behavior
+forward.
 
 Before encouraging repeat paid use:
 

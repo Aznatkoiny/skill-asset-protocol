@@ -7,29 +7,31 @@ export function Hero({ pilotUrl }: { pilotUrl: string }) {
     <section className={styles.hero} aria-labelledby="product-title">
       <div className={styles.heroCopy}>
         <p className={styles.eyebrow}>
-          Intra-org Skill attribution <span aria-hidden="true">/</span> Product preview
+          Wallet-native Agent spending <span aria-hidden="true">/</span>{' '}
+          Product preview
         </p>
         <h1 id="product-title" className={styles.heroTitle}>
-          Make the people behind your AI leverage visible.
+          Give AI Agents a wallet without giving them the keys.
         </h1>
         <p className={styles.heroLead}>
-          Register employee-authored AI Skills. Verify real reuse. Close a
-          transparent reward program without changing how teams work.
+          A customer-hosted Wallet Kernel turns ordinary Agent requests into
+          policy-bound x402 payment controls—with budgets, exact approvals, and
+          planned signed receipts behind the release gate.
         </p>
         <div className={styles.heroActions}>
           <a className={styles.primaryButton} href="#sandbox">
-            Try the 3-minute sandbox
+            Try the offline sandbox
             <span aria-hidden="true">↓</span>
           </a>
           <a className={styles.secondaryButton} href={pilotUrl}>
-            Run a design-partner pilot
+            Discuss a design-partner pilot
             <span aria-hidden="true">↗</span>
           </a>
         </div>
         <ul className={styles.heroAssurances} aria-label="Sandbox assurances">
-          <li>No wallet</li>
-          <li>No raw prompts</li>
-          <li>No data saved</li>
+          <li>Customer-owned wallet</li>
+          <li>Default deny</li>
+          <li>No transaction broadcast</li>
         </ul>
       </div>
 
@@ -41,72 +43,72 @@ export function Hero({ pilotUrl }: { pilotUrl: string }) {
         <div className={styles.snapshot}>
           <div className={styles.snapshotHeader}>
             <div>
-              <p className={styles.microLabel}>Illustrative program</p>
-              <p className={styles.snapshotOrg}>Northstar Systems</p>
+              <p className={styles.microLabel}>Illustrative Wallet Kernel</p>
+              <p className={styles.snapshotOrg}>Northstar · Pi session</p>
             </div>
-            <span className={styles.draftBadge}>Draft close</span>
+            <span className={styles.draftBadge}>Simulation</span>
           </div>
 
           <div className={styles.poolRow}>
             <div>
-              <p className={styles.microLabel}>Employer-funded pool</p>
-              <p className={styles.poolValue}>$5,000</p>
+              <p className={styles.microLabel}>Session budget</p>
+              <p className={styles.poolValue}>5.00</p>
             </div>
             <div className={styles.poolMeta}>
-              <span>July 2026</span>
-              <span>Review required</span>
+              <span>test USDC</span>
+              <span>Base Sepolia · 84532</span>
             </div>
           </div>
 
           <dl className={styles.snapshotStats}>
             <div>
-              <dt>Registered Skills</dt>
-              <dd>14</dd>
+              <dt>Auto-allow ceiling</dt>
+              <dd>0.25</dd>
             </div>
             <div>
-              <dt>Active Creators</dt>
-              <dd>8</dd>
+              <dt>Approval ceiling</dt>
+              <dd>1.00</dd>
             </div>
             <div>
-              <dt>Outcome-backed uses</dt>
-              <dd>37</dd>
+              <dt>Wallet custody</dt>
+              <dd>Customer</dd>
             </div>
           </dl>
 
           <div className={styles.ledgerPreview}>
             <div className={styles.ledgerHead}>
-              <span>Recent evidence</span>
-              <span>Simulated</span>
+              <span>Policy outcomes</span>
+              <span>Offline fixture</span>
             </div>
             <div className={styles.ledgerLine}>
-              <span className={styles.ledgerIndex}>0142</span>
+              <span className={styles.ledgerIndex}>0001</span>
               <span>
-                <strong>Pull Request Risk Brief</strong>
-                <small>Payments · accepted result</small>
+                <strong>Model context · 0.08</strong>
+                <small>Approved seller · below auto ceiling</small>
               </span>
-              <span className={styles.included}>Included</span>
+              <span className={styles.included}>Allow</span>
             </div>
             <div className={styles.ledgerLine}>
-              <span className={styles.ledgerIndex}>0141</span>
+              <span className={styles.ledgerIndex}>0002</span>
               <span>
-                <strong>Incident Handoff</strong>
-                <small>Support · linked incident</small>
+                <strong>Repository audit · 0.60</strong>
+                <small>Exact operator decision required</small>
               </span>
-              <span className={styles.included}>Included</span>
+              <span className={styles.pending}>Approve</span>
             </div>
             <div className={styles.ledgerLine}>
-              <span className={styles.ledgerIndex}>0140</span>
+              <span className={styles.ledgerIndex}>0003</span>
               <span>
-                <strong>Support Escalation Triage</strong>
-                <small>Success · outcome pending</small>
+                <strong>Unknown seller · 0.01</strong>
+                <small>Default-deny boundary</small>
               </span>
-              <span className={styles.pending}>Pending</span>
+              <span className={styles.pending}>Deny</span>
             </div>
           </div>
 
           <div className={styles.snapshotFooter}>
-            <span>Evidence, not pay-per-call</span>
-            <Link href="/proof">Inspect protocol proof →</Link>
+            <span>Policy before signature</span>
+            <Link href="/proof">Inspect the legacy protocol proof →</Link>
           </div>
         </div>
       </div>

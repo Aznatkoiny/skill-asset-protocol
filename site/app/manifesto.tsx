@@ -7,8 +7,9 @@
 // shipping label / customs form with corner crop marks. The footer is a woven
 // garment label.
 
+import Link from 'next/link';
+
 import type { Manifesto } from './content';
-import { InvokeControls } from './components/InvokeControls';
 import styles from './manifesto.module.css';
 
 const YELLOW = '#FFD100';
@@ -51,10 +52,17 @@ export default function VariantA({ manifesto }: { manifesto: Manifesto }) {
       <header className="sticky top-0 z-40 border-b-2 border-black bg-white">
         <div className="flex items-center justify-between px-4 py-2 text-[10px] font-bold tracking-[0.25em] md:px-8">
           <span>{manifesto.project}</span>
-          <span aria-hidden className="hidden sm:inline">&ldquo;MANIFESTO&rdquo;</span>
+          <span className="hidden sm:inline">ARCHIVED EXPERIMENT</span>
           <span aria-hidden>N&ordm; 402</span>
         </div>
       </header>
+
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-black px-4 py-3 text-[10px] font-bold tracking-[0.16em] text-white md:px-8">
+        <p>STATIC HISTORY — NOT THE CURRENT PRODUCT OR A LIVE PAYMENT ENDPOINT</p>
+        <Link className="border-b border-white" href="/">
+          OPEN THE CURRENT WALLET KERNEL PREVIEW &rarr;
+        </Link>
+      </div>
 
       {/* ————— MASTHEAD: TITLE / SUBTITLE / PREAMBLE ————— */}
       <section className="px-4 pt-16 pb-20 md:px-8 md:pt-28 md:pb-36">
@@ -66,7 +74,7 @@ export default function VariantA({ manifesto }: { manifesto: Manifesto }) {
           {manifesto.preamble}
         </p>
         <p aria-hidden className="mt-14 text-[9px] font-bold tracking-[0.3em] opacity-60">
-          SCROLL &darr; — 10 PRINCIPLES · 2 RECEIPTS · 1 METERED ENDPOINT
+          SCROLL &darr; — 10 HISTORICAL PRINCIPLES · 1 VERIFIED RECEIPT · NO LIVE ENDPOINT
         </p>
       </section>
 
@@ -106,7 +114,7 @@ export default function VariantA({ manifesto }: { manifesto: Manifesto }) {
       <section id="proof" aria-label="Proof" className="px-4 py-20 md:px-8 md:py-32">
         <div className="flex items-baseline justify-between text-[10px] font-bold tracking-[0.25em]">
           <span>SECTION — EVIDENCE</span>
-          <span aria-hidden>&ldquo;RECEIPTS&rdquo;</span>
+          <span aria-hidden>&ldquo;ONE RECEIPT&rdquo;</span>
         </div>
         <h2 className="mt-4 text-[clamp(2.4rem,10vw,7rem)] leading-none font-bold tracking-[-0.02em]">
           {manifesto.proof.heading}
@@ -117,7 +125,7 @@ export default function VariantA({ manifesto }: { manifesto: Manifesto }) {
 
         <div className="mt-10 max-w-2xl border-2 border-black">
           <p className="border-b-2 border-black px-3 py-2 text-[9px] font-bold tracking-[0.25em]">
-            &ldquo;LEDGER&rdquo; — EVERY CENT RECONCILED
+            HISTORICAL TRANSFER — ONE RECEIPT VERIFIED
           </p>
           <p className="px-3 py-4 font-mono text-[11px] leading-[1.9] normal-case md:text-[12px]">
             {manifesto.proof.ledger}
@@ -150,7 +158,7 @@ export default function VariantA({ manifesto }: { manifesto: Manifesto }) {
       <Hazard />
 
       {/* ————— DO IT YOURSELF — SHIPPING LABEL / CUSTOMS FORM ————— */}
-      <section id="invoke" aria-label="Do it yourself" className="px-6 py-20 md:px-8 md:py-32">
+      <section id="invoke" aria-label="Retired endpoint archive" className="px-6 py-20 md:px-8 md:py-32">
         <div
           className="relative mx-auto max-w-3xl border-2 border-black p-5 md:p-10"
           style={{ background: YELLOW }}
@@ -174,19 +182,11 @@ export default function VariantA({ manifesto }: { manifesto: Manifesto }) {
             {manifesto.doIt.intro}
           </p>
 
-          {/* Monopoly-money customs declaration + faucet */}
+          {/* Static archive notice */}
           <div className="mt-6 border-2 border-dashed border-black p-4">
             <p className="text-[10px] leading-[1.8] font-bold tracking-[0.12em]">
               {manifesto.doIt.monopoly}
             </p>
-            <a
-              href={manifesto.doIt.faucet}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="mt-3 inline-block border-2 border-black bg-white px-3 py-2 text-[10px] font-bold tracking-[0.15em] transition-colors hover:bg-black hover:text-white"
-            >
-              &ldquo;FREE MONEY&rdquo; &rarr; FAUCET.CIRCLE.COM &nearr;
-            </a>
           </div>
 
           {/* The four steps — form fields */}
@@ -207,7 +207,16 @@ export default function VariantA({ manifesto }: { manifesto: Manifesto }) {
             </ol>
           </div>
 
-          <InvokeControls basescan={manifesto.proof.basescan} />
+          <div className="mt-8 border-2 border-black bg-white p-4">
+            <p className="text-[10px] leading-[1.8] font-bold tracking-[0.12em]">
+              RETIRED — NO WALLET CONNECTION OR PAYMENT IS AVAILABLE ON THIS
+              WEBSITE.
+            </p>
+            <p className="mt-2 font-mono text-[10px] leading-relaxed normal-case">
+              Current development belongs in the customer-hosted Wallet Kernel,
+              behind explicit policy and release evidence gates.
+            </p>
+          </div>
         </div>
       </section>
 
@@ -235,7 +244,7 @@ export default function VariantA({ manifesto }: { manifesto: Manifesto }) {
               </a>
             </p>
             <p aria-hidden className="mt-6 text-[7px] font-bold tracking-[0.2em] opacity-60">
-              DO NOT HAND OVER · MACHINE WASH ON-CHAIN · 100% AUTHORED WORK
+              ARCHIVED MANIFESTO · STATIC RECEIPT · NO LIVE ENDPOINT
             </p>
           </div>
         </div>

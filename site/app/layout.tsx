@@ -15,15 +15,15 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   metadataBase: new URL("https://neverhandedover.com"),
   title: {
-    default: "Skill Asset Protocol — Attribute and reward internal AI work",
+    default: "Skill Asset Protocol — Spending controls for AI Agents",
     template: "%s · Skill Asset Protocol",
   },
   description:
-    "Register employee-authored AI Skills, verify real team reuse, and close a transparent employer-funded reward program.",
+    "Pre-release offline preview of a customer-hosted Wallet Kernel for policy-bound Agent spending, exact human approvals, and planned signed receipts.",
   openGraph: {
-    title: "Make the people behind your AI leverage visible",
+    title: "Give AI Agents a wallet without giving them the keys",
     description:
-      "A product preview for registering internal AI Skills, verifying reuse, and creating reviewable Creator reward statements.",
+      "Pre-release offline preview of a wallet-native Agent Spend Control Plane with budgets, seller policy, approvals, and planned signed receipts.",
     url: "https://neverhandedover.com",
     siteName: "SKILL ASSET PROTOCOL",
     type: "website",

@@ -764,7 +764,7 @@
 
 .stepper {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   margin: 58px 0 0;
   padding: 0;
   border: 2px solid var(--ink);
@@ -1138,6 +1138,58 @@
 
 .outcomeTag span:last-child {
   overflow-wrap: anywhere;
+}
+
+.approvalPanel {
+  border-top: 2px solid var(--ink);
+  background: var(--paper);
+  padding: 18px;
+}
+
+.approvalPanel h3 {
+  margin: 6px 0 0;
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.approvalGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin: 16px 0 0;
+  border-top: 1px solid var(--ink);
+  border-left: 1px solid var(--ink);
+}
+
+.approvalGrid > div {
+  min-width: 0;
+  border-right: 1px solid var(--ink);
+  border-bottom: 1px solid var(--ink);
+  padding: 11px;
+}
+
+.approvalGrid dt {
+  margin-bottom: 7px;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.approvalGrid dd {
+  margin: 0;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 9px;
+  font-weight: 620;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.approvalWarning {
+  margin: 12px 0 0;
+  font-size: 10px;
+  font-weight: 680;
+  line-height: 1.5;
 }
 
 .nextAction {
@@ -1672,11 +1724,11 @@
     grid-template-columns: 1fr 1fr;
   }
 
-  .step:nth-child(2) {
+  .step:nth-child(even) {
     border-right: 0;
   }
 
-  .step:nth-child(-n + 2) {
+  .step:nth-child(-n + 4) {
     border-bottom: 1px solid var(--ink);
   }
 
@@ -1900,6 +1952,10 @@
   .invocation > .successBadge {
     grid-column: 2;
     justify-self: start;
+  }
+
+  .approvalGrid {
+    grid-template-columns: 1fr;
   }
 
   .nextAction {

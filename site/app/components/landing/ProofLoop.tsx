@@ -5,11 +5,12 @@ export function ProofLoop() {
   return (
     <section className={styles.section} aria-labelledby="how-it-works">
       <div className={styles.sectionHeading}>
-        <p className={styles.eyebrow}>The operating loop</p>
-        <h2 id="how-it-works">From authored work to a defensible reward close.</h2>
+        <p className={styles.eyebrow}>The control loop</p>
+        <h2 id="how-it-works">From Agent request to accountable spend.</h2>
         <p>
-          The chain is optional plumbing. The product is the monthly system of
-          record your organization can explain.
+          The customer-hosted Wallet Kernel stays wallet-first: it decides what
+          may be signed and records what happened. Planned on-chain settlement
+          stays behind the release gate.
         </p>
       </div>
 
