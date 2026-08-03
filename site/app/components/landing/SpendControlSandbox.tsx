@@ -41,6 +41,8 @@ const announcements: Record<SpendSandboxStage, string> = {
     'The 0.60 request is queued for exact approval. No signature exists.',
   approved_waiting_retry:
     'Approval is recorded and the flow has stopped. The Wielder must repeat the exact request.',
+  approval_invalidated:
+    'The retry was rejected and its prior approval was invalidated. Start a new request.',
   finalized:
     'The exact request was deliberately repeated and an unsigned session projection is ready.',
 };
@@ -232,9 +234,13 @@ export function SpendControlSandbox({ pilotUrl }: { pilotUrl: string }) {
 
       <ol className={styles.stepper} aria-label="Sandbox progress">
         {steps.map((step, index) => {
-          const complete = isStepComplete(step.stage, state.stage);
+          const isInvalidatedRetryStep =
+            state.stage === 'approval_invalidated' &&
+            step.stage === 'approved_waiting_retry';
+          const complete =
+            !isInvalidatedRetryStep && isStepComplete(step.stage, state.stage);
           const current =
-            state.stage === 'finalized'
+            state.stage === 'finalized' || state.stage === 'approval_invalidated'
               ? index === steps.length - 1
               : spendStageIndex(step.stage) === spendStageIndex(state.stage);
           return (
@@ -399,7 +405,9 @@ export function SpendControlSandbox({ pilotUrl }: { pilotUrl: string }) {
                 <h3 id="approval-details-title">
                   {view.approvalPanelState === 'approved_waiting_retry'
                     ? 'Approved once — waiting for Wielder retry'
-                    : 'Operator decision required'}
+                    : view.approvalPanelState === 'approval_invalidated'
+                      ? 'Approval invalidated — start again'
+                      : 'Operator decision required'}
                 </h3>
                 <dl className={styles.approvalGrid}>
                   <div>
@@ -422,6 +430,23 @@ export function SpendControlSandbox({ pilotUrl }: { pilotUrl: string }) {
                     <dt>Policy version</dt>
                     <dd>{approvalAttempt.policyVersionHash}</dd>
                   </div>
+                  <div>
+                    <dt>Simulated operator</dt>
+                    <dd>
+                      {view.approvalOperator === null
+                        ? 'Not yet recorded'
+                        : `${view.approvalOperator.label} · ${view.approvalOperator.identity}`}
+                      <small>
+                        Simulated fixture identity · no authentication performed
+                      </small>
+                    </dd>
+                  </div>
+                  {view.approvalInvalidationDetail !== null && (
+                    <div>
+                      <dt>Retry outcome</dt>
+                      <dd>{view.approvalInvalidationDetail}</dd>
+                    </div>
+                  )}
                   <div>
                     <dt>Policy mismatch</dt>
                     <dd>{approvalAttempt.policyMismatch}</dd>

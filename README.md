@@ -78,7 +78,7 @@ labels it as the Skill-leg settlement. See the
 [receipt manifest](spikes/pi-wielder/evidence/2026-07-12-skill-settlement/manifest.json).
 
 That receipt does **not** prove current endpoint behavior, latency,
-Royalty-claim split correctness, Skill execution output, independent demand, or
+Royalty claim split correctness, Skill execution output, independent demand, or
 production readiness. A later aggregate timing summary is quarantined and is
 not used in product claims because its normalized samples were not retained;
 see its

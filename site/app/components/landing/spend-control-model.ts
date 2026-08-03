@@ -7,6 +7,12 @@ export const demoWallet = {
   simulated: true,
 } as const;
 
+export const demoOperator = {
+  identity: 'operator:northstar-local-admin',
+  label: 'Northstar local operator',
+  evidence: 'simulated_fixture',
+} as const;
+
 export const spendPolicy = {
   name: 'Pilot spend policy v1',
   network: 'eip155:84532',
@@ -117,6 +123,7 @@ export const SPEND_SANDBOX_STAGES = [
   'denied',
   'approval_pending',
   'approved_waiting_retry',
+  'approval_invalidated',
   'finalized',
 ] as const;
 
@@ -135,13 +142,28 @@ export interface SpendApprovalBinding {
 
 export interface SpendApprovalPermit extends SpendApprovalBinding {
   approvedAtMs: number;
+  operator: typeof demoOperator;
+}
+
+export type RetryInvalidationReason =
+  | 'binding_mismatch'
+  | 'approval_expired'
+  | 'retry_before_approval'
+  | 'invalid_retry_time';
+
+export interface SpendRetryOutcome {
+  reason: RetryInvalidationReason;
+  attemptedAtMs: number;
 }
 
 export type SpendSandboxState =
   | {
       stage: Exclude<
         SpendSandboxStage,
-        'approval_pending' | 'approved_waiting_retry' | 'finalized'
+        | 'approval_pending'
+        | 'approved_waiting_retry'
+        | 'approval_invalidated'
+        | 'finalized'
       >;
     }
   | {
@@ -154,7 +176,17 @@ export type SpendSandboxState =
       approvalIntent: DemoSpendIntent;
       approvalPermit: SpendApprovalPermit;
     }
-  | { stage: 'finalized'; approvalIntent: DemoSpendIntent };
+  | {
+      stage: 'approval_invalidated';
+      approvalIntent: DemoSpendIntent;
+      approvalRecord: SpendApprovalPermit;
+      retryOutcome: SpendRetryOutcome;
+    }
+  | {
+      stage: 'finalized';
+      approvalIntent: DemoSpendIntent;
+      approvalPermit: SpendApprovalPermit;
+    };
 
 export type SpendSandboxAction =
   | { type: 'LOAD_POLICY' }
@@ -176,6 +208,10 @@ export interface DemoSpendAttempt extends DemoSpendIntent {
     | 'Denied'
     | 'Approval required'
     | 'Approved — waiting for retry'
+    | 'Approval invalidated — changed request'
+    | 'Approval expired — start again'
+    | 'Approval invalidated — retry predates approval'
+    | 'Approval invalidated — invalid retry time'
     | 'Simulated finalized';
 }
 
@@ -224,19 +260,46 @@ function permitMatchesRepeatedIntent(
   );
 }
 
-function pendingApprovalForPermit(
+function retryInvalidationReason(
   permit: SpendApprovalPermit,
-): SpendApprovalBinding {
-  return {
-    requestHash: permit.requestHash,
-    challengeId: permit.challengeId,
-    sellerOrigin: permit.sellerOrigin,
-    resource: permit.resource,
-    amountAtomic: permit.amountAtomic,
-    wallet: permit.wallet,
-    policyVersionHash: permit.policyVersionHash,
-    expiresAtMs: permit.expiresAtMs,
-  };
+  repeatedIntent: DemoSpendIntent,
+  nowMs: number,
+): RetryInvalidationReason | null {
+  if (!Number.isFinite(nowMs)) return 'invalid_retry_time';
+  if (nowMs < permit.approvedAtMs) return 'retry_before_approval';
+  if (nowMs >= permit.expiresAtMs) return 'approval_expired';
+  if (!permitMatchesRepeatedIntent(permit, repeatedIntent)) {
+    return 'binding_mismatch';
+  }
+  return null;
+}
+
+function invalidatedAttemptStatus(
+  reason: RetryInvalidationReason,
+): DemoSpendAttempt['status'] {
+  switch (reason) {
+    case 'binding_mismatch':
+      return 'Approval invalidated — changed request';
+    case 'approval_expired':
+      return 'Approval expired — start again';
+    case 'retry_before_approval':
+      return 'Approval invalidated — retry predates approval';
+    case 'invalid_retry_time':
+      return 'Approval invalidated — invalid retry time';
+  }
+}
+
+function invalidatedAttemptDetail(reason: RetryInvalidationReason): string {
+  switch (reason) {
+    case 'binding_mismatch':
+      return 'Repeated request did not match the exact approval. Start a new request.';
+    case 'approval_expired':
+      return 'Approval expired before retry. Start a new request.';
+    case 'retry_before_approval':
+      return 'Retry timestamp predates the approval. Start a new request.';
+    case 'invalid_retry_time':
+      return 'Retry timestamp was invalid. Start a new request.';
+  }
 }
 
 export function spendSandboxReducer(
@@ -275,24 +338,34 @@ export function spendSandboxReducer(
         approvalPermit: {
           ...state.pendingApproval,
           approvedAtMs: action.nowMs,
+          operator: demoOperator,
         },
       };
     }
     case 'RETRY_APPROVED_REQUEST': {
       if (state.stage !== 'approved_waiting_retry') return state;
       const permit = state.approvalPermit;
-      const isExactUnexpiredRetry =
-        Number.isFinite(action.nowMs) &&
-        action.nowMs >= permit.approvedAtMs &&
-        action.nowMs < permit.expiresAtMs &&
-        permitMatchesRepeatedIntent(permit, action.repeatedIntent);
-      return isExactUnexpiredRetry
-        ? { stage: 'finalized', approvalIntent: state.approvalIntent }
-        : {
-            stage: 'approval_pending',
-            approvalIntent: state.approvalIntent,
-            pendingApproval: pendingApprovalForPermit(permit),
-          };
+      const invalidationReason = retryInvalidationReason(
+        permit,
+        action.repeatedIntent,
+        action.nowMs,
+      );
+      if (invalidationReason !== null) {
+        return {
+          stage: 'approval_invalidated',
+          approvalIntent: state.approvalIntent,
+          approvalRecord: permit,
+          retryOutcome: {
+            reason: invalidationReason,
+            attemptedAtMs: action.nowMs,
+          },
+        };
+      }
+      return {
+        stage: 'finalized',
+        approvalIntent: state.approvalIntent,
+        approvalPermit: permit,
+      };
     }
     case 'RESET':
       return INITIAL_SPEND_SANDBOX_STATE;
@@ -308,19 +381,30 @@ export function spendSandboxView(state: SpendSandboxState) {
   const approvalIntent =
     state.stage === 'approval_pending' ||
     state.stage === 'approved_waiting_retry' ||
+    state.stage === 'approval_invalidated' ||
     state.stage === 'finalized'
       ? state.approvalIntent
       : null;
   const hasApprovalAttempt = approvalIntent !== null;
   const isApprovedWaitingRetry = state.stage === 'approved_waiting_retry';
   const hasApprovedPermit = isApprovedWaitingRetry;
-  const hasSessionProjection = index >= spendStageIndex('finalized');
+  const approvalRecord =
+    state.stage === 'approved_waiting_retry' || state.stage === 'finalized'
+      ? state.approvalPermit
+      : state.stage === 'approval_invalidated'
+        ? state.approvalRecord
+        : null;
+  const retryOutcome =
+    state.stage === 'approval_invalidated' ? state.retryOutcome : null;
+  const hasSessionProjection = state.stage === 'finalized';
   const approvalPanelState =
     state.stage === 'approval_pending'
       ? 'approval_required'
       : state.stage === 'approved_waiting_retry'
         ? 'approved_waiting_retry'
-        : null;
+        : state.stage === 'approval_invalidated'
+          ? 'approval_invalidated'
+          : null;
   const attempts: DemoSpendAttempt[] = [];
 
   if (hasAutoAllowed) {
@@ -342,6 +426,9 @@ export function spendSandboxView(state: SpendSandboxState) {
   if (hasApprovalAttempt) {
     let status: DemoSpendAttempt['status'] = 'Approval required';
     if (isApprovedWaitingRetry) status = 'Approved — waiting for retry';
+    if (retryOutcome !== null) {
+      status = invalidatedAttemptStatus(retryOutcome.reason);
+    }
     if (hasSessionProjection) status = 'Simulated finalized';
     attempts.push({
       ...approvalIntent,
@@ -362,6 +449,12 @@ export function spendSandboxView(state: SpendSandboxState) {
     hasApprovedPermit,
     hasSessionProjection,
     approvalPanelState,
+    approvalOperator: approvalRecord?.operator ?? null,
+    retryOutcome,
+    approvalInvalidationDetail:
+      retryOutcome === null
+        ? null
+        : invalidatedAttemptDetail(retryOutcome.reason),
     chargedAtomic,
     remainingAtomic: spendPolicy.sessionBudgetAtomic - chargedAtomic,
   };
@@ -416,6 +509,7 @@ export function nextSpendSandboxAction(stage: SpendSandboxStage): {
         label: 'Repeat the exact Agent request',
         note: 'Simulates deliberate Wielder retry, exact revalidation, and an unsigned outcome projection.',
       };
+    case 'approval_invalidated':
     case 'finalized':
       return null;
   }

@@ -175,10 +175,13 @@ inputs. They should be part of the core domain model, not postponed until a mark
 
 Use an Invocation as an evidence event, not as a dollar counter.
 
-The repository measured one human prompt producing seven paid agent turns
-([Pi-Wielder results](../spikes/pi-wielder/README.md#measured-results--overhead-distribution--live-pi-session-2026-07-15)).
-A literal per-call reward therefore favors chatty runtimes, creates unpredictable employer
-cost, and is easy to game.
+A quarantined historical summary reported seven paid Agent turns from one human
+prompt, but its normalized samples were not retained and it is not publishable
+evidence
+([Pi-Wielder evidence status](../spikes/pi-wielder/README.md#measured-results--overhead-distribution--live-pi-session-2026-07-15)).
+Treat the following as a hypothesis until a fresh run reproduces it: a literal
+per-call reward may favor chatty runtimes, create unpredictable employer cost,
+and be easy to game.
 
 For internal use:
 

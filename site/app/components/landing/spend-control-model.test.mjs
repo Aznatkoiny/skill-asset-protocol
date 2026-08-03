@@ -5,7 +5,6 @@ import test from 'node:test';
 import * as model from './spend-control-model.ts';
 
 const APPROVAL_NOW_MS = Date.parse('2026-08-02T18:13:00Z');
-
 const queueApproval = (intent = model.demoSpendIntents[2]) =>
   model.spendSandboxReducer(
     { stage: 'denied' },
@@ -148,11 +147,12 @@ test('the spend-control sandbox advances only through authorized transitions', (
     'denied',
     'approval_pending',
     'approved_waiting_retry',
+    'approval_invalidated',
     'finalized',
   ]);
 });
 
-test('each changed approval binding clears the permit without finalizing', () => {
+test('each changed approval binding invalidates the approval and preserves its audit outcome', () => {
   const intent = model.demoSpendIntents[2];
   const mutations = [
     ['requestHash', { ...intent, requestHash: `sha256:${'f'.repeat(64)}` }],
@@ -189,13 +189,64 @@ test('each changed approval binding clears the permit without finalizing', () =>
     });
 
     assert.notEqual(retried.stage, 'finalized', `${field} must not finalize`);
-    assert.equal(retried.stage, 'approval_pending', `${field} must re-approve`);
+    assert.equal(
+      retried.stage,
+      'approval_invalidated',
+      `${field} must start again`,
+    );
+    assert.equal(retried.retryOutcome.reason, 'binding_mismatch', field);
+    assert.deepEqual(retried.approvalIntent, intent, field);
+    assert.equal(
+      retried.approvalRecord.operator.evidence,
+      'simulated_fixture',
+      field,
+    );
     assert.equal(
       'approvalPermit' in retried,
       false,
       `${field} must clear permit`,
     );
+    assert.equal(
+      'pendingApproval' in retried,
+      false,
+      `${field} must not reuse the old approval`,
+    );
+    assert.equal(
+      model.spendSandboxView(retried).attempts.at(-1)?.status,
+      'Approval invalidated — changed request',
+      field,
+    );
   }
+});
+
+test('approval records a simulated operator identity without claiming authentication', () => {
+  const approved = approvePending();
+  const approvalAction = model.nextSpendSandboxAction('approval_pending').action;
+
+  assert.equal(approved.stage, 'approved_waiting_retry');
+  assert.deepEqual(approved.approvalPermit.operator, {
+    identity: 'operator:northstar-local-admin',
+    label: 'Northstar local operator',
+    evidence: 'simulated_fixture',
+  });
+  assert.deepEqual(
+    model.spendSandboxView(approved).approvalOperator,
+    approved.approvalPermit.operator,
+  );
+  assert.equal('operatorIdentity' in approvalAction, false);
+});
+
+test('the exact-authority preview exposes the approval operator identity', () => {
+  const source = readFileSync(
+    new URL('./SpendControlSandbox.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(source, /<dt>Simulated operator<\/dt>/);
+  assert.match(source, /view\.approvalOperator/);
+  assert.match(source, /Simulated operator/);
+  assert.match(source, /no authentication performed/);
+  assert.doesNotMatch(source, /authenticated operator/i);
 });
 
 test('approval promotes only the intent binding stored when it was queued', () => {
@@ -226,8 +277,10 @@ test('approval promotes only the intent binding stored when it was queued', () =
   );
 
   assert.notEqual(retried.stage, 'finalized');
-  assert.equal(retried.stage, 'approval_pending');
-  assert.equal(retried.pendingApproval.requestHash, approvalIntent.requestHash);
+  assert.equal(retried.stage, 'approval_invalidated');
+  assert.equal(retried.retryOutcome.reason, 'binding_mismatch');
+  assert.deepEqual(retried.approvalIntent, approvalIntent);
+  assert.equal('pendingApproval' in retried, false);
   assert.equal('approvalPermit' in retried, false);
   assert.deepEqual(rejectedQueue, { stage: 'denied' });
 });
@@ -248,11 +301,11 @@ test('the exact permit expiry millisecond cannot finalize', () => {
     nowMs: intent.approvalExpiresAtMs,
   });
 
-  assert.equal(retried.stage, 'approval_pending');
-  assert.equal(
-    retried.pendingApproval?.expiresAtMs,
-    intent.approvalExpiresAtMs,
-  );
+  assert.equal(retried.stage, 'approval_invalidated');
+  assert.equal(retried.retryOutcome.reason, 'approval_expired');
+  assert.equal(retried.retryOutcome.attemptedAtMs, intent.approvalExpiresAtMs);
+  assert.deepEqual(retried.approvalIntent, intent);
+  assert.equal('pendingApproval' in retried, false);
   assert.equal('approvalPermit' in retried, false);
 });
 
@@ -324,28 +377,28 @@ test('the projection preview renders the finalized intent charge', () => {
   );
 });
 
-test('retry time must be finite and not precede permit approval', () => {
+test('invalid retry time invalidates the approval with an honest audit reason', () => {
   const intent = model.demoSpendIntents[2];
   const pending = queueApproval(intent);
-  const originalBinding = pending.pendingApproval;
   const invalidRetryTimes = [
-    ['negative infinity', Number.NEGATIVE_INFINITY],
-    ['before approval', APPROVAL_NOW_MS - 1],
-    ['positive infinity', Number.POSITIVE_INFINITY],
-    ['NaN', Number.NaN],
+    ['negative infinity', Number.NEGATIVE_INFINITY, 'invalid_retry_time'],
+    ['before approval', APPROVAL_NOW_MS - 1, 'retry_before_approval'],
+    ['positive infinity', Number.POSITIVE_INFINITY, 'invalid_retry_time'],
+    ['NaN', Number.NaN, 'invalid_retry_time'],
   ];
 
-  for (const [label, nowMs] of invalidRetryTimes) {
+  for (const [label, nowMs, expectedReason] of invalidRetryTimes) {
     const retried = model.spendSandboxReducer(approvePending(pending), {
       type: 'RETRY_APPROVED_REQUEST',
       repeatedIntent: intent,
       nowMs,
     });
 
-    assert.equal(retried.stage, 'approval_pending', label);
-    assert.equal('approvalPermit' in retried, false, label);
-    assert.deepEqual(retried.pendingApproval, originalBinding, label);
+    assert.equal(retried.stage, 'approval_invalidated', label);
+    assert.equal(retried.retryOutcome.reason, expectedReason, label);
     assert.deepEqual(retried.approvalIntent, intent, label);
+    assert.equal('approvalPermit' in retried, false, label);
+    assert.equal('pendingApproval' in retried, false, label);
   }
 });
 
@@ -358,8 +411,37 @@ test('a retry after the fixture expiry clears approval without finalizing', () =
     nowMs: Date.parse('2026-08-02T18:15:00Z') + 1,
   });
 
-  assert.equal(retried.stage, 'approval_pending');
+  assert.equal(retried.stage, 'approval_invalidated');
+  assert.equal(retried.retryOutcome.reason, 'approval_expired');
+  assert.deepEqual(retried.approvalIntent, intent);
+  assert.equal('pendingApproval' in retried, false);
   assert.equal('approvalPermit' in retried, false);
+  assert.equal(
+    model.spendSandboxView(retried).attempts.at(-1)?.status,
+    'Approval expired — start again',
+  );
+});
+
+test('an invalidated retry is distinct from the earlier unknown-seller denial', () => {
+  const intent = model.demoSpendIntents[2];
+  const retried = model.spendSandboxReducer(approvePending(queueApproval(intent)), {
+    type: 'RETRY_APPROVED_REQUEST',
+    repeatedIntent: { ...intent, resource: '/v1/substituted-resource' },
+    nowMs: Date.parse('2026-08-02T18:14:00Z'),
+  });
+  const view = model.spendSandboxView(retried);
+
+  assert.equal(retried.stage, 'approval_invalidated');
+  assert.equal(view.hasApprovedPermit, false);
+  assert.equal(view.hasSessionProjection, false);
+  assert.equal(view.approvalPanelState, 'approval_invalidated');
+  assert.equal(view.retryOutcome.reason, 'binding_mismatch');
+  assert.equal(view.attempts.length, 3);
+  assert.equal(view.attempts[1]?.status, 'Denied');
+  assert.equal(
+    view.attempts[2]?.status,
+    'Approval invalidated — changed request',
+  );
 });
 
 test('operator approval ends without signing until the Wielder repeats the exact request', () => {
@@ -451,6 +533,7 @@ test('each active stage exposes one explicit next operator action', () => {
     model.nextSpendSandboxAction('approved_waiting_retry')?.action.type,
     'RETRY_APPROVED_REQUEST',
   );
+  assert.equal(model.nextSpendSandboxAction('approval_invalidated'), null);
   assert.equal(model.nextSpendSandboxAction('finalized'), null);
 });
 
