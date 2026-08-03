@@ -1,0 +1,113 @@
+name: Phase 0 and Wallet Kernel offline verification
+
+on:
+  pull_request:
+    paths:
+      - 'phase0/**'
+      - 'prototype/**'
+      - 'spikes/pi-wielder/**'
+      - '.claude/skills/optimizing-claude-code-prompts/**'
+      - '.github/workflows/offline-verification.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'phase0/**'
+      - 'prototype/**'
+      - 'spikes/pi-wielder/**'
+      - '.claude/skills/optimizing-claude-code-prompts/**'
+      - '.github/workflows/offline-verification.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  phase0:
+    name: Phase 0 provenance CLI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: phase0
+    steps:
+      - name: Check out reviewed source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Install Node 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.22.0
+          cache: npm
+          cache-dependency-path: phase0/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run Phase 0 tests
+        run: npm test
+
+      - name: Typecheck Phase 0
+        run: npm run typecheck
+
+      - name: Verify the Phase 0 checkout stayed clean
+        working-directory: .
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          test -z "$(git status --porcelain)"
+
+  wallet-kernel:
+    name: Wallet Kernel deterministic evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: spikes/pi-wielder
+    steps:
+      - name: Check out reviewed source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Install exact Wallet Kernel Node runtime
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.18.1
+          cache: npm
+          cache-dependency-path: spikes/pi-wielder/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run the complete offline spend-control story
+        run: npm run verify:spend-control
+
+      - name: Build and independently verify deterministic evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_parent="$(mktemp -d "${RUNNER_TEMP}/pi-wielder-evidence.XXXXXX")"
+          npm run evidence:offline -- \
+            --output "${evidence_parent}/bundle" \
+            --anchor-output "${evidence_parent}/manifest.sha256"
+          manifest_sha256="$(tr -d '\n' < "${evidence_parent}/manifest.sha256")"
+          npm run evidence:verify -- "${evidence_parent}/bundle" \
+            --expect-manifest-sha256 "${manifest_sha256}"
+
+      - name: Reject tracked secrets
+        run: npm run verify:no-secrets
+
+      - name: Run shared economics regressions
+        working-directory: prototype
+        run: npm test
+
+      - name: Verify the checkout stayed clean
+        working-directory: .
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          test -z "$(git status --porcelain)"
