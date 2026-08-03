@@ -1,0 +1,1502 @@
+[
+  {
+    "id": "ho-v2-01-01",
+    "mode": "Optimize",
+    "input": "Optimize this cache request without breaking callers. Use @src/cache/invalidate.ts; verify with npm test -- src/cache/invalidate.test.ts; keep the cache API backward-compatible.",
+    "rubric": {
+      "expectedMode": "Optimize",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/cache/invalidate.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/cache/invalidate.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "keep the cache API backward-compatible",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-01-02",
+    "mode": "Diagnose",
+    "input": "The cache implementation masked a failure; rewrite the request. Use @src/cache/invalidate.ts; verify with npm test -- src/cache/invalidate.test.ts; keep the cache API backward-compatible.",
+    "rubric": {
+      "expectedMode": "Diagnose",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/cache/invalidate.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/cache/invalidate.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "keep the cache API backward-compatible",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-01-03",
+    "mode": "Generate",
+    "input": "Generate the smallest verified change request for cache. Use @src/cache/invalidate.ts; verify with npm test -- src/cache/invalidate.test.ts; keep the cache API backward-compatible.",
+    "rubric": {
+      "expectedMode": "Generate",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/cache/invalidate.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/cache/invalidate.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "keep the cache API backward-compatible",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-02-01",
+    "mode": "Optimize",
+    "input": "Optimize this session request without breaking callers. Use @src/session/timeout.ts; verify with npm test -- src/session/timeout.test.ts; fix the root cause without suppressing the error.",
+    "rubric": {
+      "expectedMode": "Optimize",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/session/timeout.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/session/timeout.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "fix the root cause without suppressing the error",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-02-02",
+    "mode": "Diagnose",
+    "input": "The session implementation masked a failure; rewrite the request. Use @src/session/timeout.ts; verify with npm test -- src/session/timeout.test.ts; fix the root cause without suppressing the error.",
+    "rubric": {
+      "expectedMode": "Diagnose",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/session/timeout.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/session/timeout.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "fix the root cause without suppressing the error",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-02-03",
+    "mode": "Generate",
+    "input": "Generate the smallest verified change request for session. Use @src/session/timeout.ts; verify with npm test -- src/session/timeout.test.ts; fix the root cause without suppressing the error.",
+    "rubric": {
+      "expectedMode": "Generate",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/session/timeout.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/session/timeout.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "fix the root cause without suppressing the error",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-03-01",
+    "mode": "Optimize",
+    "input": "Optimize this report request without breaking callers. Use @src/reports/download.ts; verify with npm test -- src/reports/download.test.ts; preserve the download response headers.",
+    "rubric": {
+      "expectedMode": "Optimize",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/reports/download.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/reports/download.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "preserve the download response headers",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-03-02",
+    "mode": "Diagnose",
+    "input": "The report implementation masked a failure; rewrite the request. Use @src/reports/download.ts; verify with npm test -- src/reports/download.test.ts; preserve the download response headers.",
+    "rubric": {
+      "expectedMode": "Diagnose",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/reports/download.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/reports/download.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "preserve the download response headers",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-03-03",
+    "mode": "Generate",
+    "input": "Generate the smallest verified change request for report. Use @src/reports/download.ts; verify with npm test -- src/reports/download.test.ts; preserve the download response headers.",
+    "rubric": {
+      "expectedMode": "Generate",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/reports/download.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/reports/download.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "preserve the download response headers",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-04-01",
+    "mode": "Optimize",
+    "input": "Optimize this audit request without breaking callers. Use @src/audit/append.ts; verify with npm test -- src/audit/append.test.ts; make audit entries append-only.",
+    "rubric": {
+      "expectedMode": "Optimize",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/audit/append.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/audit/append.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "make audit entries append-only",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-04-02",
+    "mode": "Diagnose",
+    "input": "The audit implementation masked a failure; rewrite the request. Use @src/audit/append.ts; verify with npm test -- src/audit/append.test.ts; make audit entries append-only.",
+    "rubric": {
+      "expectedMode": "Diagnose",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/audit/append.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/audit/append.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "make audit entries append-only",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-04-03",
+    "mode": "Generate",
+    "input": "Generate the smallest verified change request for audit. Use @src/audit/append.ts; verify with npm test -- src/audit/append.test.ts; make audit entries append-only.",
+    "rubric": {
+      "expectedMode": "Generate",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/audit/append.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/audit/append.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "make audit entries append-only",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-05-01",
+    "mode": "Optimize",
+    "input": "Optimize this orders request without breaking callers. Use @src/orders/filter.ts; verify with npm test -- src/orders/filter.test.ts; preserve the JSON response shape exactly.",
+    "rubric": {
+      "expectedMode": "Optimize",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/orders/filter.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/orders/filter.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "preserve the JSON response shape exactly",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-05-02",
+    "mode": "Diagnose",
+    "input": "The orders implementation masked a failure; rewrite the request. Use @src/orders/filter.ts; verify with npm test -- src/orders/filter.test.ts; preserve the JSON response shape exactly.",
+    "rubric": {
+      "expectedMode": "Diagnose",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/orders/filter.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/orders/filter.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "preserve the JSON response shape exactly",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-05-03",
+    "mode": "Generate",
+    "input": "Generate the smallest verified change request for orders. Use @src/orders/filter.ts; verify with npm test -- src/orders/filter.test.ts; preserve the JSON response shape exactly.",
+    "rubric": {
+      "expectedMode": "Generate",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/orders/filter.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/orders/filter.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "preserve the JSON response shape exactly",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-06-01",
+    "mode": "Optimize",
+    "input": "Optimize this upload request without breaking callers. Use @src/uploads/limits.ts; verify with npm test -- src/uploads/limits.test.ts; reject oversized files before persistence.",
+    "rubric": {
+      "expectedMode": "Optimize",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/uploads/limits.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/uploads/limits.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "reject oversized files before persistence",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-06-02",
+    "mode": "Diagnose",
+    "input": "The upload implementation masked a failure; rewrite the request. Use @src/uploads/limits.ts; verify with npm test -- src/uploads/limits.test.ts; reject oversized files before persistence.",
+    "rubric": {
+      "expectedMode": "Diagnose",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/uploads/limits.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/uploads/limits.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "reject oversized files before persistence",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-06-03",
+    "mode": "Generate",
+    "input": "Generate the smallest verified change request for upload. Use @src/uploads/limits.ts; verify with npm test -- src/uploads/limits.test.ts; reject oversized files before persistence.",
+    "rubric": {
+      "expectedMode": "Generate",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/uploads/limits.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/uploads/limits.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "reject oversized files before persistence",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-07-01",
+    "mode": "Optimize",
+    "input": "Optimize this flags request without breaking callers. Use @src/flags/evaluate.ts; verify with npm test -- src/flags/evaluate.test.ts; keep evaluation deterministic.",
+    "rubric": {
+      "expectedMode": "Optimize",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/flags/evaluate.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/flags/evaluate.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "keep evaluation deterministic",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-07-02",
+    "mode": "Diagnose",
+    "input": "The flags implementation masked a failure; rewrite the request. Use @src/flags/evaluate.ts; verify with npm test -- src/flags/evaluate.test.ts; keep evaluation deterministic.",
+    "rubric": {
+      "expectedMode": "Diagnose",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/flags/evaluate.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/flags/evaluate.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "keep evaluation deterministic",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-07-03",
+    "mode": "Generate",
+    "input": "Generate the smallest verified change request for flags. Use @src/flags/evaluate.ts; verify with npm test -- src/flags/evaluate.test.ts; keep evaluation deterministic.",
+    "rubric": {
+      "expectedMode": "Generate",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/flags/evaluate.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/flags/evaluate.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "keep evaluation deterministic",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-08-01",
+    "mode": "Optimize",
+    "input": "Optimize this tokens request without breaking callers. Use @src/tokens/rotate.ts; verify with npm test -- src/tokens/rotate.test.ts; never log token material.",
+    "rubric": {
+      "expectedMode": "Optimize",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/tokens/rotate.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/tokens/rotate.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "never log token material",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-08-02",
+    "mode": "Diagnose",
+    "input": "The tokens implementation masked a failure; rewrite the request. Use @src/tokens/rotate.ts; verify with npm test -- src/tokens/rotate.test.ts; never log token material.",
+    "rubric": {
+      "expectedMode": "Diagnose",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/tokens/rotate.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/tokens/rotate.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "never log token material",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-08-03",
+    "mode": "Generate",
+    "input": "Generate the smallest verified change request for tokens. Use @src/tokens/rotate.ts; verify with npm test -- src/tokens/rotate.test.ts; never log token material.",
+    "rubric": {
+      "expectedMode": "Generate",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/tokens/rotate.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/tokens/rotate.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "never log token material",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-09-01",
+    "mode": "Optimize",
+    "input": "Optimize this queue request without breaking callers. Use @src/queue/claim.ts; verify with npm test -- src/queue/claim.test.ts; prevent two workers from claiming one job.",
+    "rubric": {
+      "expectedMode": "Optimize",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/queue/claim.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/queue/claim.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "prevent two workers from claiming one job",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-09-02",
+    "mode": "Diagnose",
+    "input": "The queue implementation masked a failure; rewrite the request. Use @src/queue/claim.ts; verify with npm test -- src/queue/claim.test.ts; prevent two workers from claiming one job.",
+    "rubric": {
+      "expectedMode": "Diagnose",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/queue/claim.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/queue/claim.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "prevent two workers from claiming one job",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-09-03",
+    "mode": "Generate",
+    "input": "Generate the smallest verified change request for queue. Use @src/queue/claim.ts; verify with npm test -- src/queue/claim.test.ts; prevent two workers from claiming one job.",
+    "rubric": {
+      "expectedMode": "Generate",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/queue/claim.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/queue/claim.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "prevent two workers from claiming one job",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-10-01",
+    "mode": "Optimize",
+    "input": "Optimize this ledger request without breaking callers. Use @src/ledger/reconcile.ts; verify with npm test -- src/ledger/reconcile.test.ts; do not mutate settled entries.",
+    "rubric": {
+      "expectedMode": "Optimize",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/ledger/reconcile.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/ledger/reconcile.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "do not mutate settled entries",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-10-02",
+    "mode": "Diagnose",
+    "input": "The ledger implementation masked a failure; rewrite the request. Use @src/ledger/reconcile.ts; verify with npm test -- src/ledger/reconcile.test.ts; do not mutate settled entries.",
+    "rubric": {
+      "expectedMode": "Diagnose",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/ledger/reconcile.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/ledger/reconcile.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "do not mutate settled entries",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ho-v2-10-03",
+    "mode": "Generate",
+    "input": "Generate the smallest verified change request for ledger. Use @src/ledger/reconcile.ts; verify with npm test -- src/ledger/reconcile.test.ts; do not mutate settled entries.",
+    "rubric": {
+      "expectedMode": "Generate",
+      "maxQuestions": 0,
+      "exactPaths": [
+        {
+          "value": "@src/ledger/reconcile.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "exactCommands": [
+        {
+          "value": "npm test -- src/ledger/reconcile.test.ts",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAll": [
+        {
+          "value": "do not mutate settled entries",
+          "dimension": "constraints",
+          "weight": 2,
+          "critical": true
+        }
+      ],
+      "requiredAny": [
+        {
+          "values": [
+            "Show the diff",
+            "Return the patch"
+          ],
+          "dimension": "output",
+          "weight": 1,
+          "critical": false
+        }
+      ],
+      "forbidden": [
+        {
+          "value": "[",
+          "dimension": "grounding",
+          "weight": 1,
+          "critical": true
+        }
+      ]
+    }
+  }
+]

@@ -1,7 +1,6 @@
 # Claude Code Prompting Guide (deep reference)
 
-Summarizes publicly documented Claude Code prompting guidance (see https://code.claude.com/docs)
-in this project's own words.
+Distilled from `claude-code-best-practices.md` and `prompting-best-practices.md` (repo root).
 Load this when the basic seven-ingredient pass in SKILL.md isn't enough — large features,
 model-behavior tuning, or diagnosing why Claude Code keeps going off track.
 
@@ -22,12 +21,12 @@ Each "before → after" shows the kind of rewrite the optimizer performs.
 
 | Strategy | Before | After |
 |---|---|---|
-| **Scope the task** | "add tests for the csv parser" | "write one unit test for csv-parser.ts covering a row that contains a quoted comma. exercise the real parser — no stubs." |
-| **Point to sources** | "why is SyncScheduler's retry logic so convoluted?" | "walk SyncScheduler through the commit log and summarize which changes shaped its retry logic" |
-| **Reference patterns** | "add a CSV export button" | "see how export buttons are wired on the reports screen — PdfExportButton.tsx is the model to copy. follow that pattern to add a CSV export button. no new dependencies." |
-| **Describe the symptom** | "fix the search bug" | "search keeps returning stale results after a record is renamed. suspect the cache invalidation in src/search/. write a failing test that reproduces it, then fix it." |
+| **Scope the task** | "add tests for foo.py" | "write a test for foo.py covering the case where the user is logged out. avoid mocks." |
+| **Point to sources** | "why does ExecutionFactory have such a weird api?" | "look through ExecutionFactory's git history and summarize how its api came to be" |
+| **Reference patterns** | "add a calendar widget" | "look at how widgets are built on the home page — HotDogWidget.php is a good example. follow that pattern to add a calendar widget. build from scratch without new libraries." |
+| **Describe the symptom** | "fix the login bug" | "users report login fails after session timeout. check token refresh in src/auth/. write a failing test that reproduces it, then fix it." |
 
-Vague prompts still have a place: when *exploring*, `"what's the weakest part of this module?"`
+Vague prompts still have a place: when *exploring*, `"what would you improve in this file?"`
 surfaces things the user wouldn't have thought to ask. Optimize for precision when the user
 wants a specific outcome; leave room when they're fishing.
 
@@ -39,18 +38,17 @@ a build exit code, a linter, a diff against a fixture, or a screenshot compared 
 
 Gating ladder, from lightest to strongest — pick based on how much the user is watching:
 
-1. **In one prompt** — "when the implementation is in, run the suite and fix whatever fails." Works today on any task.
+1. **In one prompt** — "run the tests after implementing and fix failures." Works today on any task.
 2. **Across a session** — set the check as a `/goal` condition; an evaluator re-checks every turn.
 3. **Deterministic gate** — a Stop hook runs the check as a script and blocks the turn until it passes.
 4. **Second opinion** — a verification subagent / `/code-review` re-checks in fresh context.
 
 Always ask for **evidence, not assertion**: the command run and its output, or a screenshot.
 
-UI work: "[attach mockup] build this screen, then screenshot what you built, put it next to
-the mockup, note every mismatch, and iterate until they agree."
+UI work: "[paste screenshot] implement this design. take a screenshot of the result, compare
+to the original, list differences, and fix them."
 
-Bugs: "fix it, then prove it: run the build and the affected tests. treat the underlying
-cause — don't just silence the error."
+Bugs: "fix it and verify the build succeeds. address the root cause, don't suppress the error."
 
 ## 3. Plan first vs. just do it
 
@@ -62,22 +60,21 @@ and planning done in plan mode (read-only) before any edits.
 ## 4. Model behavior to prompt around (Opus 4.8)
 
 - **Literal instruction following.** It won't generalize an instruction from one item to the
-  rest. If something should apply broadly, say so: "do this for every entry in the list, not
-  only the one I pointed at."
+  rest. If something should apply broadly, say so: "apply this to every section, not just the first."
 - **Autonomy.** It reasons more after user turns and works long-horizon. Specify task, intent,
   and constraints **upfront in the first message** to maximize autonomy and token efficiency.
   Ambiguous prompts dribbled across turns reduce both performance and efficiency.
 - **Over-eagerness / over-engineering.** It may add files, abstractions, and flexibility nobody
-  asked for. When the user wants minimalism, add: "Keep the change minimal: touch only what
-  this task requires. No extra helpers, no speculative flexibility, no doc comments on code
-  you didn't change."
+  asked for. When the user wants minimalism, add: "Only make changes directly requested or
+  clearly necessary. Don't add features, abstractions, docstrings, or defensive code beyond
+  what's needed for this task."
 - **Action vs. suggestion.** "Can you suggest changes…" often yields only suggestions. For
-  action, use imperatives: "Rename this method to…", "Apply these edits to…".
-- **Risky actions.** For autonomous runs, add: "Proceed freely on anything you can undo
-  locally, but check with me before destructive operations (history rewrites, deleting
-  branches or data) and before anything other people will see (pushes, PR comments)."
-- **Hallucination guard.** "Only describe code you have actually read in this session — open
-  a file before making statements about it."
+  action, use imperatives: "Change this function to…", "Make these edits to…".
+- **Risky actions.** For autonomous runs, add: "Take local, reversible actions freely, but ask
+  before anything hard to reverse (force-push, deleting files/branches, dropping tables) or
+  visible to others (pushing, commenting on PRs)."
+- **Hallucination guard.** "Never make claims about code you haven't opened. Read referenced
+  files before answering."
 
 ## 5. Feed rich context
 
@@ -92,10 +89,10 @@ and planning done in plan mode (read-only) before any edits.
 For larger work, don't write the mega-prompt by hand. Have Claude interview the user first:
 
 ```text
-I want to build [one-line description]. Use the AskUserQuestion tool to interview me about it:
-implementation approach, UX, edge cases, risks, and tradeoffs. Skip questions with obvious
-answers — push on the decisions I haven't thought through yet. When nothing important is left
-unresolved, write the full spec to SPEC.md.
+I want to build [brief description]. Interview me in detail using the AskUserQuestion tool.
+Ask about technical implementation, UI/UX, edge cases, concerns, and tradeoffs. Don't ask
+obvious questions — dig into the hard parts I might not have considered. Keep interviewing
+until we've covered everything, then write a complete spec to SPEC.md.
 ```
 
 The best specs are self-contained: they name the files and interfaces involved, state what's
@@ -138,8 +135,8 @@ redirect. Hand them phrasing like:
 - **Infinite exploration** — unscoped "investigate" → scope narrowly or delegate to a subagent.
 - **Over-prompting** — "CRITICAL: you MUST…" everywhere → on current models, normal phrasing
   ("Use this when…") avoids over-triggering. Reserve emphasis for the one rule that matters most.
-- **"Don't do X" formatting rules** — prefer telling Claude what TO do ("answer in plain
-  paragraphs") over what to avoid ("no bullet lists").
+- **"Don't do X" formatting rules** — prefer telling Claude what TO do ("respond in flowing prose")
+  over what to avoid ("don't use markdown").
 
 ## 9. Reusable prompt snippets
 
@@ -147,27 +144,25 @@ Drop these into an optimized prompt when the matching behavior is needed.
 
 **Coverage over filtering (review/bug-finding):**
 ```text
-List every finding, including minor or doubtful ones. Breadth matters more than ranking at
-this stage. Tag each finding with how severe it looks and how confident you are in it.
+Report every issue you find, including low-severity or uncertain ones. Don't filter for
+importance yet — coverage is the goal. Include a confidence level and severity for each.
 ```
 
 **Minimal / no over-engineering:**
 ```text
-Make only the edits this task actually requires — no added abstractions, features, or guard
-rails beyond the ask. Leave untouched code exactly as it was: no drive-by comments, renames,
-or type annotations.
+Only make changes directly requested or clearly necessary. No new features, abstractions, or
+defensive code beyond what this task needs. Don't add comments or types to code you didn't change.
 ```
 
 **General, non-overfit solution:**
 ```text
-Solve the problem for the full input space, not merely the visible test cases. No hard-coded
-expected values, no special-casing the suite. If you believe a test itself is wrong, flag it
-to me rather than coding around it.
+Implement a correct general solution for all valid inputs, not just the test cases. Don't
+hard-code to the tests or add workaround scripts. If a test seems wrong, tell me instead of
+working around it.
 ```
 
 **Persist across context compaction (long autonomous runs):**
 ```text
-On long runs your context gets compacted automatically — never wind down early to conserve
-tokens. Checkpoint progress and state to files as you go so work survives the refresh, and
-keep going until the task is genuinely finished.
+Your context will be compacted automatically as it fills, so don't stop early for token
+reasons. Save progress and state to disk before the window refreshes, and complete the task fully.
 ```

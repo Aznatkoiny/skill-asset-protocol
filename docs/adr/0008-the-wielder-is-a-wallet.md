@@ -55,18 +55,18 @@ Collar does behind the gate (royalty splits vs pass-through).
   proxy in front of an unmodified-core Pi is the entire Wielder-side footprint — one wallet pays
   per-call for inference on two models AND one hosted Skill invocation, with a unified attributed
   session ledger. The spike's measured x402 payment overhead (sign → verify → settle p50/p95)
-  feeds the demand-side analysis in the project's internal PRD (unpublished).
+  feeds the PRD's demand-side section.
 - **Competitive implication: inference payment is commoditizing.** Router402, tx402.ai, and
   ClawRouter already sell it; Cloudflare is entering. Payment cannot be the differentiator. The
   differentiator is the **unified attributed meter** — one wallet whose ledger attributes
-  inference calls AND skill invocations, with royalty splits on the skill leg (analyzed in the
-  competitive-landscape section of the project's internal PRD, unpublished).
+  inference calls AND skill invocations, with royalty splits on the skill leg (see the PRD's
+  competitive landscape).
 - The Collar remains the single trusted component (it already was — ADR-0003/0005); this decision
   refuses to leak trust requirements to the client. "Trust-minimized" in this corpus means
   **Wielder-side** trust-minimized, nothing stronger.
 - Cost of thinness: a payer this thin can verify nothing client-side — not splits, not provenance.
   Beneficiary auditability must therefore come from the Collar's published, Merkle-committed
-  invocation log (a Phase-1 requirement in the project's internal PRD), not from the Wielder.
+  invocation log (a Phase-1 PRD requirement), not from the Wielder.
 - Dependence on resellers is real: until a first-party API accepts x402, the inference leg rides
   third-party gateways (mainnet-only today), and the wedge's durability is unvalidated beyond the
   30-day volume snapshot above.

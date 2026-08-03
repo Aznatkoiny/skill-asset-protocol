@@ -45,9 +45,8 @@ outputs are a cheap (~30×) behavioral-distillation training set. So the divisio
   reputation/routing, live evolution — and, per that ADR's own update, they defend the marketplace
   as a whole, not an individual breakout Skill.
 
-The project's internal adversarial premise review (2026-07, unpublished) rated the open-market
-reading of this decision ("hosting keeps the Creator's income safe") among the corpus's weakest
-claims, and it is one of the four critiques
+The 2026-07 premise review rated the open-market reading of this decision ("hosting keeps the
+Creator's income safe") among the corpus's weakest claims, and it is one of the four critiques
 behind the closed-mode reframe (ADR-0007). In closed modes the counterparty (the employer) already
 *possesses* the Skill, so clone-resistance is irrelevant there; hosting's job narrows to what it
 actually delivers — a single meterable execution point that feeds the compensation ledger.

@@ -4,8 +4,7 @@
 
 ## Context
 
-Feasibility validation (the project's internal feasibility study, 2026-06, unpublished) found
-the literal ADR-0003 vision — one
+Feasibility validation (`docs/feasibility/report.md`) found the literal ADR-0003 vision — one
 payment that both gates execution *and* lands on Story's royalty contract — does **not** compose
 with today's APIs:
 
@@ -44,8 +43,7 @@ The execution credential is **off-chain**; do NOT mint a per-call on-chain Licen
 - Settlement is **eventually-consistent**, not atomic.
 - Batching makes the Collar an **in-flight fund custodian** → FinCEN MSB exposure. Minimize custody:
   route in-flight value through a licensed facilitator/bridge and keep the Collar a non-custodial
-  pass-through (see ADR-0006; the full regulatory analysis lives in the project's internal
-  feasibility study, unpublished).
+  pass-through (see ADR-0006 + regulatory section of the report).
 - A bridge stall leaves "execution done, ancestor unpaid" — needs reconciliation + sound Collar
   bookkeeping.
 - **Re-verify before building:** that no x402 facilitator has added Story 1514; the CDP fee schedule;
@@ -54,8 +52,7 @@ The execution credential is **off-chain**; do NOT mint a per-call on-chain Licen
 
 ## Update (pre-build spikes resolved, 2026-06)
 
-Spike results are recorded in the project's internal pre-build spike notes (unpublished). All four
-confirm this ADR; none changed it.
+Spike results in `docs/feasibility/prebuild-spikes.md`. All four confirm this ADR; none changed it.
 
 - **x402 ↔ Story unchanged:** no facilitator supports chain 1514; x402 V2 "multi-chain" = more
   independent single-chain networks, not pay-on-Base-settle-on-Story; x402-exec is Base/X-Layer/BSC

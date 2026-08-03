@@ -1,203 +1,203 @@
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
-import { formatEther, type Address } from "viem";
+import { FileOperationJournal } from "./transactions";
+import type { AttestationCommand, AttestationCommandOptions } from "./attestation-cli";
+import { renderTopLevelError } from "./terminal";
 
-import { EXPLORER, getAccount, getClient, getPublicClient } from "./client";
-import { runDemo } from "./demo";
-import { HttpMetadataProvider } from "./metadata";
-import { FileRegistrationStore } from "./registrations";
-import {
-  StoryChain,
-} from "./story";
-
-const { values: options, positionals } = parseArgs({
-  allowPositionals: true,
-  options: {
-    name: { type: "string" },
-    description: { type: "string" },
-    "skill-file": { type: "string" },
-    "rev-share": { type: "string" },
-    policy: { type: "string" },
-    "minting-fee": { type: "string" },
-    spg: { type: "string" },
-    symbol: { type: "string" },
-    parent: { type: "string" },
-    "license-terms-id": { type: "string" },
-  },
-});
-
-const command = positionals[0];
 const registrationsPath = fileURLToPath(new URL("../registrations.json", import.meta.url));
+const pendingTransactionsPath = fileURLToPath(
+  new URL("../pending-transactions.json", import.meta.url),
+);
 
-function storyChain(): StoryChain {
-  return new StoryChain({
-    sdk: getClient(),
-    publicClient: getPublicClient(),
+async function storyBoundary() {
+  const [client, { StoryChain }] = await Promise.all([
+    import("./client"),
+    import("./story"),
+  ]);
+  return {
+    account: client.getAccount(),
+    chain: new StoryChain({
+      sdk: client.getClient(),
+      wallet: client.getWalletClient(),
+      publicClient: client.getPublicClient(),
+    }),
+  };
+}
+
+async function check(): Promise<void> {
+  const [{ buildCheckReport, renderCheckReport }, { FileRegistrationStore }, boundary] = await Promise.all([
+    import("./check"),
+    import("./registrations"),
+    storyBoundary(),
+  ]);
+  const report = await buildCheckReport({
+    wallet: boundary.account.address,
+    chain: boundary.chain,
+    store: new FileRegistrationStore(registrationsPath),
+    journal: new FileOperationJournal(pendingTransactionsPath),
   });
+  for (const line of renderCheckReport(report)) console.log(line);
 }
 
-function requiredOption(name: keyof typeof options): string {
-  const value = options[name];
-  if (typeof value !== "string" || value.length === 0) throw new Error(`--${name} is required`);
-  return value;
-}
-
-function spgAddress(): Address {
-  const value = options.spg ?? process.env.SPG_NFT_CONTRACT;
-  if (!value) {
-    throw new Error(
-      "No SPG collection. Run `npm run demo`, or run `npm run create-collection` and pass --spg/set SPG_NFT_CONTRACT.",
-    );
-  }
-  return value as Address;
-}
-
-function royaltyPolicy(): "LAP" | "LRP" {
-  const value = (options.policy ?? "LAP").toUpperCase();
-  if (value !== "LAP" && value !== "LRP") throw new Error("--policy must be LAP or LRP");
-  return value;
-}
-
-async function check() {
-  const account = getAccount();
-  const chain = storyChain();
-  const chainId = await chain.getChainId();
-  const balance = await chain.getBalance(account.address);
-  console.log("wallet      :", account.address);
-  console.log("chain       :", `Story Aeneid (${chainId})`);
-  console.log("balance     :", formatEther(balance), "IP");
-  console.log("SPG contract:", process.env.SPG_NFT_CONTRACT || "(none — npm run demo creates one)");
-  if (balance === 0n) {
-    console.log("\n⚠ Wallet has 0 IP. Fund it manually: https://aeneid.faucet.story.foundation/");
-  }
-  return { wallet: account.address, chainId, balance };
-}
-
-async function createCollection() {
-  const account = getAccount();
-  const result = await storyChain().createCollection({
-    name: options.name ?? "Skills",
-    symbol: options.symbol ?? "SKILL",
-    mintFeeRecipient: account.address,
-  });
-  console.log("✓ SPG NFT collection created");
-  console.log("spgNftContract:", result.spgNftContract);
-  console.log("txHash        :", result.txHash);
-  console.log("\n→ pass to advanced commands: --spg " + result.spgNftContract);
-  return result;
-}
-
-async function registerSkill() {
-  const account = getAccount();
-  const name = requiredOption("name");
-  const artifactPath = requiredOption("skill-file");
-  const metadata = await new HttpMetadataProvider().prepare({
-    stage: "root",
-    name,
-    description: options.description ?? "",
-    creatorAddress: account.address,
-    artifactPath,
-  });
-  const revShare = Number(options["rev-share"] ?? "25");
-  const result = await storyChain().registerSkill({
-    spgNftContract: spgAddress(),
-    metadata: metadata.onchain,
-    defaultMintingFee: BigInt(options["minting-fee"] ?? "0"),
-    revShare,
-    policy: royaltyPolicy(),
-  });
-  console.log("✓ Skill registered as a Story IP Asset");
-  console.log("ipId          :", result.ipId);
-  console.log("tokenId       :", result.tokenId.toString());
-  console.log("licenseTermsId:", result.licenseTermsId.toString());
-  console.log("artifact hash :", metadata.proof.artifact.mediaHash, "(SHA-256)");
-  console.log("txHash        :", result.txHash);
-  console.log("explorer      :", `${EXPLORER}/ipa/${result.ipId}`);
-  return { ...result, metadata };
-}
-
-async function registerDerivative() {
-  const account = getAccount();
-  const name = requiredOption("name");
-  const artifactPath = requiredOption("skill-file");
-  const parentIpId = requiredOption("parent") as Address;
-  const licenseTermsId = BigInt(requiredOption("license-terms-id"));
-  const metadata = await new HttpMetadataProvider().prepare({
-    stage: "child",
-    name,
-    description: options.description ?? "",
-    creatorAddress: account.address,
-    artifactPath,
-  });
-  const chain = storyChain();
-  const predicted = await chain.predictMintingLicenseFee({
-    licensorIpId: parentIpId,
-    licenseTermsId,
-    amount: 1,
-  });
-  const result = await chain.registerDerivative({
-    spgNftContract: spgAddress(),
-    parentIpId,
-    licenseTermsId,
-    maxMintingFee: predicted.tokenAmount,
-    metadata: metadata.onchain,
-  });
-  console.log("✓ Derivative registered (declared parent on-chain)");
-  console.log("ipId          :", result.ipId);
-  console.log("tokenId       :", result.tokenId.toString());
-  console.log("parentIpId    :", parentIpId);
-  console.log("licenseTermsId:", licenseTermsId.toString());
-  console.log("maxMintingFee :", predicted.tokenAmount.toString(), "(predicted explicit cap)");
-  console.log("artifact hash :", metadata.proof.artifact.mediaHash, "(SHA-256)");
-  console.log("txHash        :", result.txHash);
-  console.log("explorer      :", `${EXPLORER}/ipa/${result.ipId}`);
-  return { ...result, licenseTermsId, maxMintingFee: predicted.tokenAmount, metadata };
-}
-
-async function demo() {
-  const account = getAccount();
-  const manifest = await runDemo({
-    wallet: account.address,
-    chain: storyChain(),
+async function demo(): Promise<void> {
+  const [
+    { runDemo },
+    { HttpMetadataProvider },
+    { FileRegistrationStore },
+    boundary,
+  ] = await Promise.all([
+    import("./demo"),
+    import("./metadata"),
+    import("./registrations"),
+    storyBoundary(),
+  ]);
+  const journal = new FileOperationJournal(pendingTransactionsPath);
+  const manifest = await journal.withExclusiveLease((leasedJournal) => runDemo({
+    wallet: boundary.account.address,
+    chain: boundary.chain,
     metadata: new HttpMetadataProvider(),
     store: new FileRegistrationStore(registrationsPath),
-  });
-  console.log("✓ Phase 0 provenance demo status:", manifest.status);
+    journal: leasedJournal,
+  }));
+  console.log("✓ Phase 0 wallet-attested registration status:", manifest.status);
+  console.log("evidence level : wallet_asserted");
+  console.log("scope          : wallet registration + declared Derivative ancestry; not authorship, originality, or safety");
   console.log("wallet        :", manifest.wallet);
   console.log("spgNftContract:", manifest.spgNftContract);
   for (const stage of ["root", "child", "grandchild"] as const) {
     const registration = manifest.registrations[stage];
     console.log(`${stage.padEnd(10)}:`, registration?.ipId ?? "not registered");
   }
-  console.log("proof artifact:", registrationsPath);
-  return manifest;
+  console.log("registration evidence artifact:", registrationsPath);
 }
 
-const commands: Record<string, () => Promise<unknown>> = {
+async function recoverStaleLock(expectedLeaseId: string): Promise<void> {
+  const journal = new FileOperationJournal(pendingTransactionsPath);
+  await journal.recoverStaleLock({ expectedLeaseId });
+  console.log(`Recovered stale journal lock ${pendingTransactionsPath}.lock for lease ${expectedLeaseId}`);
+}
+
+export interface CommandDependencies {
+  check(): Promise<void>;
+  demo(): Promise<void>;
+  recoverStaleLock(expectedLeaseId: string): Promise<void>;
+  attestation?(command: AttestationCommand, options: AttestationCommandOptions): Promise<void>;
+  log(line?: string): void;
+}
+
+const REAL_DEPENDENCIES: CommandDependencies = {
   check,
   demo,
-  "create-collection": createCollection,
-  "register-skill": registerSkill,
-  "register-derivative": registerDerivative,
+  recoverStaleLock,
+  attestation: async (command, options) => {
+    const { executeAttestationCommand } = await import("./attestation-cli");
+    await executeAttestationCommand(command, options);
+  },
+  log: (line = "") => console.log(line),
 };
 
-async function main() {
-  const run = command ? commands[command] : undefined;
-  if (!run) {
-    console.log("Phase 0 — Story provenance CLI\n");
-    console.log("commands:");
-    console.log("  npm run demo");
-    console.log("  npm run check");
-    console.log("  npm run create-collection [-- --name Skills --symbol SKILL]");
-    console.log("  npm run register-skill -- --spg <address> --name <name> --skill-file <path> [--rev-share 25] [--policy LAP|LRP]");
-    console.log("  npm run register-derivative -- --spg <address> --parent <ipId> --license-terms-id <id> --name <name> --skill-file <path>");
-    process.exit(command ? 1 : 0);
-  }
-  await run();
+function printHelp(log: CommandDependencies["log"]): void {
+  log("Phase 0 — wallet-attested Story Aeneid registration CLI");
+  log();
+  log("commands:");
+  log("  npm run demo");
+  log("  npm run check");
+  log("  npm run recover-stale-lock -- <expectedLeaseId>");
+  log("  npm run attestation-status -- [--artifact-hash <hash> | --registration-id <id>] [--json]");
+  log("  npm run attestation-conflicts -- [--json]");
+  log("  npm run attestation-verify-repository -- --bundle <absolute-path> [--json]");
+  log("  npm run attestation-verify-organization -- --bundle <absolute-path> [--json]");
+  log("  npm run attestation-append-challenge -- --bundle <absolute-path> [--json]");
+  log("  npm run attestation-resolve -- --bundle <absolute-path> [--json]");
+  log("  npm run attestation-revoke -- --bundle <absolute-path> [--json]");
+  log("  npm run attestation-recover-lock -- --lock-token <exact-token> [--json]");
 }
 
-main().catch((error) => {
-  console.error("\n✗ " + (error instanceof Error ? error.message : String(error)));
-  process.exit(1);
-});
+const ATTESTATION_COMMANDS = new Set<AttestationCommand>([
+  "attestation-status",
+  "attestation-verify-repository",
+  "attestation-verify-organization",
+  "attestation-append-challenge",
+  "attestation-resolve",
+  "attestation-conflicts",
+  "attestation-revoke",
+  "attestation-recover-lock",
+]);
+
+function hasOptions(options: AttestationCommandOptions): boolean {
+  return Object.values(options).some((value) => value !== undefined && value !== false);
+}
+
+export async function runCommand(
+  positionals: readonly string[],
+  dependencies: CommandDependencies = REAL_DEPENDENCIES,
+  options: AttestationCommandOptions = {},
+): Promise<number> {
+  const [command, ...args] = positionals;
+  if (!command) {
+    printHelp(dependencies.log);
+    return 0;
+  }
+  if (command === "check") {
+    if (args.length !== 0 || hasOptions(options)) throw new Error("Usage: npm run check");
+    await dependencies.check();
+    return 0;
+  }
+  if (command === "demo") {
+    if (args.length !== 0 || hasOptions(options)) throw new Error("Usage: npm run demo");
+    await dependencies.demo();
+    return 0;
+  }
+  if (command === "recover-stale-lock") {
+    if (args.length !== 1 || hasOptions(options)) {
+      throw new Error("Usage: npm run recover-stale-lock -- <expectedLeaseId>");
+    }
+    if (!/^[0-9a-f]{32}$/.test(args[0])) {
+      throw new Error("Usage: npm run recover-stale-lock -- <expectedLeaseId>");
+    }
+    await dependencies.recoverStaleLock(args[0]);
+    dependencies.log(`Stale-lock recovery complete for lease ${args[0]}`);
+    return 0;
+  }
+  if (ATTESTATION_COMMANDS.has(command as AttestationCommand)) {
+    if (args.length !== 0) throw new Error(`Usage: npm run ${command} -- [options]`);
+    const handler = dependencies.attestation ?? (async (selected, selectedOptions) => {
+      const { executeAttestationCommand } = await import("./attestation-cli");
+      await executeAttestationCommand(selected, selectedOptions, (line) => dependencies.log(line));
+    });
+    await handler(command as AttestationCommand, options);
+    return 0;
+  }
+  printHelp(dependencies.log);
+  return 1;
+}
+
+async function main(): Promise<void> {
+  const { positionals, values } = parseArgs({
+    allowPositionals: true,
+    strict: true,
+    options: {
+      "artifact-hash": { type: "string" },
+      "registration-id": { type: "string" },
+      bundle: { type: "string" },
+      "lock-token": { type: "string" },
+      json: { type: "boolean", default: false },
+    },
+  });
+  process.exitCode = await runCommand(positionals, REAL_DEPENDENCIES, {
+    artifactHash: values["artifact-hash"],
+    registrationId: values["registration-id"],
+    bundle: values.bundle,
+    lockToken: values["lock-token"],
+    json: values.json,
+  });
+}
+
+const invokedPath = process.argv[1];
+if (invokedPath && import.meta.url === pathToFileURL(invokedPath).href) {
+  main().catch((error) => {
+    console.error(renderTopLevelError(error));
+    process.exitCode = 1;
+  });
+}

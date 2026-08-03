@@ -12,10 +12,18 @@ out/
 # Local machine state
 .DS_Store
 .claude/settings.local.json
+.worktrees/
 
 # Run artifacts (belt-and-braces; spikes also ignore locally)
 runs/
 *.jsonl
+!phase0/attestations.jsonl
+phase0/.attestation-checkouts.local.json
+phase0/attestations.jsonl.*
+spikes/pi-wielder/**/*.lock
+spikes/pi-wielder/**/*.claim
+spikes/pi-wielder/**/*.pem
+spikes/pi-wielder/**/*.key
 
 # Vendor doc snapshots — do not track (redistribution-unsafe)
 .archive/
@@ -26,3 +34,13 @@ runs/
 .agents/skills/*
 !.agents/skills/optimizing-claude-code-prompts/
 skills-lock.json
+
+# Agent Spend Control Plane local authority
+spikes/pi-wielder/**/*.sqlite
+spikes/pi-wielder/**/*.sqlite-wal
+spikes/pi-wielder/**/*.sqlite-shm
+spikes/pi-wielder/**/*.operator-token
+spikes/pi-wielder/**/*.receipt-key
+spikes/pi-wielder/**/*.agent-credential
+spikes/pi-wielder/**/*.agent-enrollment
+spikes/pi-wielder/**/*.authority-lock.sqlite*

@@ -156,5 +156,5 @@ the verification-gating ladder, rich-context input (`@files`, images, URLs, pipi
 decisions, mid-task course-correction phrasing, the interview→spec pattern, and reusable prompt
 snippets, read [references/claude-code-prompting-guide.md](references/claude-code-prompting-guide.md).
 
-Source material: Anthropic's publicly documented Claude Code prompting guidance
-(https://code.claude.com/docs), summarized in this skill's own words.
+Source material lives at the repo root: `claude-code-best-practices.md` and
+`prompting-best-practices.md`.

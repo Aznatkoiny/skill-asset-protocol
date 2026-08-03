@@ -4,7 +4,7 @@
 
 ## Context
 
-Feasibility validation (the project's internal feasibility study, 2026-06, unpublished) found:
+Feasibility validation (`docs/feasibility/report.md`) found:
 
 - **Tradeable royalty claims are almost certainly securities** under Howey — and ADR-0004's
   live-evolution moat *strengthens* the "efforts of others" prong. The open, permissionless

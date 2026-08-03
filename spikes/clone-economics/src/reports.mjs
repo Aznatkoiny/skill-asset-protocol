@@ -9,11 +9,16 @@ function scoreRows(target, clone) {
 }
 
 export function renderMarkdown(report) {
+  const conclusion = report.benchmark.valid
+    ? 'The target passed its own gate; clone and economics interpretation may proceed.'
+    : `**${report.benchmark.verdict}.** ${report.benchmark.reason} Clone quality, fidelity defense, moat, and break-even conclusions are suppressed.`;
   return `# Clone-economics spike report
 
 **Evidence:** ${report.evidenceLabel}<br>
 **Mode:** ${report.mode}<br>
 **Verdict:** ${report.claimStatus}
+
+${conclusion}
 
 ## Question
 
@@ -58,7 +63,7 @@ ${report.evolution.statement}
 | E_measure — benchmark overhead, excluded from B | ${number(report.economics.measurementEvaluationUsd)} |
 | D/A | ${report.economics.distillationToAcquisition ?? 'undefined'} |
 | B/A | ${report.economics.buildToAcquisition ?? 'undefined'} |
-| Break-even Invocations | ${report.economics.breakEvenInvocations ?? 'undefined'} |
+| Break-even Invocations | ${report.benchmark.valid ? report.economics.breakEvenInvocations ?? 'undefined' : 'suppressed'} |
 
 Acquisition is MODELED as N × listed Invocation price; no x402 payment settled. Provider/harness costs are listed separately and not double-counted into A.
 

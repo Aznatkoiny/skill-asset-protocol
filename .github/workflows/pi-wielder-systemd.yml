@@ -1,0 +1,63 @@
+name: Pi Wielder Linux isolation and blocked live-launch contract
+
+on:
+  pull_request:
+    paths:
+      - 'spikes/pi-wielder/**'
+      - '.github/workflows/pi-wielder-systemd.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'spikes/pi-wielder/**'
+      - '.github/workflows/pi-wielder-systemd.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  systemd-isolation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: spikes/pi-wielder
+    steps:
+      - name: Check out reviewed source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install exact Node runtime
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.18.1
+          cache: npm
+          cache-dependency-path: spikes/pi-wielder/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Verify secret-free systemd contract and explicit live-launch blockers
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel_user="wallet-kernel-ci-${GITHUB_RUN_ID}"
+          agent_user="wallet-agent-ci-${GITHUB_RUN_ID}"
+          cleanup() {
+            sudo userdel --remove "$agent_user" 2>/dev/null || true
+            sudo userdel --remove "$kernel_user" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin "$kernel_user"
+          sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin "$agent_user"
+          kernel_uid="$(id -u "$kernel_user")"
+          kernel_gid="$(id -g "$kernel_user")"
+          agent_uid="$(id -u "$agent_user")"
+          agent_gid="$(id -g "$agent_user")"
+          node_bin="$(dirname "$(command -v node)")"
+          sudo -- /usr/bin/env -i \
+            PATH="$node_bin:/usr/bin:/bin" \
+            WALLET_KERNEL_SYSTEMD_INTEGRATION=1 \
+            WALLET_KERNEL_TEST_KERNEL_UID="$kernel_uid" \
+            WALLET_KERNEL_TEST_KERNEL_GID="$kernel_gid" \
+            WALLET_KERNEL_TEST_AGENT_UID="$agent_uid" \
+            WALLET_KERNEL_TEST_AGENT_GID="$agent_gid" \
+            npm run test:systemd

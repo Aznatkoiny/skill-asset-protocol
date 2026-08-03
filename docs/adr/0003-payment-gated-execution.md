@@ -42,8 +42,8 @@ Consequence:
 - The per-invocation **gate** stays **Wielder-side** trust-minimized — *no credential, no run*,
   enforced per call (the Wielder cannot obtain a run without a settled payment; from every other
   seat this is enforced by the Collar's own code and key custody — an ops SLO backed by a
-  key-custody/rotation design, not an architectural property; see ADR-0008 — the reliability
-  targets themselves are tracked in the project's internal PRD, unpublished).
+  key-custody/rotation design, not an architectural property; see ADR-0008 and the PRD's
+  Reliability targets).
 - **Settlement** degrades from "structurally impossible to defraud" to an **auditable accumulator**:
   the Collar batches off-chain and could in principle mis-report or skim. Mitigations: signed,
   auditable invocation logs; on-chain published settlement batches for reconciliation; refund +

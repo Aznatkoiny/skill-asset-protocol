@@ -1,0 +1,602 @@
+[
+  {
+    "id": "tr-v2-01-01",
+    "mode": "Optimize",
+    "input": "Tighten the request for checkout while preserving behavior. Use @src/checkout/totals.ts; verify with npm test -- src/checkout/totals.test.ts; preserve tax rounding exactly.",
+    "expectedOutput": "Optimize\n@src/checkout/totals.ts\nnpm test -- src/checkout/totals.test.ts\npreserve tax rounding exactly\nShow the diff"
+  },
+  {
+    "id": "tr-v2-01-02",
+    "mode": "Generate",
+    "input": "Write an implementation request for the checkout change. Use @src/checkout/totals.ts; verify with npm test -- src/checkout/totals.test.ts; preserve tax rounding exactly.",
+    "expectedOutput": "Generate\n@src/checkout/totals.ts\nnpm test -- src/checkout/totals.test.ts\npreserve tax rounding exactly\nShow the diff"
+  },
+  {
+    "id": "tr-v2-01-03",
+    "mode": "Diagnose",
+    "input": "The checkout change spread beyond scope; rewrite the request to fix the root cause. Use @src/checkout/totals.ts; verify with npm test -- src/checkout/totals.test.ts; preserve tax rounding exactly.",
+    "expectedOutput": "Diagnose\n@src/checkout/totals.ts\nnpm test -- src/checkout/totals.test.ts\npreserve tax rounding exactly\nShow the diff"
+  },
+  {
+    "id": "tr-v2-01-04",
+    "mode": "Spec",
+    "input": "Turn the broad checkout idea into the next implementation specification. Use @src/checkout/totals.ts; verify with npm test -- src/checkout/totals.test.ts; preserve tax rounding exactly.",
+    "expectedOutput": "Spec\n@src/checkout/totals.ts\nnpm test -- src/checkout/totals.test.ts\npreserve tax rounding exactly\nShow the diff"
+  },
+  {
+    "id": "tr-v2-01-05",
+    "mode": "Optimize",
+    "input": "Make the checkout prompt explicit about verification and constraints. Use @src/checkout/totals.ts; verify with npm test -- src/checkout/totals.test.ts; preserve tax rounding exactly.",
+    "expectedOutput": "Optimize\n@src/checkout/totals.ts\nnpm test -- src/checkout/totals.test.ts\npreserve tax rounding exactly\nShow the diff"
+  },
+  {
+    "id": "tr-v2-01-06",
+    "mode": "Generate",
+    "input": "Ask for the smallest test-driven checkout patch. Use @src/checkout/totals.ts; verify with npm test -- src/checkout/totals.test.ts; preserve tax rounding exactly.",
+    "expectedOutput": "Generate\n@src/checkout/totals.ts\nnpm test -- src/checkout/totals.test.ts\npreserve tax rounding exactly\nShow the diff"
+  },
+  {
+    "id": "tr-v2-01-07",
+    "mode": "Diagnose",
+    "input": "The first checkout attempt hid the error; produce a diagnostic request. Use @src/checkout/totals.ts; verify with npm test -- src/checkout/totals.test.ts; preserve tax rounding exactly.",
+    "expectedOutput": "Diagnose\n@src/checkout/totals.ts\nnpm test -- src/checkout/totals.test.ts\npreserve tax rounding exactly\nShow the diff"
+  },
+  {
+    "id": "tr-v2-01-08",
+    "mode": "Spec",
+    "input": "Specify the checkout behavior without starting implementation. Use @src/checkout/totals.ts; verify with npm test -- src/checkout/totals.test.ts; preserve tax rounding exactly.",
+    "expectedOutput": "Spec\n@src/checkout/totals.ts\nnpm test -- src/checkout/totals.test.ts\npreserve tax rounding exactly\nShow the diff"
+  },
+  {
+    "id": "tr-v2-01-09",
+    "mode": "Optimize",
+    "input": "Remove ambiguity from this checkout maintenance request. Use @src/checkout/totals.ts; verify with npm test -- src/checkout/totals.test.ts; preserve tax rounding exactly.",
+    "expectedOutput": "Optimize\n@src/checkout/totals.ts\nnpm test -- src/checkout/totals.test.ts\npreserve tax rounding exactly\nShow the diff"
+  },
+  {
+    "id": "tr-v2-01-10",
+    "mode": "Generate",
+    "input": "Create a repository-grounded request for checkout. Use @src/checkout/totals.ts; verify with npm test -- src/checkout/totals.test.ts; preserve tax rounding exactly.",
+    "expectedOutput": "Generate\n@src/checkout/totals.ts\nnpm test -- src/checkout/totals.test.ts\npreserve tax rounding exactly\nShow the diff"
+  },
+  {
+    "id": "tr-v2-02-01",
+    "mode": "Optimize",
+    "input": "Tighten the request for auth while preserving behavior. Use @src/auth/logout.ts; verify with npm test -- src/auth/logout.test.ts; reuse the existing session invalidation path.",
+    "expectedOutput": "Optimize\n@src/auth/logout.ts\nnpm test -- src/auth/logout.test.ts\nreuse the existing session invalidation path\nShow the diff"
+  },
+  {
+    "id": "tr-v2-02-02",
+    "mode": "Generate",
+    "input": "Write an implementation request for the auth change. Use @src/auth/logout.ts; verify with npm test -- src/auth/logout.test.ts; reuse the existing session invalidation path.",
+    "expectedOutput": "Generate\n@src/auth/logout.ts\nnpm test -- src/auth/logout.test.ts\nreuse the existing session invalidation path\nShow the diff"
+  },
+  {
+    "id": "tr-v2-02-03",
+    "mode": "Diagnose",
+    "input": "The auth change spread beyond scope; rewrite the request to fix the root cause. Use @src/auth/logout.ts; verify with npm test -- src/auth/logout.test.ts; reuse the existing session invalidation path.",
+    "expectedOutput": "Diagnose\n@src/auth/logout.ts\nnpm test -- src/auth/logout.test.ts\nreuse the existing session invalidation path\nShow the diff"
+  },
+  {
+    "id": "tr-v2-02-04",
+    "mode": "Spec",
+    "input": "Turn the broad auth idea into the next implementation specification. Use @src/auth/logout.ts; verify with npm test -- src/auth/logout.test.ts; reuse the existing session invalidation path.",
+    "expectedOutput": "Spec\n@src/auth/logout.ts\nnpm test -- src/auth/logout.test.ts\nreuse the existing session invalidation path\nShow the diff"
+  },
+  {
+    "id": "tr-v2-02-05",
+    "mode": "Optimize",
+    "input": "Make the auth prompt explicit about verification and constraints. Use @src/auth/logout.ts; verify with npm test -- src/auth/logout.test.ts; reuse the existing session invalidation path.",
+    "expectedOutput": "Optimize\n@src/auth/logout.ts\nnpm test -- src/auth/logout.test.ts\nreuse the existing session invalidation path\nShow the diff"
+  },
+  {
+    "id": "tr-v2-02-06",
+    "mode": "Generate",
+    "input": "Ask for the smallest test-driven auth patch. Use @src/auth/logout.ts; verify with npm test -- src/auth/logout.test.ts; reuse the existing session invalidation path.",
+    "expectedOutput": "Generate\n@src/auth/logout.ts\nnpm test -- src/auth/logout.test.ts\nreuse the existing session invalidation path\nShow the diff"
+  },
+  {
+    "id": "tr-v2-02-07",
+    "mode": "Diagnose",
+    "input": "The first auth attempt hid the error; produce a diagnostic request. Use @src/auth/logout.ts; verify with npm test -- src/auth/logout.test.ts; reuse the existing session invalidation path.",
+    "expectedOutput": "Diagnose\n@src/auth/logout.ts\nnpm test -- src/auth/logout.test.ts\nreuse the existing session invalidation path\nShow the diff"
+  },
+  {
+    "id": "tr-v2-02-08",
+    "mode": "Spec",
+    "input": "Specify the auth behavior without starting implementation. Use @src/auth/logout.ts; verify with npm test -- src/auth/logout.test.ts; reuse the existing session invalidation path.",
+    "expectedOutput": "Spec\n@src/auth/logout.ts\nnpm test -- src/auth/logout.test.ts\nreuse the existing session invalidation path\nShow the diff"
+  },
+  {
+    "id": "tr-v2-02-09",
+    "mode": "Optimize",
+    "input": "Remove ambiguity from this auth maintenance request. Use @src/auth/logout.ts; verify with npm test -- src/auth/logout.test.ts; reuse the existing session invalidation path.",
+    "expectedOutput": "Optimize\n@src/auth/logout.ts\nnpm test -- src/auth/logout.test.ts\nreuse the existing session invalidation path\nShow the diff"
+  },
+  {
+    "id": "tr-v2-02-10",
+    "mode": "Generate",
+    "input": "Create a repository-grounded request for auth. Use @src/auth/logout.ts; verify with npm test -- src/auth/logout.test.ts; reuse the existing session invalidation path.",
+    "expectedOutput": "Generate\n@src/auth/logout.ts\nnpm test -- src/auth/logout.test.ts\nreuse the existing session invalidation path\nShow the diff"
+  },
+  {
+    "id": "tr-v2-03-01",
+    "mode": "Optimize",
+    "input": "Tighten the request for billing while preserving behavior. Use @src/billing/renewal.ts; verify with npm test -- src/billing/renewal.test.ts; do not change invoice JSON.",
+    "expectedOutput": "Optimize\n@src/billing/renewal.ts\nnpm test -- src/billing/renewal.test.ts\ndo not change invoice JSON\nShow the diff"
+  },
+  {
+    "id": "tr-v2-03-02",
+    "mode": "Generate",
+    "input": "Write an implementation request for the billing change. Use @src/billing/renewal.ts; verify with npm test -- src/billing/renewal.test.ts; do not change invoice JSON.",
+    "expectedOutput": "Generate\n@src/billing/renewal.ts\nnpm test -- src/billing/renewal.test.ts\ndo not change invoice JSON\nShow the diff"
+  },
+  {
+    "id": "tr-v2-03-03",
+    "mode": "Diagnose",
+    "input": "The billing change spread beyond scope; rewrite the request to fix the root cause. Use @src/billing/renewal.ts; verify with npm test -- src/billing/renewal.test.ts; do not change invoice JSON.",
+    "expectedOutput": "Diagnose\n@src/billing/renewal.ts\nnpm test -- src/billing/renewal.test.ts\ndo not change invoice JSON\nShow the diff"
+  },
+  {
+    "id": "tr-v2-03-04",
+    "mode": "Spec",
+    "input": "Turn the broad billing idea into the next implementation specification. Use @src/billing/renewal.ts; verify with npm test -- src/billing/renewal.test.ts; do not change invoice JSON.",
+    "expectedOutput": "Spec\n@src/billing/renewal.ts\nnpm test -- src/billing/renewal.test.ts\ndo not change invoice JSON\nShow the diff"
+  },
+  {
+    "id": "tr-v2-03-05",
+    "mode": "Optimize",
+    "input": "Make the billing prompt explicit about verification and constraints. Use @src/billing/renewal.ts; verify with npm test -- src/billing/renewal.test.ts; do not change invoice JSON.",
+    "expectedOutput": "Optimize\n@src/billing/renewal.ts\nnpm test -- src/billing/renewal.test.ts\ndo not change invoice JSON\nShow the diff"
+  },
+  {
+    "id": "tr-v2-03-06",
+    "mode": "Generate",
+    "input": "Ask for the smallest test-driven billing patch. Use @src/billing/renewal.ts; verify with npm test -- src/billing/renewal.test.ts; do not change invoice JSON.",
+    "expectedOutput": "Generate\n@src/billing/renewal.ts\nnpm test -- src/billing/renewal.test.ts\ndo not change invoice JSON\nShow the diff"
+  },
+  {
+    "id": "tr-v2-03-07",
+    "mode": "Diagnose",
+    "input": "The first billing attempt hid the error; produce a diagnostic request. Use @src/billing/renewal.ts; verify with npm test -- src/billing/renewal.test.ts; do not change invoice JSON.",
+    "expectedOutput": "Diagnose\n@src/billing/renewal.ts\nnpm test -- src/billing/renewal.test.ts\ndo not change invoice JSON\nShow the diff"
+  },
+  {
+    "id": "tr-v2-03-08",
+    "mode": "Spec",
+    "input": "Specify the billing behavior without starting implementation. Use @src/billing/renewal.ts; verify with npm test -- src/billing/renewal.test.ts; do not change invoice JSON.",
+    "expectedOutput": "Spec\n@src/billing/renewal.ts\nnpm test -- src/billing/renewal.test.ts\ndo not change invoice JSON\nShow the diff"
+  },
+  {
+    "id": "tr-v2-03-09",
+    "mode": "Optimize",
+    "input": "Remove ambiguity from this billing maintenance request. Use @src/billing/renewal.ts; verify with npm test -- src/billing/renewal.test.ts; do not change invoice JSON.",
+    "expectedOutput": "Optimize\n@src/billing/renewal.ts\nnpm test -- src/billing/renewal.test.ts\ndo not change invoice JSON\nShow the diff"
+  },
+  {
+    "id": "tr-v2-03-10",
+    "mode": "Generate",
+    "input": "Create a repository-grounded request for billing. Use @src/billing/renewal.ts; verify with npm test -- src/billing/renewal.test.ts; do not change invoice JSON.",
+    "expectedOutput": "Generate\n@src/billing/renewal.ts\nnpm test -- src/billing/renewal.test.ts\ndo not change invoice JSON\nShow the diff"
+  },
+  {
+    "id": "tr-v2-04-01",
+    "mode": "Optimize",
+    "input": "Tighten the request for worker while preserving behavior. Use @src/jobs/retry.ts; verify with npm test -- src/jobs/retry.test.ts; keep retry attempts idempotent.",
+    "expectedOutput": "Optimize\n@src/jobs/retry.ts\nnpm test -- src/jobs/retry.test.ts\nkeep retry attempts idempotent\nShow the diff"
+  },
+  {
+    "id": "tr-v2-04-02",
+    "mode": "Generate",
+    "input": "Write an implementation request for the worker change. Use @src/jobs/retry.ts; verify with npm test -- src/jobs/retry.test.ts; keep retry attempts idempotent.",
+    "expectedOutput": "Generate\n@src/jobs/retry.ts\nnpm test -- src/jobs/retry.test.ts\nkeep retry attempts idempotent\nShow the diff"
+  },
+  {
+    "id": "tr-v2-04-03",
+    "mode": "Diagnose",
+    "input": "The worker change spread beyond scope; rewrite the request to fix the root cause. Use @src/jobs/retry.ts; verify with npm test -- src/jobs/retry.test.ts; keep retry attempts idempotent.",
+    "expectedOutput": "Diagnose\n@src/jobs/retry.ts\nnpm test -- src/jobs/retry.test.ts\nkeep retry attempts idempotent\nShow the diff"
+  },
+  {
+    "id": "tr-v2-04-04",
+    "mode": "Spec",
+    "input": "Turn the broad worker idea into the next implementation specification. Use @src/jobs/retry.ts; verify with npm test -- src/jobs/retry.test.ts; keep retry attempts idempotent.",
+    "expectedOutput": "Spec\n@src/jobs/retry.ts\nnpm test -- src/jobs/retry.test.ts\nkeep retry attempts idempotent\nShow the diff"
+  },
+  {
+    "id": "tr-v2-04-05",
+    "mode": "Optimize",
+    "input": "Make the worker prompt explicit about verification and constraints. Use @src/jobs/retry.ts; verify with npm test -- src/jobs/retry.test.ts; keep retry attempts idempotent.",
+    "expectedOutput": "Optimize\n@src/jobs/retry.ts\nnpm test -- src/jobs/retry.test.ts\nkeep retry attempts idempotent\nShow the diff"
+  },
+  {
+    "id": "tr-v2-04-06",
+    "mode": "Generate",
+    "input": "Ask for the smallest test-driven worker patch. Use @src/jobs/retry.ts; verify with npm test -- src/jobs/retry.test.ts; keep retry attempts idempotent.",
+    "expectedOutput": "Generate\n@src/jobs/retry.ts\nnpm test -- src/jobs/retry.test.ts\nkeep retry attempts idempotent\nShow the diff"
+  },
+  {
+    "id": "tr-v2-04-07",
+    "mode": "Diagnose",
+    "input": "The first worker attempt hid the error; produce a diagnostic request. Use @src/jobs/retry.ts; verify with npm test -- src/jobs/retry.test.ts; keep retry attempts idempotent.",
+    "expectedOutput": "Diagnose\n@src/jobs/retry.ts\nnpm test -- src/jobs/retry.test.ts\nkeep retry attempts idempotent\nShow the diff"
+  },
+  {
+    "id": "tr-v2-04-08",
+    "mode": "Spec",
+    "input": "Specify the worker behavior without starting implementation. Use @src/jobs/retry.ts; verify with npm test -- src/jobs/retry.test.ts; keep retry attempts idempotent.",
+    "expectedOutput": "Spec\n@src/jobs/retry.ts\nnpm test -- src/jobs/retry.test.ts\nkeep retry attempts idempotent\nShow the diff"
+  },
+  {
+    "id": "tr-v2-04-09",
+    "mode": "Optimize",
+    "input": "Remove ambiguity from this worker maintenance request. Use @src/jobs/retry.ts; verify with npm test -- src/jobs/retry.test.ts; keep retry attempts idempotent.",
+    "expectedOutput": "Optimize\n@src/jobs/retry.ts\nnpm test -- src/jobs/retry.test.ts\nkeep retry attempts idempotent\nShow the diff"
+  },
+  {
+    "id": "tr-v2-04-10",
+    "mode": "Generate",
+    "input": "Create a repository-grounded request for worker. Use @src/jobs/retry.ts; verify with npm test -- src/jobs/retry.test.ts; keep retry attempts idempotent.",
+    "expectedOutput": "Generate\n@src/jobs/retry.ts\nnpm test -- src/jobs/retry.test.ts\nkeep retry attempts idempotent\nShow the diff"
+  },
+  {
+    "id": "tr-v2-05-01",
+    "mode": "Optimize",
+    "input": "Tighten the request for export while preserving behavior. Use @src/export/csv.ts; verify with npm test -- src/export/csv.test.ts; add no new dependencies.",
+    "expectedOutput": "Optimize\n@src/export/csv.ts\nnpm test -- src/export/csv.test.ts\nadd no new dependencies\nShow the diff"
+  },
+  {
+    "id": "tr-v2-05-02",
+    "mode": "Generate",
+    "input": "Write an implementation request for the export change. Use @src/export/csv.ts; verify with npm test -- src/export/csv.test.ts; add no new dependencies.",
+    "expectedOutput": "Generate\n@src/export/csv.ts\nnpm test -- src/export/csv.test.ts\nadd no new dependencies\nShow the diff"
+  },
+  {
+    "id": "tr-v2-05-03",
+    "mode": "Diagnose",
+    "input": "The export change spread beyond scope; rewrite the request to fix the root cause. Use @src/export/csv.ts; verify with npm test -- src/export/csv.test.ts; add no new dependencies.",
+    "expectedOutput": "Diagnose\n@src/export/csv.ts\nnpm test -- src/export/csv.test.ts\nadd no new dependencies\nShow the diff"
+  },
+  {
+    "id": "tr-v2-05-04",
+    "mode": "Spec",
+    "input": "Turn the broad export idea into the next implementation specification. Use @src/export/csv.ts; verify with npm test -- src/export/csv.test.ts; add no new dependencies.",
+    "expectedOutput": "Spec\n@src/export/csv.ts\nnpm test -- src/export/csv.test.ts\nadd no new dependencies\nShow the diff"
+  },
+  {
+    "id": "tr-v2-05-05",
+    "mode": "Optimize",
+    "input": "Make the export prompt explicit about verification and constraints. Use @src/export/csv.ts; verify with npm test -- src/export/csv.test.ts; add no new dependencies.",
+    "expectedOutput": "Optimize\n@src/export/csv.ts\nnpm test -- src/export/csv.test.ts\nadd no new dependencies\nShow the diff"
+  },
+  {
+    "id": "tr-v2-05-06",
+    "mode": "Generate",
+    "input": "Ask for the smallest test-driven export patch. Use @src/export/csv.ts; verify with npm test -- src/export/csv.test.ts; add no new dependencies.",
+    "expectedOutput": "Generate\n@src/export/csv.ts\nnpm test -- src/export/csv.test.ts\nadd no new dependencies\nShow the diff"
+  },
+  {
+    "id": "tr-v2-05-07",
+    "mode": "Diagnose",
+    "input": "The first export attempt hid the error; produce a diagnostic request. Use @src/export/csv.ts; verify with npm test -- src/export/csv.test.ts; add no new dependencies.",
+    "expectedOutput": "Diagnose\n@src/export/csv.ts\nnpm test -- src/export/csv.test.ts\nadd no new dependencies\nShow the diff"
+  },
+  {
+    "id": "tr-v2-05-08",
+    "mode": "Spec",
+    "input": "Specify the export behavior without starting implementation. Use @src/export/csv.ts; verify with npm test -- src/export/csv.test.ts; add no new dependencies.",
+    "expectedOutput": "Spec\n@src/export/csv.ts\nnpm test -- src/export/csv.test.ts\nadd no new dependencies\nShow the diff"
+  },
+  {
+    "id": "tr-v2-05-09",
+    "mode": "Optimize",
+    "input": "Remove ambiguity from this export maintenance request. Use @src/export/csv.ts; verify with npm test -- src/export/csv.test.ts; add no new dependencies.",
+    "expectedOutput": "Optimize\n@src/export/csv.ts\nnpm test -- src/export/csv.test.ts\nadd no new dependencies\nShow the diff"
+  },
+  {
+    "id": "tr-v2-05-10",
+    "mode": "Generate",
+    "input": "Create a repository-grounded request for export. Use @src/export/csv.ts; verify with npm test -- src/export/csv.test.ts; add no new dependencies.",
+    "expectedOutput": "Generate\n@src/export/csv.ts\nnpm test -- src/export/csv.test.ts\nadd no new dependencies\nShow the diff"
+  },
+  {
+    "id": "tr-v2-06-01",
+    "mode": "Optimize",
+    "input": "Tighten the request for webhook while preserving behavior. Use @src/webhooks/verify.ts; verify with npm test -- src/webhooks/verify.test.ts; reject invalid signatures without logging secrets.",
+    "expectedOutput": "Optimize\n@src/webhooks/verify.ts\nnpm test -- src/webhooks/verify.test.ts\nreject invalid signatures without logging secrets\nShow the diff"
+  },
+  {
+    "id": "tr-v2-06-02",
+    "mode": "Generate",
+    "input": "Write an implementation request for the webhook change. Use @src/webhooks/verify.ts; verify with npm test -- src/webhooks/verify.test.ts; reject invalid signatures without logging secrets.",
+    "expectedOutput": "Generate\n@src/webhooks/verify.ts\nnpm test -- src/webhooks/verify.test.ts\nreject invalid signatures without logging secrets\nShow the diff"
+  },
+  {
+    "id": "tr-v2-06-03",
+    "mode": "Diagnose",
+    "input": "The webhook change spread beyond scope; rewrite the request to fix the root cause. Use @src/webhooks/verify.ts; verify with npm test -- src/webhooks/verify.test.ts; reject invalid signatures without logging secrets.",
+    "expectedOutput": "Diagnose\n@src/webhooks/verify.ts\nnpm test -- src/webhooks/verify.test.ts\nreject invalid signatures without logging secrets\nShow the diff"
+  },
+  {
+    "id": "tr-v2-06-04",
+    "mode": "Spec",
+    "input": "Turn the broad webhook idea into the next implementation specification. Use @src/webhooks/verify.ts; verify with npm test -- src/webhooks/verify.test.ts; reject invalid signatures without logging secrets.",
+    "expectedOutput": "Spec\n@src/webhooks/verify.ts\nnpm test -- src/webhooks/verify.test.ts\nreject invalid signatures without logging secrets\nShow the diff"
+  },
+  {
+    "id": "tr-v2-06-05",
+    "mode": "Optimize",
+    "input": "Make the webhook prompt explicit about verification and constraints. Use @src/webhooks/verify.ts; verify with npm test -- src/webhooks/verify.test.ts; reject invalid signatures without logging secrets.",
+    "expectedOutput": "Optimize\n@src/webhooks/verify.ts\nnpm test -- src/webhooks/verify.test.ts\nreject invalid signatures without logging secrets\nShow the diff"
+  },
+  {
+    "id": "tr-v2-06-06",
+    "mode": "Generate",
+    "input": "Ask for the smallest test-driven webhook patch. Use @src/webhooks/verify.ts; verify with npm test -- src/webhooks/verify.test.ts; reject invalid signatures without logging secrets.",
+    "expectedOutput": "Generate\n@src/webhooks/verify.ts\nnpm test -- src/webhooks/verify.test.ts\nreject invalid signatures without logging secrets\nShow the diff"
+  },
+  {
+    "id": "tr-v2-06-07",
+    "mode": "Diagnose",
+    "input": "The first webhook attempt hid the error; produce a diagnostic request. Use @src/webhooks/verify.ts; verify with npm test -- src/webhooks/verify.test.ts; reject invalid signatures without logging secrets.",
+    "expectedOutput": "Diagnose\n@src/webhooks/verify.ts\nnpm test -- src/webhooks/verify.test.ts\nreject invalid signatures without logging secrets\nShow the diff"
+  },
+  {
+    "id": "tr-v2-06-08",
+    "mode": "Spec",
+    "input": "Specify the webhook behavior without starting implementation. Use @src/webhooks/verify.ts; verify with npm test -- src/webhooks/verify.test.ts; reject invalid signatures without logging secrets.",
+    "expectedOutput": "Spec\n@src/webhooks/verify.ts\nnpm test -- src/webhooks/verify.test.ts\nreject invalid signatures without logging secrets\nShow the diff"
+  },
+  {
+    "id": "tr-v2-06-09",
+    "mode": "Optimize",
+    "input": "Remove ambiguity from this webhook maintenance request. Use @src/webhooks/verify.ts; verify with npm test -- src/webhooks/verify.test.ts; reject invalid signatures without logging secrets.",
+    "expectedOutput": "Optimize\n@src/webhooks/verify.ts\nnpm test -- src/webhooks/verify.test.ts\nreject invalid signatures without logging secrets\nShow the diff"
+  },
+  {
+    "id": "tr-v2-06-10",
+    "mode": "Generate",
+    "input": "Create a repository-grounded request for webhook. Use @src/webhooks/verify.ts; verify with npm test -- src/webhooks/verify.test.ts; reject invalid signatures without logging secrets.",
+    "expectedOutput": "Generate\n@src/webhooks/verify.ts\nnpm test -- src/webhooks/verify.test.ts\nreject invalid signatures without logging secrets\nShow the diff"
+  },
+  {
+    "id": "tr-v2-07-01",
+    "mode": "Optimize",
+    "input": "Tighten the request for search while preserving behavior. Use @src/search/query.ts; verify with npm test -- src/search/query.test.ts; preserve the public query API.",
+    "expectedOutput": "Optimize\n@src/search/query.ts\nnpm test -- src/search/query.test.ts\npreserve the public query API\nShow the diff"
+  },
+  {
+    "id": "tr-v2-07-02",
+    "mode": "Generate",
+    "input": "Write an implementation request for the search change. Use @src/search/query.ts; verify with npm test -- src/search/query.test.ts; preserve the public query API.",
+    "expectedOutput": "Generate\n@src/search/query.ts\nnpm test -- src/search/query.test.ts\npreserve the public query API\nShow the diff"
+  },
+  {
+    "id": "tr-v2-07-03",
+    "mode": "Diagnose",
+    "input": "The search change spread beyond scope; rewrite the request to fix the root cause. Use @src/search/query.ts; verify with npm test -- src/search/query.test.ts; preserve the public query API.",
+    "expectedOutput": "Diagnose\n@src/search/query.ts\nnpm test -- src/search/query.test.ts\npreserve the public query API\nShow the diff"
+  },
+  {
+    "id": "tr-v2-07-04",
+    "mode": "Spec",
+    "input": "Turn the broad search idea into the next implementation specification. Use @src/search/query.ts; verify with npm test -- src/search/query.test.ts; preserve the public query API.",
+    "expectedOutput": "Spec\n@src/search/query.ts\nnpm test -- src/search/query.test.ts\npreserve the public query API\nShow the diff"
+  },
+  {
+    "id": "tr-v2-07-05",
+    "mode": "Optimize",
+    "input": "Make the search prompt explicit about verification and constraints. Use @src/search/query.ts; verify with npm test -- src/search/query.test.ts; preserve the public query API.",
+    "expectedOutput": "Optimize\n@src/search/query.ts\nnpm test -- src/search/query.test.ts\npreserve the public query API\nShow the diff"
+  },
+  {
+    "id": "tr-v2-07-06",
+    "mode": "Generate",
+    "input": "Ask for the smallest test-driven search patch. Use @src/search/query.ts; verify with npm test -- src/search/query.test.ts; preserve the public query API.",
+    "expectedOutput": "Generate\n@src/search/query.ts\nnpm test -- src/search/query.test.ts\npreserve the public query API\nShow the diff"
+  },
+  {
+    "id": "tr-v2-07-07",
+    "mode": "Diagnose",
+    "input": "The first search attempt hid the error; produce a diagnostic request. Use @src/search/query.ts; verify with npm test -- src/search/query.test.ts; preserve the public query API.",
+    "expectedOutput": "Diagnose\n@src/search/query.ts\nnpm test -- src/search/query.test.ts\npreserve the public query API\nShow the diff"
+  },
+  {
+    "id": "tr-v2-07-08",
+    "mode": "Spec",
+    "input": "Specify the search behavior without starting implementation. Use @src/search/query.ts; verify with npm test -- src/search/query.test.ts; preserve the public query API.",
+    "expectedOutput": "Spec\n@src/search/query.ts\nnpm test -- src/search/query.test.ts\npreserve the public query API\nShow the diff"
+  },
+  {
+    "id": "tr-v2-07-09",
+    "mode": "Optimize",
+    "input": "Remove ambiguity from this search maintenance request. Use @src/search/query.ts; verify with npm test -- src/search/query.test.ts; preserve the public query API.",
+    "expectedOutput": "Optimize\n@src/search/query.ts\nnpm test -- src/search/query.test.ts\npreserve the public query API\nShow the diff"
+  },
+  {
+    "id": "tr-v2-07-10",
+    "mode": "Generate",
+    "input": "Create a repository-grounded request for search. Use @src/search/query.ts; verify with npm test -- src/search/query.test.ts; preserve the public query API.",
+    "expectedOutput": "Generate\n@src/search/query.ts\nnpm test -- src/search/query.test.ts\npreserve the public query API\nShow the diff"
+  },
+  {
+    "id": "tr-v2-08-01",
+    "mode": "Optimize",
+    "input": "Tighten the request for profile while preserving behavior. Use @src/profile/update.ts; verify with npm test -- src/profile/update.test.ts; leave unrelated profile fields untouched.",
+    "expectedOutput": "Optimize\n@src/profile/update.ts\nnpm test -- src/profile/update.test.ts\nleave unrelated profile fields untouched\nShow the diff"
+  },
+  {
+    "id": "tr-v2-08-02",
+    "mode": "Generate",
+    "input": "Write an implementation request for the profile change. Use @src/profile/update.ts; verify with npm test -- src/profile/update.test.ts; leave unrelated profile fields untouched.",
+    "expectedOutput": "Generate\n@src/profile/update.ts\nnpm test -- src/profile/update.test.ts\nleave unrelated profile fields untouched\nShow the diff"
+  },
+  {
+    "id": "tr-v2-08-03",
+    "mode": "Diagnose",
+    "input": "The profile change spread beyond scope; rewrite the request to fix the root cause. Use @src/profile/update.ts; verify with npm test -- src/profile/update.test.ts; leave unrelated profile fields untouched.",
+    "expectedOutput": "Diagnose\n@src/profile/update.ts\nnpm test -- src/profile/update.test.ts\nleave unrelated profile fields untouched\nShow the diff"
+  },
+  {
+    "id": "tr-v2-08-04",
+    "mode": "Spec",
+    "input": "Turn the broad profile idea into the next implementation specification. Use @src/profile/update.ts; verify with npm test -- src/profile/update.test.ts; leave unrelated profile fields untouched.",
+    "expectedOutput": "Spec\n@src/profile/update.ts\nnpm test -- src/profile/update.test.ts\nleave unrelated profile fields untouched\nShow the diff"
+  },
+  {
+    "id": "tr-v2-08-05",
+    "mode": "Optimize",
+    "input": "Make the profile prompt explicit about verification and constraints. Use @src/profile/update.ts; verify with npm test -- src/profile/update.test.ts; leave unrelated profile fields untouched.",
+    "expectedOutput": "Optimize\n@src/profile/update.ts\nnpm test -- src/profile/update.test.ts\nleave unrelated profile fields untouched\nShow the diff"
+  },
+  {
+    "id": "tr-v2-08-06",
+    "mode": "Generate",
+    "input": "Ask for the smallest test-driven profile patch. Use @src/profile/update.ts; verify with npm test -- src/profile/update.test.ts; leave unrelated profile fields untouched.",
+    "expectedOutput": "Generate\n@src/profile/update.ts\nnpm test -- src/profile/update.test.ts\nleave unrelated profile fields untouched\nShow the diff"
+  },
+  {
+    "id": "tr-v2-08-07",
+    "mode": "Diagnose",
+    "input": "The first profile attempt hid the error; produce a diagnostic request. Use @src/profile/update.ts; verify with npm test -- src/profile/update.test.ts; leave unrelated profile fields untouched.",
+    "expectedOutput": "Diagnose\n@src/profile/update.ts\nnpm test -- src/profile/update.test.ts\nleave unrelated profile fields untouched\nShow the diff"
+  },
+  {
+    "id": "tr-v2-08-08",
+    "mode": "Spec",
+    "input": "Specify the profile behavior without starting implementation. Use @src/profile/update.ts; verify with npm test -- src/profile/update.test.ts; leave unrelated profile fields untouched.",
+    "expectedOutput": "Spec\n@src/profile/update.ts\nnpm test -- src/profile/update.test.ts\nleave unrelated profile fields untouched\nShow the diff"
+  },
+  {
+    "id": "tr-v2-08-09",
+    "mode": "Optimize",
+    "input": "Remove ambiguity from this profile maintenance request. Use @src/profile/update.ts; verify with npm test -- src/profile/update.test.ts; leave unrelated profile fields untouched.",
+    "expectedOutput": "Optimize\n@src/profile/update.ts\nnpm test -- src/profile/update.test.ts\nleave unrelated profile fields untouched\nShow the diff"
+  },
+  {
+    "id": "tr-v2-08-10",
+    "mode": "Generate",
+    "input": "Create a repository-grounded request for profile. Use @src/profile/update.ts; verify with npm test -- src/profile/update.test.ts; leave unrelated profile fields untouched.",
+    "expectedOutput": "Generate\n@src/profile/update.ts\nnpm test -- src/profile/update.test.ts\nleave unrelated profile fields untouched\nShow the diff"
+  },
+  {
+    "id": "tr-v2-09-01",
+    "mode": "Optimize",
+    "input": "Tighten the request for migration while preserving behavior. Use @src/db/migrations/042-orders.ts; verify with npm test -- src/db/migrations/042-orders.test.ts; keep the migration reversible.",
+    "expectedOutput": "Optimize\n@src/db/migrations/042-orders.ts\nnpm test -- src/db/migrations/042-orders.test.ts\nkeep the migration reversible\nShow the diff"
+  },
+  {
+    "id": "tr-v2-09-02",
+    "mode": "Generate",
+    "input": "Write an implementation request for the migration change. Use @src/db/migrations/042-orders.ts; verify with npm test -- src/db/migrations/042-orders.test.ts; keep the migration reversible.",
+    "expectedOutput": "Generate\n@src/db/migrations/042-orders.ts\nnpm test -- src/db/migrations/042-orders.test.ts\nkeep the migration reversible\nShow the diff"
+  },
+  {
+    "id": "tr-v2-09-03",
+    "mode": "Diagnose",
+    "input": "The migration change spread beyond scope; rewrite the request to fix the root cause. Use @src/db/migrations/042-orders.ts; verify with npm test -- src/db/migrations/042-orders.test.ts; keep the migration reversible.",
+    "expectedOutput": "Diagnose\n@src/db/migrations/042-orders.ts\nnpm test -- src/db/migrations/042-orders.test.ts\nkeep the migration reversible\nShow the diff"
+  },
+  {
+    "id": "tr-v2-09-04",
+    "mode": "Spec",
+    "input": "Turn the broad migration idea into the next implementation specification. Use @src/db/migrations/042-orders.ts; verify with npm test -- src/db/migrations/042-orders.test.ts; keep the migration reversible.",
+    "expectedOutput": "Spec\n@src/db/migrations/042-orders.ts\nnpm test -- src/db/migrations/042-orders.test.ts\nkeep the migration reversible\nShow the diff"
+  },
+  {
+    "id": "tr-v2-09-05",
+    "mode": "Optimize",
+    "input": "Make the migration prompt explicit about verification and constraints. Use @src/db/migrations/042-orders.ts; verify with npm test -- src/db/migrations/042-orders.test.ts; keep the migration reversible.",
+    "expectedOutput": "Optimize\n@src/db/migrations/042-orders.ts\nnpm test -- src/db/migrations/042-orders.test.ts\nkeep the migration reversible\nShow the diff"
+  },
+  {
+    "id": "tr-v2-09-06",
+    "mode": "Generate",
+    "input": "Ask for the smallest test-driven migration patch. Use @src/db/migrations/042-orders.ts; verify with npm test -- src/db/migrations/042-orders.test.ts; keep the migration reversible.",
+    "expectedOutput": "Generate\n@src/db/migrations/042-orders.ts\nnpm test -- src/db/migrations/042-orders.test.ts\nkeep the migration reversible\nShow the diff"
+  },
+  {
+    "id": "tr-v2-09-07",
+    "mode": "Diagnose",
+    "input": "The first migration attempt hid the error; produce a diagnostic request. Use @src/db/migrations/042-orders.ts; verify with npm test -- src/db/migrations/042-orders.test.ts; keep the migration reversible.",
+    "expectedOutput": "Diagnose\n@src/db/migrations/042-orders.ts\nnpm test -- src/db/migrations/042-orders.test.ts\nkeep the migration reversible\nShow the diff"
+  },
+  {
+    "id": "tr-v2-09-08",
+    "mode": "Spec",
+    "input": "Specify the migration behavior without starting implementation. Use @src/db/migrations/042-orders.ts; verify with npm test -- src/db/migrations/042-orders.test.ts; keep the migration reversible.",
+    "expectedOutput": "Spec\n@src/db/migrations/042-orders.ts\nnpm test -- src/db/migrations/042-orders.test.ts\nkeep the migration reversible\nShow the diff"
+  },
+  {
+    "id": "tr-v2-09-09",
+    "mode": "Optimize",
+    "input": "Remove ambiguity from this migration maintenance request. Use @src/db/migrations/042-orders.ts; verify with npm test -- src/db/migrations/042-orders.test.ts; keep the migration reversible.",
+    "expectedOutput": "Optimize\n@src/db/migrations/042-orders.ts\nnpm test -- src/db/migrations/042-orders.test.ts\nkeep the migration reversible\nShow the diff"
+  },
+  {
+    "id": "tr-v2-09-10",
+    "mode": "Generate",
+    "input": "Create a repository-grounded request for migration. Use @src/db/migrations/042-orders.ts; verify with npm test -- src/db/migrations/042-orders.test.ts; keep the migration reversible.",
+    "expectedOutput": "Generate\n@src/db/migrations/042-orders.ts\nnpm test -- src/db/migrations/042-orders.test.ts\nkeep the migration reversible\nShow the diff"
+  },
+  {
+    "id": "tr-v2-10-01",
+    "mode": "Optimize",
+    "input": "Tighten the request for notifications while preserving behavior. Use @src/notifications/digest.ts; verify with npm test -- src/notifications/digest.test.ts; send at most one digest per account.",
+    "expectedOutput": "Optimize\n@src/notifications/digest.ts\nnpm test -- src/notifications/digest.test.ts\nsend at most one digest per account\nShow the diff"
+  },
+  {
+    "id": "tr-v2-10-02",
+    "mode": "Generate",
+    "input": "Write an implementation request for the notifications change. Use @src/notifications/digest.ts; verify with npm test -- src/notifications/digest.test.ts; send at most one digest per account.",
+    "expectedOutput": "Generate\n@src/notifications/digest.ts\nnpm test -- src/notifications/digest.test.ts\nsend at most one digest per account\nShow the diff"
+  },
+  {
+    "id": "tr-v2-10-03",
+    "mode": "Diagnose",
+    "input": "The notifications change spread beyond scope; rewrite the request to fix the root cause. Use @src/notifications/digest.ts; verify with npm test -- src/notifications/digest.test.ts; send at most one digest per account.",
+    "expectedOutput": "Diagnose\n@src/notifications/digest.ts\nnpm test -- src/notifications/digest.test.ts\nsend at most one digest per account\nShow the diff"
+  },
+  {
+    "id": "tr-v2-10-04",
+    "mode": "Spec",
+    "input": "Turn the broad notifications idea into the next implementation specification. Use @src/notifications/digest.ts; verify with npm test -- src/notifications/digest.test.ts; send at most one digest per account.",
+    "expectedOutput": "Spec\n@src/notifications/digest.ts\nnpm test -- src/notifications/digest.test.ts\nsend at most one digest per account\nShow the diff"
+  },
+  {
+    "id": "tr-v2-10-05",
+    "mode": "Optimize",
+    "input": "Make the notifications prompt explicit about verification and constraints. Use @src/notifications/digest.ts; verify with npm test -- src/notifications/digest.test.ts; send at most one digest per account.",
+    "expectedOutput": "Optimize\n@src/notifications/digest.ts\nnpm test -- src/notifications/digest.test.ts\nsend at most one digest per account\nShow the diff"
+  },
+  {
+    "id": "tr-v2-10-06",
+    "mode": "Generate",
+    "input": "Ask for the smallest test-driven notifications patch. Use @src/notifications/digest.ts; verify with npm test -- src/notifications/digest.test.ts; send at most one digest per account.",
+    "expectedOutput": "Generate\n@src/notifications/digest.ts\nnpm test -- src/notifications/digest.test.ts\nsend at most one digest per account\nShow the diff"
+  },
+  {
+    "id": "tr-v2-10-07",
+    "mode": "Diagnose",
+    "input": "The first notifications attempt hid the error; produce a diagnostic request. Use @src/notifications/digest.ts; verify with npm test -- src/notifications/digest.test.ts; send at most one digest per account.",
+    "expectedOutput": "Diagnose\n@src/notifications/digest.ts\nnpm test -- src/notifications/digest.test.ts\nsend at most one digest per account\nShow the diff"
+  },
+  {
+    "id": "tr-v2-10-08",
+    "mode": "Spec",
+    "input": "Specify the notifications behavior without starting implementation. Use @src/notifications/digest.ts; verify with npm test -- src/notifications/digest.test.ts; send at most one digest per account.",
+    "expectedOutput": "Spec\n@src/notifications/digest.ts\nnpm test -- src/notifications/digest.test.ts\nsend at most one digest per account\nShow the diff"
+  },
+  {
+    "id": "tr-v2-10-09",
+    "mode": "Optimize",
+    "input": "Remove ambiguity from this notifications maintenance request. Use @src/notifications/digest.ts; verify with npm test -- src/notifications/digest.test.ts; send at most one digest per account.",
+    "expectedOutput": "Optimize\n@src/notifications/digest.ts\nnpm test -- src/notifications/digest.test.ts\nsend at most one digest per account\nShow the diff"
+  },
+  {
+    "id": "tr-v2-10-10",
+    "mode": "Generate",
+    "input": "Create a repository-grounded request for notifications. Use @src/notifications/digest.ts; verify with npm test -- src/notifications/digest.test.ts; send at most one digest per account.",
+    "expectedOutput": "Generate\n@src/notifications/digest.ts\nnpm test -- src/notifications/digest.test.ts\nsend at most one digest per account\nShow the diff"
+  }
+]

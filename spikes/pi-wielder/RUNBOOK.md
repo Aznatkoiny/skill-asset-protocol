@@ -1,106 +1,760 @@
-# RUNBOOK — testnet run & live Pi demo
+# RUNBOOK - Pi Wielder Agent Spend Control Plane
 
-Everything in [README.md](./README.md) up to `npm run e2e` is fully offline.
-This runbook covers the two things that are **manual by design**: funding a
-testnet wallet, and installing Pi with the extension for the live demo.
+The supported automated workflow is deterministic and offline. It covers both the
+legacy Collar proof and the newer Wallet Kernel process-acceptance path. No funded
+wallet, provider key, CDP credential, or live facilitator is needed. Pi is the Wielder;
+Agent and Operator name local control-plane security roles.
 
-## 1. Create and fund the Wielder wallet (Base Sepolia — manual)
+Current release status is intentionally asymmetric:
 
-1. Generate a throwaway key (never reuse a real one):
+- deterministic verification and evidence are **measured offline**; wallet settlement,
+  deployment, and cross-UID isolation are simulated;
+- live CDP and Base Sepolia payment are **not-run**;
+- Linux/systemd launch is **blocked** by `LIVE_LAUNCH_NOT_READY` (exit 78) until the
+  production preflight/control-plane composition, secret delivery, compatible listener
+  adapters, and Linux lifecycle evidence exist;
+- there is no mainnet mode, automated funding, custody service, or real-funds workflow.
 
-   ```bash
-   node -e "import('viem/accounts').then(m => { const pk = m.generatePrivateKey(); console.log('PRIVATE_KEY=' + pk); console.log('address:', m.privateKeyToAccount(pk).address); })"
+Do not interpret a local macOS pass, a deterministic adapter, or a skipped systemd test
+as evidence that the live host boundary works.
+
+## 1. Run the verified workflow
+
+Requirements:
+
+- a POSIX host;
+- Node 24.18.1 or newer for deterministic development;
+- the package-lock-installed dependency tree (`npm ci`, not an unconstrained update).
+
+The future attested live release is narrower: Linux with systemd and exactly Node
+24.18.1. From `spikes/pi-wielder`:
+
+```bash
+npm ci
+npm run verify:spend-control
+```
+
+The legacy unit/integration path uses injected Hono apps. The spend-control acceptance
+path starts real loopback child processes when the host sandbox permits it. Both use an
+unfunded deterministic wallet, canned model output, signed local receipts, and
+synthetic settlement. Timing and isolation output are explicitly offline/simulated.
+
+Create and independently verify a fresh offline evidence bundle:
+
+```bash
+evidence_parent="$(mktemp -d /tmp/pi-wielder-evidence.XXXXXX)"
+evidence_parent="$(cd "$evidence_parent" && pwd -P)"
+npm run evidence:offline -- \
+  --output "$evidence_parent/bundle" \
+  --anchor-output "$evidence_parent/manifest.sha256"
+manifest_sha256="$(tr -d '\n' < "$evidence_parent/manifest.sha256")"
+npm run evidence:verify -- "$evidence_parent/bundle" \
+  --expect-manifest-sha256 "$manifest_sha256"
+npm run verify:no-secrets
+```
+
+Keep `manifest.sha256` outside the bundle. The verifier requires that external value,
+hashes the exact manifest bytes, replays the normalized evidence chain, and verifies
+the canonical set of signed per-session authority projections and exact receipt
+partition/revision history. It does not open SQLite, call a
+network, or claim to reconstruct redacted private event data. The bundle and anchor
+paths are exclusive-create; generate a new directory for every run.
+
+## 2. Run standalone processes in mock mode
+
+The multi-process demo needs a stable Collar signing key because the proxy refuses Skill
+routes without a separately pinned public key and expected key ID.
+
+1. Copy `.env.example` to the already ignored `.env`.
+2. Create a private directory **outside this checkout**. Put absolute paths in `.env`:
+
+   ```dotenv
+   ALLOW_LIVE_X402=0
+   MOCK_LLM=1
+   COLLAR_JOURNAL_FILE=/absolute/outside-checkout/pi-wielder/events.jsonl
+   COLLAR_SIGNING_KEY_FILE=/absolute/outside-checkout/pi-wielder/receipt-private.pem
+   COLLAR_PUBLIC_KEY_FILE=/absolute/outside-checkout/pi-wielder/receipt-public.pem
+   COLLAR_KEY_ID=
    ```
 
-2. `cp .env.example .env`, paste the `PRIVATE_KEY`, and set `PAY_TO_ADDRESS`
-   to a second address you control (that's where the sellers receive USDC —
-   generate one the same way if needed). **Never commit `.env`.**
+   The directory must already exist. Never put the private key or journal in this repo.
+   The Collar creates new journal/key files with mode `0600`, rejects symlinks, and
+   refuses a path inside the checkout. Both private paths must be set together.
 
-3. Fund the Wielder address from the **Coinbase CDP faucet**
-   (<https://portal.cdp.coinbase.com/products/faucet>, free, requires a CDP
-   account):
-   - network **Base Sepolia**, asset **USDC** → request (typically 10 USDC/day);
-   - network **Base Sepolia**, asset **ETH** → request a small amount.
-     (EIP-3009 settlement is facilitator-sponsored, so the buyer mostly needs
-     USDC; the ETH covers you if you later broadcast anything yourself.)
-
-4. Sanity-check the balance on <https://sepolia.basescan.org> (search the
-   address; USDC contract `0x036CbD53842c5426634e7929541eC2318f3dCF7e`).
-
-## 2. Testnet run (real facilitator, real model APIs)
-
-In `.env`: unset the mocks and add model keys —
-
-```bash
-MOCK_FACILITATOR=0
-MOCK_LLM=0
-FACILITATOR_URL=https://x402.org/facilitator   # free, no-auth, Base Sepolia
-ANTHROPIC_API_KEY=sk-ant-…
-OPENAI_API_KEY=sk-…
-```
-
-Three terminals (or background them), sellers first:
-
-```bash
-set -a; source .env; set +a       # in each terminal
-npm run collar                     # :8404 — hosted skill behind the collar
-npm run gateway                    # :8403 — 402-gated inference reseller
-npm run proxy                      # :8402 — THE WIELDER (paying proxy)
-```
-
-Exercise all three legs through the proxy only:
-
-```bash
-curl -s localhost:8402/v1/chat/completions -H 'content-type: application/json' \
-  -H 'x-session-label: plan' \
-  -d '{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"Plan a refactor of the settlement engine tests."}]}'
-
-curl -s localhost:8402/v1/chat/completions -H 'content-type: application/json' \
-  -H 'x-session-label: implement' \
-  -d '{"model":"gpt-5.2","messages":[{"role":"user","content":"Implement the plan."}]}'
-  # use any chat model your OpenAI key can access
-
-curl -s localhost:8402/invoke/optimizing-claude-code-prompts \
-  -H 'content-type: application/json' -d '{"input":"make the checkout page faster"}'
-
-curl -s localhost:8402/ledger        # the unified session ledger
-```
-
-Each response carries `x-wielder-overhead` (402 roundtrip + sign +
-facilitator verify/settle, in ms) — these are the **real** payment-overhead
-numbers that feed the demand-side analysis in the project's internal PRD
-(unpublished), and every settled txHash is checkable on
-<https://sepolia.basescan.org>.
-
-Replay check on testnet: re-sending a captured `X-PAYMENT` header fails at
-the facilitator (the EIP-3009 nonce is already used on-chain) or, if it were
-somehow re-settled, at the collar's consumed-set (HTTP 409).
-
-## 3. Live Pi demo (manual — pi is not installed by this spike)
-
-1. Install Pi (v0.80.x): `npm install -g @earendil-works/pi-coding-agent`
-2. Install the extension into the project you'll demo from:
+3. Load the environment and start the Collar. With `ALLOW_LIVE_X402=0`, it constructs an
+   in-process mock transport; `FACILITATOR_URL` is ignored.
 
    ```bash
-   mkdir -p .pi/extensions
-   cp <this-repo>/spikes/pi-wielder/pi-extension/x402.ts .pi/extensions/
+   set -a
+   source .env
+   set +a
+   npm run collar
    ```
 
-   (or `~/.pi/agent/extensions/` for a global install). If the proxy is not
-   on the default port, export `PI_WIELDER_PROXY=http://localhost:<port>`.
-3. With collar + gateway + proxy running (section 2), start `pi` in that
-   project and `/reload` to pick up the extension. Verify against pi's docs
-   that the `registerProvider` config fields (`api`, model entries) match
-   your installed version — the extension is written against the documented
-   v0.80.x API but is exercised manually, not in CI.
-4. Demo script ("Claude plans, GPT implements, one skill invocation"):
-   - select the `x402` provider's claude model → ask for a plan;
-   - switch to the gpt model → ask it to implement;
-   - have Pi call the `invoke_skill` tool (e.g. "optimize this prompt: …");
-   - run `/ledger` → one wallet, three payees, unified attributed ledger.
+4. In another terminal, bootstrap the local demo's public trust file from the loopback
+   health endpoint. This command refuses to overwrite an existing public key file and
+   prints the key ID:
 
-## What stays manual, on purpose
+   ```bash
+   set -a
+   source .env
+   set +a
+   node --input-type=module -e 'import fs from "node:fs"; const h=await (await fetch("http://127.0.0.1:8404/healthz")).json(); fs.writeFileSync(process.env.COLLAR_PUBLIC_KEY_FILE,h.signingPublicKeyPem,{flag:"wx",mode:0o644}); console.log(h.signingKeyId)'
+   ```
 
-- CDP faucet funding (no faucet automation — ToS and flakiness).
-- Pi installation and the extension smoke-test (pi may not exist in CI).
-- Feeding the measured testnet overhead numbers back into the project's internal PRD.
+   Copy the printed `sha256:...` value into `COLLAR_KEY_ID` in `.env`. For anything
+   beyond a loopback mock demo, provision the public key and its one-hash SPKI-DER ID by
+   an authenticated out-of-band channel; do not bootstrap trust from an untrusted server
+   response.
+
+5. Start the mock gateway and pinned proxy in separate terminals, loading `.env` in
+   each:
+
+   ```bash
+   npm run gateway
+   npm run proxy
+   ```
+
+6. Exercise both routes through the proxy:
+
+   ```bash
+   curl -s http://127.0.0.1:8402/v1/chat/completions \
+     -H 'content-type: application/json' \
+     -H 'x-session-label: plan' \
+     -d '{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"Plan a refactor."}]}'
+
+   curl -s http://127.0.0.1:8402/invoke/optimizing-claude-code-prompts \
+     -H 'content-type: application/json' \
+     -d '{"input":"make the checkout page faster"}'
+
+   curl -s http://127.0.0.1:8402/ledger
+   ```
+
+`/ledger` is a payer-side receipt view. It is not the Collar journal and is not a
+cross-seller accounting authority.
+
+### Runtime limits
+
+The mock and standalone paths use the same bounded runtime contract as the tests.
+Collar/Skill request bodies stop at exactly 4,096 bytes; model requests stop at 1 MiB.
+x402 challenges and facilitator JSON stop at 64 KiB; gateway provider JSON and proxy
+upstream responses stop at 1 MiB. Streaming and chunked bodies are counted as they
+arrive, so omitting `Content-Length` does not bypass a limit.
+
+The default deadlines are 15 seconds for an unpaid buyer fetch, 30 seconds for its
+single paid retry, 5 seconds for request-body reads, 10 seconds each for facilitator
+verify and settle, and 30 seconds for provider execution/upstream response reads. The
+gateway's provider deadline covers both the fetch and the streamed response read,
+cannot be configured above 30 seconds, composes the request abort signal, and refuses
+redirects. Provider HTTP failures never consume or expose the raw response body; all
+public failures are stable and sanitized. Unsuccessful facilitator and provider bodies,
+plus paid output withheld for invalid settlement evidence, are cancelled without being
+read or exposed.
+An unpaid timeout remains unreserved. Any timeout after the signature keeps the payment
+unresolved/held until trusted reconciliation. A provider timeout after settlement
+returns no output and finalizes a signed failed receipt with unknown COGS and the full
+gross held for reconciliation or refund.
+
+The Collar keeps no durable state for an unpaid challenge. Its paywall admits at most
+128 process-local pending offers, each with a 60-second TTL. New keys beyond the cap get
+`503 PENDING_OFFER_CAPACITY` with `Retry-After: 1`; active keys still get their frozen
+offer. `Idempotency-Key` is restricted to 1-128 canonical ASCII characters. Only expired
+unpaid entries are reclaimed. After facilitator verification, the exact payment-header
+digest and all signed, unresolved, settled, refunded, execution, and terminal state
+remain in the append-only journal and are never capacity-pruned. A replay must match that
+digest; legacy journal entries without one are sent back through facilitator verification.
+
+The standalone gateway has no durable response authority. Before verification it claims
+the fixed network, asset, payer, and nonce for exactly one Idempotency-Key and binds the
+exact verified payment-header hash to that owner. Cross-key, concurrent, and alternate-
+encoding reuse fails before a second verification, settlement, or provider execution;
+a successful claim stays through its exact frozen-offer validity window in bounded
+TTL-scoped admission state. Do not treat this as response replay. The authoritative Collar
+journal remains the only terminal replay path. Facilitator verification accepts only the
+exact boolean `true`.
+
+A restart after `402` but before successful verification intentionally loses that
+non-authoritative offer. A paid retry carrying the old key then gets `409` before any
+facilitator or provider call. Keep the Wielder reservation unresolved, reconcile the
+signed nonce through a trusted operator path, and issue a fresh key only after that
+check. A retry whose verified state was journaled continues through the normal durable
+reconciliation and replay paths.
+
+## 3. Persistent authority contract
+
+`COLLAR_JOURNAL_FILE` and `COLLAR_SIGNING_KEY_FILE` are one authority pair:
+
+- both are explicit absolute paths outside the checkout;
+- both are regular non-symlink files with exact mode `0600` once created;
+- the journal is append-only JSONL, fsynced, hash-chained, and Ed25519-signed per event;
+- same-host processes serialize writes with a private lease file and record-level
+  compare-and-swap checks;
+- stale lease removal is an explicit exact-lease-ID API operation, not an automatic
+  timeout deletion;
+- the private key never enters the proxy. The proxy receives only
+  `COLLAR_PUBLIC_KEY_FILE` plus `COLLAR_KEY_ID` and independently recomputes the ID.
+
+Changing the private signing key without starting a new journal is rejected. Rotating
+the Collar key also requires updating the proxy's pinned public key and ID through a
+trusted operator process.
+
+## 4. Trusted reconciliation and refunds
+
+The HTTP endpoints do not accept caller-supplied settlement or refund proofs:
+
+- `GET /receipts/by-settlement/:reference` is read-only.
+- `POST /reconcile/by-settlement/:reference` calls the injected
+  `resolveSettlement` adapter and requires exact reference, payer, gross amount, and
+  transaction evidence.
+- `POST /refund/by-settlement/:reference` durably claims one refund attempt before it
+  calls the injected `executeRefund` adapter.
+- `POST /reconcile/refund/by-settlement/:reference` calls the separate injected
+  `resolveRefund` adapter after an ambiguous/crashed refund outcome.
+
+An integration must construct the Collar with trusted code, not with proof fields from
+an HTTP request:
+
+```js
+createCollar({
+  facilitatorTransport,
+  journalFile,
+  signingKeyFile,
+  resolveSettlement,
+  executeRefund,
+  resolveRefund,
+});
+```
+
+Every adapter result is checked against journal-bound payer, reference, transaction,
+and canonical atomic amount. Exceptions are returned as stable public errors. A refund
+resolver may confirm the already claimed attempt; it must not initiate a second refund.
+
+There is currently no operator endpoint that resolves a Skill attempt left `executing`
+after the provider returned but before the terminal journal append. Such an Invocation
+remains explicit `503 execution outcome unresolved` until a future trusted execution
+reconciliation design exists. Do not manually rewrite the journal.
+
+## 5. Live Base Sepolia boundary — intentionally blocked in the CLI
+
+Before a live provider run, verify the current provider price sheet and construct a new
+immutable catalog version with `evidenceLabel: human_verified`, source, and as-of
+timestamp. Compute its exact canonical `catalogDigest`; the spend cap must cover the
+maximum worst-case provider cost across every allowed model in that catalog. Do not
+embed approval or spend authorization in the catalog itself, and never relabel a
+`synthetic_config` catalog as measured.
+
+The Collar and gateway use separate operator approvals:
+
+- Collar construction receives `LIVE_CATALOG_DIGEST` and `LIVE_SPEND_CAP_ATOMIC`.
+- The standalone gateway reads `GATEWAY_LIVE_CATALOG_DIGEST` and
+  `GATEWAY_LIVE_SPEND_CAP_ATOMIC`.
+- Both require `ALLOW_LIVE_PROVIDER=1`, `MOCK_LLM=0`, and live x402 settlement through
+  the pinned approved facilitator; the provider credential is supplied only through
+  operator secret injection. A live provider can never run behind mock settlement.
+
+The Collar approval checks the gross ceiling for one Invocation. The gateway approval
+instead funds one cumulative in-memory process-run budget. After facilitator verification
+and before settlement, the gateway synchronously reserves that request's catalog
+worst-case input/output cost. A valid provider response commits actual catalog-rated
+usage, while a timeout, HTTP failure, invalid usage, or other ambiguous outcome consumes
+the full reservation. A new paid retry is refused before settlement when its worst case
+no longer fits. The cap resets on process restart and is not durable or shared across
+workers, so a production integration still needs an independent persistent aggregate
+budget.
+
+The committed gateway catalog is deliberately `synthetic_config`, so `npm run gateway`
+remains blocked from live execution even if the flags, digest, cap, and provider key are
+set. A reviewed integration must inject a `human_verified` catalog and its exact digest.
+The gateway enforces its catalog's exact model allowlist, output bound, and conservative
+input bound before offering payment. That input bound treats each raw request byte as at
+most one provider token and reserves another 1,024 tokens for provider-side chat
+framing. The pre-offer schema is closed: messages, text parts, function tools/calls/results,
+and provider-specific options must match the documented Pi/OpenAI shapes. Unknown or
+malformed fields fail with `400` before facilitator or provider activity. Anthropic
+options are translated explicitly; unsupported `strict` tool semantics and requests that
+would translate to no non-system provider message are rejected.
+Provider requests refuse redirects, use one absolute fetch-plus-body deadline,
+whose configurable value cannot exceed 30 seconds, and stream responses through a hard
+1 MiB cap. Automated verification stays on the mock facilitator and mock model and uses
+no real funds.
+
+Provider approval is separate from the x402 settlement gate below. Both gates must be
+satisfied by a future integration; enabling either one does not implicitly authorize
+the other.
+
+Live mode is opt-in only:
+
+```dotenv
+ALLOW_LIVE_X402=1
+FACILITATOR_URL=https://x402.org/facilitator
+```
+
+The URL must match the single approved HTTPS base byte-for-byte. Redirects are disabled,
+and only `/verify` and `/settle` are constructed. Mainnet is unsupported.
+
+The standalone `npm run collar` command intentionally does **not** load settlement or
+refund adapters from environment variables. Therefore it refuses live startup even when
+the URL and persistent files are present. A future authorized Base Sepolia run must add
+reviewed, injected implementations for all three trusted adapters above, preserve the
+persistent authority pair, pin the proxy trust out of band, and use a human-funded
+testnet-only wallet. No such live run was performed during this remediation.
+
+This fail-closed boundary is expected behavior, not a setup bug.
+
+## 6. Pi adapter
+
+The extension is pinned to Pi `0.80.6`. Automated contract tests import the TypeScript
+module with Node's type stripping and invoke Pi's real five-argument tool ABI. Copying
+it into a Pi installation remains a manual host step:
+
+```bash
+mkdir -p .pi/extensions
+cp <this-repo>/spikes/pi-wielder/pi-extension/x402.ts .pi/extensions/
+```
+
+With the Wallet Kernel's loopback Agent API running, start the exact compatible Pi
+version and reload extensions. The extension points model calls and `invoke_skill` at
+fixed local routes. A new logical model call gets a fresh call ID; its hook retains
+that ID across an error until Pi reports a terminal outcome, then rotates it. The tool
+uses its real `toolCallId` to derive a stable call ID and performs at most one automatic
+same-key retry only when its local `fetch` throws or response-body reading fails. It
+never automatically retries a received invalid content type, malformed JSON, or any
+HTTP/application result, including `payment_approval_required`. A completed replay
+returns a non-success JSON envelope: the charge and signed receipt remain available,
+but provider output is not fabricated or retained. Later legitimate model and Skill
+calls use fresh IDs even when their ordinary payloads are identical. For an identical
+payload, a fresh ID creates a new intent only when no active retry-matchable intent or
+prior alias exists; otherwise the Kernel resolves it to the active or previously bound
+intent. `npm run e2e:spend-control` exercises this path fully offline without external
+providers or chain access.
+
+## 7. Manual-only boundaries
+
+- Provisioning and protecting persistent key material.
+- Supplying reviewed trusted settlement/refund adapters.
+- Funding any future Base Sepolia wallet; never automate faucets here.
+- Installing and smoke-testing Pi.
+- Authorizing and retaining evidence for any future live measurement.
+
+Secure card, billing, private-key, and wallet-funding details do not belong in chat,
+tracked files, receipts, or logs.
+
+## 8. Wallet Kernel operating model
+
+The Wallet Kernel is the Wielder-side spending authority. Pi receives only a Pi-owned
+Agent credential and the loopback Agent API. It cannot choose the wallet, target URL,
+HTTP method, seller, payee, amount, policy, Spend Session, approval ID, payment
+idempotency key, or payment header. Those values come from the active PolicyVersion,
+fixed route map, durable intent, and wallet adapter. Pi must provide a separate
+32-byte `x-agent-call-id`; it grants no spend authority, never reaches the seller, and
+is bound by the Kernel to the authenticated Agent credential, exact Spend Session,
+route, method, body, allowlisted headers, and purpose. It cannot convey an Approval,
+wallet, payee, amount, policy, payment idempotency key, signature, or payment header.
+Reusing it for the same completed call cannot pay again; reusing it for a different
+request fails with `CORRELATION_CONFLICT`. A later legitimate call, including an
+identical one, must use a fresh key. While an exact fingerprint remains active, a fresh
+key is atomically recorded as its correlation alias before signing rather than creating
+a second intent. Only a fresh unbound key with no active exact fingerprint can create a
+later identical intent.
+
+The policy decision is made before signing and enforces all of these independent
+limits:
+
+- the seller's per-request maximum;
+- the seller's exposure maximum within the Spend Session;
+- the Wielder's whole-session exposure maximum;
+- the Wielder's rolling-24-hour exposure maximum.
+
+Amounts at or below `autoApproveAtomic` may proceed automatically. Amounts above that
+threshold and at or below `humanApproveAtomic` enter the bounded approval queue. All
+other requests fail closed. A signature is never recreated for a retry: the exact
+authorization and payment bytes are persisted before the one paid attempt. Ambiguous
+payment or execution outcomes continue to consume budget until trusted reconciliation
+resolves them.
+
+There are two local principals:
+
+- **Agent:** the Pi process acting as the Wielder. It authenticates only to the narrow
+  Agent API with `WalletKernelAgent`; it cannot use Operator routes.
+- **Operator:** the wallet owner. The Operator owns an independent bearer and uses the
+  offline bootstrap CLI or the authenticated local admin plane. Operator responses are
+  closed public projections and do not contain raw credentials, prompts, bodies,
+  payment payloads, or private paths.
+
+Zero active Agent enrollments starts only an operator recovery surface. It creates no
+Spend Session or signer admission. A revoked enrollment cannot spend after restart;
+the Operator may still inspect, reconcile, export, and guarded-close retained records.
+
+## 9. Live host and filesystem prerequisites
+
+These are mandatory for a future `cdp-testnet` host. They are documented now so an
+operator can review the trust boundary; satisfying them does not remove the current
+`LIVE_LAUNCH_NOT_READY` block.
+
+1. Use Linux with systemd, a clean exact Git commit, `npm ci`, and exactly Node
+   24.18.1. The pinned Node executable and the full installed dependency tree are part
+   of release integrity.
+2. Provision distinct, non-root numeric Kernel and Pi UIDs with pinned primary GIDs.
+   Clear supplementary groups before either privileged probe or service execution.
+   Live startup refuses root, a shared UID, identity drift, or enrollment/config drift.
+3. Choose one root-owned trusted ancestor. Every configured private, writable,
+   configuration, release, socket, evidence, and handoff path must be reached by a
+   complete non-symlink descriptor walk beneath it. Any group/other-writable or sticky
+   writable ancestor is rejected.
+4. Keep the immutable release and all writable state separate. A reference ownership
+   layout is:
+
+   | Path role | Owner and mode | Direction or contents |
+   |---|---|---|
+   | Versioned release tree | root; no group/other write | Source, lockfile-installed dependencies, pinned Node binding, manifest, unit artifacts, policy seed, and fixed route map |
+   | Authority root | Kernel `0700` | SQLite, receipt key, Operator token, and authority lock; private files are `0600` |
+   | Runtime root | Kernel `0700` | Unix admin socket and runtime-only state |
+   | Evidence root | Kernel `0700` | New immutable testnet run directories; never under the release tree |
+   | Pi credential parent | Pi `0700` | Raw Agent credential `0600`; Kernel traversal must receive `EACCES` |
+   | Enrollment inbox | Pi `0755` | Pi writes one non-secret descriptor `0644`; Kernel can read but must not write/rename/delete |
+   | Agent-run outbox | Kernel `0755` | Kernel writes one public run descriptor `0644`; Pi can read but must not write/rename/delete |
+   | Attested environment file | root-owned regular file, `0600` | Names the future Kernel inputs; current secret-delivery composition is missing and blocked |
+
+The two handoff parents are deliberately separate. Before live admission, dropped-UID
+probes must prove both wrong-direction write/rename/delete attempts fail with `EACCES`,
+Pi can read only its own credential, and Pi cannot read or modify Kernel authority,
+release, service, environment, or evidence state.
+
+## 10. Clean install, bootstrap, and the intentional live block
+
+There is not yet a complete privileged installer or production listener/secret-loader
+composition. The repository contains independently tested release-manifest, systemd
+rendering/inspection, isolation-probe, offline bootstrap, and control-plane primitives.
+Do not wire them together with an ad hoc root shell or bypass the readiness gate.
+
+The required clean-install order is exact:
+
+1. From a clean commit, install the dependency-locked tree into a version-addressed,
+   root-owned immutable release path such as `/opt/wallet-kernel/releases/<commit>`.
+   Never run live from a developer checkout, symlink named `current`, or Pi-writable
+   workspace.
+2. Provision distinct Kernel-writable authority, runtime, and evidence roots plus the
+   two directional handoff parents described above.
+3. Render both systemd artifacts to their exact immutable paths. The renderer is a
+   library boundary intended for a privileged installer and refuses an ad hoc direct
+   invocation.
+4. Run Kernel `preflight` offline, before opening a network listener.
+5. Under the Pi UID, create the raw Agent credential and public enrollment descriptor.
+6. Under the Kernel UID, import that descriptor with its separately confirmed hash.
+7. Validate the candidate policy, then apply it only with its separately confirmed
+   hash. Validate the route map before any start.
+8. Run `systemctl daemon-reload`.
+9. Run `systemctl enable wallet-kernel-console.socket` without starting it. The socket
+   template has `[Install] WantedBy=sockets.target`; enable it independently from the
+   static service.
+10. Inspect PID1's complete effective service/socket configuration, then create and
+    verify the release manifest against the immutable tree, exact Node 24.18.1 binary,
+    both unit artifacts, and that effective-config hash.
+11. Run the privileged dropped-identity isolation probe bound to the enrollment and
+    release manifest. Import its fresh, Kernel-owned `0600` report with the separately
+    confirmed report hash. The report expires after at most 15 minutes and must be
+    regenerated before each live start.
+12. Verify the same effective configuration, run
+    `systemctl start wallet-kernel-console.socket`, and only then start the service.
+
+The loaded service must pass only `WALLET_KERNEL_ENV_FILE=<absolute path>` to the
+root-prefixed preflight. It may not use `EnvironmentFile=`, `PassEnvironment=`, or
+place CDP/RPC secret values in root's environment. Loader controls including
+`NODE_OPTIONS`, `NODE_PATH`, `LD_*`, `DYLD_*`, `GCONV_PATH`, and `GLIBC_TUNABLES` are
+forbidden. Root verifies public release, unit, PID1, and path facts, then spawns one
+empty-environment child that clears groups and drops to the exact Kernel GID/UID before
+opening the authority for a read-only recovery/parity audit.
+
+At present, step 12 does **not** produce a live service. The preflight command emits a
+machine-readable gate with code `LIVE_LAUNCH_NOT_READY` and exits 78. Its unresolved
+requirements are:
+
+- `LIVE_PREFLIGHT_COMPOSITION_REQUIRED`;
+- `CONTROL_PLANE_COMPOSITION_REQUIRED`;
+- `LIVE_SECRET_DELIVERY_COMPOSITION_REQUIRED`;
+- `LIVE_LISTENER_RESPONSE_COMPATIBILITY_REQUIRED`;
+- `LIVE_SYSTEMD_LIFECYCLE_EVIDENCE_REQUIRED`.
+
+The listener requirement includes production `@hono/node-server` adapters configured
+with `overrideGlobalObjects: false`. A local macOS test cannot supply the required
+Linux root/systemd lifecycle evidence. A skipped Linux/systemd integration is recorded
+as skipped, never passed. Any failure after socket enablement must leave the socket
+disabled and the service stopped.
+
+## 11. Agent enrollment, policy, and credential handling
+
+Never put a raw Agent credential in the Kernel `.env`, enrollment inbox, database,
+logs, receipts, evidence, or Operator output. The Kernel must remain unable to open its
+Pi-owned `0700` parent.
+
+Under the Pi identity, create or reuse the owner-only credential and exclusive-create
+the non-secret descriptor:
+
+```bash
+node src/agent/credential-cli.mjs init \
+  --credential /absolute/pi-private/agent-credential.json \
+  --enrollment /absolute/enrollment-inbox/agent-enrollment.json
+```
+
+The command prints only the descriptor's `sha256:...` digest. Confirm that digest by a
+separate trusted channel. With the Kernel environment already installed and no daemon
+holding the authority lock, use the Operator CLI:
+
+```bash
+npm run operator -- preflight --json
+npm run operator -- agent enroll /absolute/enrollment-inbox/agent-enrollment.json \
+  --confirm sha256:<descriptor-digest> --json
+npm run operator -- policy validate /absolute/operator-input/policy.json --json
+npm run operator -- policy apply /absolute/operator-input/policy.json \
+  --confirm sha256:<policy-digest> --json
+npm run operator -- isolation attest /absolute/kernel-staging/isolation-report.json \
+  --confirm sha256:<report-digest> --json
+```
+
+Each mutating bootstrap command acquires the bootstrap authority lock, opens the
+persistent receipt signer, performs full integrity/recovery/receipt-parity checks, and
+only then applies its one mutation. Never edit SQLite directly.
+
+Restarting with the same active credential and unchanged PolicyVersion reuses the
+existing Agent binding, Spend Session, pending intent, and approval state. Startup does
+not create a replacement session merely because the process restarted.
+
+For ordinary planned replacement, first guarded-close the active Spend Session, then
+revoke the current enrollment with its displayed hashes:
+
+```bash
+npm run operator -- sessions close <session-id> \
+  --confirm sha256:<expected-session-hash> --json
+npm run operator -- agent revoke <agent-instance-id> \
+  --confirm sha256:<expected-enrollment-hash> --json
+```
+
+If unresolved money makes close unsafe, revoke first, remain in operator-only recovery,
+reconcile and close, then stop and replace. In either case, quiesce the host exactly as
+described in section 13 before creating a second credential. A replacement requires a
+new descriptor confirmation, enrollment import, policy/config validation, and fresh
+isolation report; it never silently rotates a token inside an existing binding.
+
+CDP credentials are human-provisioned secrets. The required names are
+`CDP_API_KEY_ID`, `CDP_API_KEY_SECRET`, `CDP_WALLET_SECRET`, and `CDP_WALLET_NAME`, but
+the current release does not have a reviewed path that loads them after privileged
+preflight without passing them through the root-prefixed preflight process. Provision
+them only in an external owner-only secret store for the future non-root loader; do not
+populate an improvised environment
+or paste values into shell history, chat, unit files, release manifests, run
+descriptors, evidence, or tracked files. `CDP_WALLET_NAME` must resolve to the same
+customer-owned wallet address pinned by the active PolicyVersion. Funding that wallet
+with Base Sepolia test USDC is a human action; the software never invokes a faucet or
+transfers funds to satisfy a preflight.
+
+## 12. Operator procedures
+
+The Operator token is an independent 32-byte base64url bearer stored as a regular
+`0600` file in the Kernel-owned `0700` authority parent. It is read locally and never
+printed. In `cdp-testnet`, the admin CLI sends it only over the Kernel-owned `0600` Unix
+socket. Deterministic development uses the fixed loopback operator endpoint and must
+remain labeled simulated.
+
+### Console startup and launch
+
+For a future live release, the order before service start is exact:
+
+```bash
+systemctl daemon-reload
+systemctl enable wallet-kernel-console.socket
+# Run the privileged effective-config inspection and compare its hash.
+systemctl start wallet-kernel-console.socket
+```
+
+Then `npm run operator -- console launch` asks the Unix admin API for a one-time URL.
+The bearer travels only in the URL fragment, which browsers do not send in HTTP. The
+root-owned socket-activated loopback listener retains the reserved port across a Kernel
+crash; do not replace it with a self-bound listener. Deterministic mode has a direct
+loopback fallback for offline testing only.
+
+### Approval and denial
+
+```bash
+npm run operator -- approvals list --state pending --json
+npm run operator -- approvals approve <approval-id> \
+  --confirm sha256:<expected-intent-hash> --json
+npm run operator -- approvals deny <approval-id> \
+  --confirm sha256:<expected-intent-hash> --reason OPERATOR_DENIED --json
+```
+
+The Agent request that creates the approval returns
+`payment_approval_required` immediately. Do not add `Prefer: wait`, keep that request
+connected, poll the Operator API from Pi, or automatically replay the application
+request. After Operator approval, the Wielder deliberately repeats the exact
+ordinary request, preferably reusing its `x-agent-call-id`. If Pi supplies a fresh call
+ID, the Kernel atomically binds it as a correlation alias to the active exact
+fingerprint before signing, so a same-ID response-loss replay cannot spend twice. Pi
+never sends the approval ID, wallet identity, or payment authority.
+
+Use only IDs and confirmation hashes from a fresh authenticated projection. Approval is
+compare-and-swap, scoped to the exact intent, and bounded by its expiry. An expired
+approval is not renewed or widened; the Agent must submit a fresh ordinary request with
+a fresh call ID.
+
+### Receipt and session observation
+
+```bash
+npm run operator -- receipts list --json
+npm run operator -- receipts verify <receipt-id> --json
+npm run operator -- export <session-id> \
+  --output /absolute/operator-private/session-export.json --json
+```
+
+Exports exclusive-create an owner-only file and refuse overwrite or symlinks. Signed
+receipt revisions are authoritative public outcomes; never infer a final outcome from
+a candidate row or raw provider response.
+
+### Reconciliation and refunds
+
+For a payment, execution, or refund case, first obtain the current intent hash and case
+hash from the authenticated Operator view. Then use the one matching operation:
+
+```bash
+npm run operator -- reconcile payment <intent-id> \
+  --confirm sha256:<intent-hash> --confirm-case sha256:<case-hash> \
+  --payment-transaction 0x<confirmed-transaction-hash> --json
+
+npm run operator -- reconcile execution <intent-id> \
+  --confirm sha256:<intent-hash> --confirm-case sha256:<case-hash> --json
+
+npm run operator -- reconcile refund-observation <intent-id> \
+  --confirm sha256:<intent-hash> --confirm-case sha256:<case-hash> \
+  --refund-transaction 0x<confirmed-refund-transaction-hash> --json
+```
+
+The Base Sepolia observer is read-only. It checks finalized transaction/receipt facts,
+exact asset, wallet, payee/source, amount, nonce, and seller attestations; it cannot
+fund, sign, send, or execute a refund. A full refund becomes final only after the
+seller-attested and on-chain facts agree with the durable original payment and the
+Kernel emits the superseding signed receipt revision. Never retry an ambiguous refund
+execution, accept caller-supplied proof as final, or release exposure from a pending
+candidate. A demonstrably invalid payment or refund candidate may be abandoned only
+with the current intent/case hashes and the explicit `reconcile abandon-candidate`
+operation.
+
+## 13. Shutdown, replacement, backup, and incidents
+
+### Normal shutdown and restart
+
+The control plane closes admission first, waits for in-flight unsigned work, preserves
+all signed or ambiguous holds, closes Agent, console, and admin listeners in order,
+closes SQLite, and releases the process-lifetime authority lock last. A normal restart
+must run full recovery, event-chain and receipt-parity validation before reopening
+admission. Do not delete a lock, socket, intent, or pending row to make startup pass.
+
+For maintenance or Agent replacement, prevent socket activation before stopping the
+service:
+
+```bash
+systemctl disable --now wallet-kernel-console.socket
+systemctl stop wallet-kernel.service
+```
+
+Verify both units are `inactive`, the socket is `disabled`, both `Job` values are
+empty, `MainPID=0`, no listener remains on `127.0.0.1:8405`, and a role-`bootstrap`
+authority-lock probe succeeds. Keep a connection storm running during the check; after
+socket disablement, dropped Pi traffic must not reactivate the service or acquire the
+authority lock. If any check fails, leave the socket disabled and the service stopped.
+
+Restore the service only after replacement/bootstrap succeeds: `daemon-reload`, enable
+the socket without starting it, verify the full PID1 effective projection, import a
+fresh isolation attestation, start the socket, then start the service. There is no
+failure path that silently resumes an old enrollment or policy binding.
+
+### Offline backup and restore
+
+Treat backup/restore as an offline SQLite authority operation:
+
+1. Complete the maintenance quiesce above and prove the authority lock is available.
+2. Use a trusted SQLite backup operation, or an exact file copy only after all Kernel
+   connections are closed and SQLite has checkpointed its WAL. Do not copy a live
+   database or omit live `-wal`/`-shm` state by guesswork.
+3. Store the backup as sensitive authority data outside the checkout. Protect receipt
+   signing keys and Operator credentials separately under the same security policy;
+   never put them in the evidence bundle.
+4. Restore to a newly provisioned Kernel-owned `0700` parent with exact `0600` file
+   modes. Run SQLite `PRAGMA integrity_check`, then Kernel `preflight`, full semantic
+   recovery, event-chain verification, receipt signature/parity verification, policy
+   validation, and fresh isolation attestation before enabling the socket.
+
+Never repair an incident by hand-editing the database. If integrity, semantic recovery,
+or receipt parity fails, preserve the files, keep admission closed, and escalate the
+exact stable error code.
+
+### Incident decision points
+
+- **Signing/payment ambiguity:** stop new admission, retain the full reservation, and
+  use read-only Base Sepolia observation plus `reconcile payment`. Never create a new
+  signature for the old intent or resend merely because a response was lost.
+- **Execution-evidence ambiguity:** preserve the committed payment and response hold.
+  Use `reconcile execution`; never invent output or a Royalty claim from transport
+  failure details.
+- **Seller-attested refund or on-chain refund ambiguity:** preserve the pending full
+  exposure. Use `reconcile refund-observation` only when the independent seller and
+  chain bindings are available. Never execute a second refund from an uncertain first
+  attempt.
+- **Credential compromise:** revoke immediately if necessary, restart in recovery-only
+  mode, reconcile and close retained sessions, then follow the full quiesce and
+  replacement sequence. Do not retain the compromised credential for convenience.
+- **Authority corruption or missing receipt:** do not start listeners. Recovery may
+  repair only the exact designed missing-receipt gap; all other corruption remains a
+  blocked incident for preserved forensic review.
+
+## 14. Human-gated Base Sepolia evidence
+
+A qualifying testnet run is a separate human authorization event, not an environment
+toggle. In this implementation,
+`run-evidence.mjs --mode base-sepolia-testnet` deliberately exits 2 with canonical
+`EVIDENCE_TESTNET_NOT_RUN`; there is no privileged Kernel-side live orchestration API
+and no real adapter is constructed. Do not treat the separately testable Pi-side
+descriptor runner as a complete testnet workflow.
+
+A future reviewed Kernel-side runner must stop before constructing a real adapter
+unless all of these are true at the same time:
+
+- the root-owned release manifest/tree, exact commit, Node binary, both unit artifacts,
+  and fresh PID1 effective-config hash reverify;
+- network and asset equal Base Sepolia `eip155:84532` and its pinned USDC contract;
+- the active PolicyVersion wallet equals the customer-owned CDP wallet;
+- Operator preflight and the unexpired imported Agent isolation attestation are green;
+- the read-only observer reports sufficient funds at a recorded block for the run
+  intent's full `maximumTotalAtomic` amount;
+- the output is a new `YYYY-MM-DD-agent-spend-control-RUN_ID` directory under the
+  external Kernel-owned `0700` evidence root;
+- the human supplies `--confirm-sha256` equal to the canonical run-intent digest.
+
+Confirmation may not come from an environment variable. Insufficient or unavailable
+funding exits before signing; the runner never faucets, funds, transfers, selects
+mainnet, lowers the declared ceiling, overwrites an evidence directory, or writes into
+the release/source tree.
+
+After a future reviewed Kernel-side runner publishes the bounded `0644` descriptor in
+the Kernel-owned outbox, the human separately invokes the Pi-side runner under the
+enrolled Pi UID/GID:
+
+```bash
+node scripts/run-testnet-agent.mjs \
+  --run-intent /absolute/kernel-run-outbox/run-intent.json \
+  --confirm-sha256 sha256:<run-intent-digest>
+```
+
+That Pi-side process validates the single-open descriptor, Kernel ownership/mode/hash,
+its own identity, the `0600` credential, exact routes, amount ceiling, and expiry. It
+has no Operator token or CDP environment and emits no credential. A timeout leaves the
+run incomplete/`not-run`; it does not weaken policy or imply success.
+
+Every completed evidence directory is immutable. Verify it against the out-of-band
+manifest anchor before any optional human-reviewed copy into the repository. A public
+website reframe remains gated on fresh qualifying testnet evidence; the quarantined
+2026-07-15 n=48 aggregate cannot satisfy that gate because normalized per-call samples
+were not retained.
+
+The following remain outside this spike: mainnet, real funds, custody, hosted policy
+authority, automated funding, live CDP payment, production secret delivery, a complete
+privileged installer/launcher, and any public commercialization claim based only on
+offline evidence.

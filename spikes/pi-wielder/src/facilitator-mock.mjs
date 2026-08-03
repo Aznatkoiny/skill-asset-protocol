@@ -1,5 +1,5 @@
 // facilitator-mock.mjs — an in-process stand-in for https://x402.org/facilitator
-// (MOCK_FACILITATOR=1). Zero network, zero keys, zero funds.
+// through createMockFacilitatorTransport(). Zero network, zero keys, zero funds.
 //
 // It is deliberately NOT a rubber stamp:
 //   /verify  really recovers the EIP-712 signer of the EIP-3009
@@ -45,7 +45,7 @@ export function createMockFacilitator() {
     if (paymentPayload?.scheme !== 'exact' || paymentPayload?.network !== NETWORK) return fail('scheme/network mismatch');
     if (!auth || !signature) return fail('missing authorization or signature');
     if (auth.to?.toLowerCase() !== req?.payTo?.toLowerCase()) return fail('authorization pays the wrong address');
-    if (BigInt(auth.value) < BigInt(req.maxAmountRequired)) return fail('authorized amount below price');
+    if (String(auth.value) !== String(req.maxAmountRequired)) return fail('authorization amount must equal price');
     const now = Math.floor(Date.now() / 1000);
     if (now <= Number(auth.validAfter) || now >= Number(auth.validBefore)) return fail('authorization outside validity window');
 

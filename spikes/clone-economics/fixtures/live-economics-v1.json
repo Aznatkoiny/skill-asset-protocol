@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "experimentFamily": "clone-economics-high-n-v1",
+  "approvalStatus": "not_approved",
+  "invocationPriceUsd": null,
+  "cloneServingCostUsd": null,
+  "deployCostUsd": null,
+  "laborCostUsd": null
+}
