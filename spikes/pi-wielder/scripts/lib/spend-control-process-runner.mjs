@@ -424,7 +424,12 @@ function policyDocument(seller) {
     sessionMaxAtomic: '5000000',
     rolling24hMaxAtomic: '10000000',
     challengeMaxAgeMs: 60_000,
-    approvalTtlMs: 1_500,
+    // Approval expiry is anchored at the PolicyDecision that blocked the payment, so this TTL
+    // is the whole budget for approval-survives-restart: stop the control process, relaunch it,
+    // approve, and retry. That path is ~0.3s on a dev machine but several seconds on a cold CI
+    // runner. Lowering this to speed up denial-and-expiry-never-sign (which sleeps out the TTL)
+    // is what made CI fail; keep the headroom.
+    approvalTtlMs: 10_000,
     maxPendingApprovals: 20,
     defaultAction: 'deny',
   });
