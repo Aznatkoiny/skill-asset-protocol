@@ -160,6 +160,15 @@ test('real pinned-Pi process acceptance proves all eighteen invariants', async (
   });
   cleanup = result.cleanup;
 
+  assertNoSensitiveEvidence(result.evidenceInput);
+  assert.deepEqual(
+    result.evidenceInput.acceptance.invariants.map(({ id }) => id),
+    EXPECTED_INVARIANTS,
+  );
+  const failedInvariants = result.evidenceInput.acceptance.invariants
+    .filter(({ passed }) => passed !== true)
+    .map(({ id, facts }) => ({ id, facts }));
+  assert.deepEqual(failedInvariants, []);
   assert.deepEqual(result.summary, {
     mode: 'offline-deterministic',
     piVersion: '0.80.6',
@@ -171,14 +180,6 @@ test('real pinned-Pi process acceptance proves all eighteen invariants', async (
     liveCdp: 'not-run',
     testnetTransaction: 'not-run',
   });
-  assert.deepEqual(
-    result.evidenceInput.acceptance.invariants.map(({ id }) => id),
-    EXPECTED_INVARIANTS,
-  );
-  assert.equal(
-    result.evidenceInput.acceptance.invariants.every(({ passed }) => passed === true),
-    true,
-  );
   assert.deepEqual(result.evidenceInput.acceptance.processExitCodes, {
     model: 0,
     seller: 0,
@@ -251,5 +252,4 @@ test('real pinned-Pi process acceptance proves all eighteen invariants', async (
   assert.equal(receiptEvents.every(({ receiptHash, receiptSignature }) => (
     typeof receiptHash === 'string' && typeof receiptSignature === 'string'
   )), true);
-  assertNoSensitiveEvidence(result.evidenceInput);
 });
