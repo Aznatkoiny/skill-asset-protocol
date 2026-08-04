@@ -1134,6 +1134,7 @@ export async function runSpendControlProcessAcceptance({
     ) ?? null;
     const tighterPolicy = Object.freeze({
       ...policy,
+      approvalTtlMs: 300_000,
       sellers: Object.freeze(policy.sellers.map((entry) => Object.freeze({
         ...entry,
         sellerSessionMaxAtomic: '4500000',
