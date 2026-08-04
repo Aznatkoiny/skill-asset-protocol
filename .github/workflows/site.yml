@@ -1,0 +1,52 @@
+name: Site verification
+
+on:
+  pull_request:
+    paths:
+      - 'README.md'
+      - 'site/**'
+      - '.github/workflows/site.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'README.md'
+      - 'site/**'
+      - '.github/workflows/site.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: site
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - name: Check out reviewed source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install exact Node runtime
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.23.2
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run dependency-free behavior tests
+        run: npm test
+
+      - name: Lint site source
+        run: npm run lint
+
+      - name: Build production site
+        run: npm run build
+
+      - name: Reject high and critical dependency advisories
+        run: npm audit --audit-level=high

@@ -30,7 +30,12 @@ const REPOSITORY_PI_TARGET = path.join(
 const NETWORK = 'eip155:84532';
 const ASSET = '0x036cbd53842c5426634e7929541ec2318f3dcf7e';
 const PAY_TO = '0x2000000000000000000000000000000000000000';
-const CHILD_DEADLINE_MS = 30_000;
+// The model and seller children live for the entire acceptance run, so this deadline must
+// comfortably exceed the whole run's duration -- which includes the deliberate
+// approvalTtlMs+100ms sleep in denial-and-expiry-never-sign and roughly doubles on a cold CI
+// runner (~32s observed). At 30s the deadline SIGTERMed model/seller mid-acceptance on CI and
+// the run failed at whatever step was in flight.
+const CHILD_DEADLINE_MS = 60_000;
 const CHILD_GRACE_MS = 2_000;
 const MAXIMUM_OUTPUT_BYTES = 1_048_576;
 
@@ -424,7 +429,12 @@ function policyDocument(seller) {
     sessionMaxAtomic: '5000000',
     rolling24hMaxAtomic: '10000000',
     challengeMaxAgeMs: 60_000,
-    approvalTtlMs: 1_500,
+    // Approval expiry is anchored at the PolicyDecision that blocked the payment, so this TTL
+    // is the whole budget for approval-survives-restart: stop the control process, relaunch it,
+    // approve, and retry. That path is ~0.3s on a dev machine but several seconds on a cold CI
+    // runner. Lowering this to speed up denial-and-expiry-never-sign (which sleeps out the TTL)
+    // is what made CI fail; keep the headroom.
+    approvalTtlMs: 10_000,
     maxPendingApprovals: 20,
     defaultAction: 'deny',
   });
@@ -1134,6 +1144,7 @@ export async function runSpendControlProcessAcceptance({
     ) ?? null;
     const tighterPolicy = Object.freeze({
       ...policy,
+      approvalTtlMs: 300_000,
       sellers: Object.freeze(policy.sellers.map((entry) => Object.freeze({
         ...entry,
         sellerSessionMaxAtomic: '4500000',

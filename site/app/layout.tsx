@@ -14,15 +14,19 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://neverhandedover.com"),
-  title: "MANIFESTO",
+  title: {
+    default: "Skill Asset Protocol — Spending controls for AI Agents",
+    template: "%s · Skill Asset Protocol",
+  },
   description:
-    "A manifesto for the sovereignty of authored work. Pay $0.25 in testnet USDC and the hosted skill runs for you — you get the output, never the skill.",
+    "Pre-release offline preview of a customer-hosted Wallet Kernel for policy-bound Agent spending, exact human approvals, and planned signed receipts.",
   openGraph: {
-    title: "“THE PROOF” — a manifesto for the sovereignty of authored work",
+    title: "Give AI Agents a wallet without giving them the keys",
     description:
-      "Ten principles. Real on-chain receipts. A live x402 endpoint: the artifact is never handed over.",
+      "Pre-release offline preview of a wallet-native Agent Spend Control Plane with budgets, seller policy, approvals, and planned signed receipts.",
     url: "https://neverhandedover.com",
     siteName: "SKILL ASSET PROTOCOL",
+    type: "website",
   },
   alternates: { canonical: "https://neverhandedover.com" },
 };

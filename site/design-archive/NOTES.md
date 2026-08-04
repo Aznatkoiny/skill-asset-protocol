@@ -5,13 +5,15 @@ Three structurally different variants were built and flipped live via
 `?variant=`; the decision:
 
 - **Winner — "THE TEN"** (industrial wall text): promoted to `app/manifesto.tsx`.
-- **Archived — "RECEIPT"** (`VariantB.tsx` + `VariantB.module.css` here):
-  the whole manifesto as a thermal-printer point-of-sale receipt — black,
-  phosphor monospace, principles as line items, txHashes as texture, terminal
-  invoke prompt. Kept because the owner likes its elements; it is the natural
-  design language for **future invocation-receipt and session-ledger views**.
+- **Archived — "RECEIPT"** (`VariantB.module.css` here): the visual direction
+  used a thermal-printer point-of-sale receipt — black, phosphor monospace,
+  line-item texture, and a CSS barcode. The interactive `VariantB.tsx` prototype
+  was retired with the browser-wallet payment path because it depended on the
+  deleted invocation hook and preserved obsolete signing copy. The remaining CSS
+  is a visual reference for **future receipt and session-ledger views**; it is not
+  a runnable payment interface.
 - **Scrapped — "GALLERY PLACARD"**: museum-placard editorial layout. Verdict:
   too quiet for the material.
 
-These files are design artifacts, not live code — excluded from the TypeScript
-build; their imports reference `app/` paths that may drift.
+This stylesheet is a design artifact, not live code, and `design-archive/`
+remains excluded from the TypeScript build.

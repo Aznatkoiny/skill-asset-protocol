@@ -1,5 +1,3 @@
-'use client';
-
 // VARIANT A — "THE TEN" (industrial wall text).
 //
 // A single towering vertical scroll on a white gallery wall: hollow-outlined
@@ -9,30 +7,12 @@
 // shipping label / customs form with corner crop marks. The footer is a woven
 // garment label.
 
-import { useState } from 'react';
+import Link from 'next/link';
+
 import type { Manifesto } from './content';
-import { useInvoke, type InvokeState } from './components/useInvoke';
 import styles from './manifesto.module.css';
 
 const YELLOW = '#FFD100';
-
-const STATES: { key: InvokeState; label: string }[] = [
-  { key: 'idle', label: 'IDLE' },
-  { key: 'connecting', label: 'CONNECTING' },
-  { key: 'paying', label: 'PAYING' },
-  { key: 'running', label: 'RUNNING' },
-  { key: 'done', label: 'DONE' },
-  { key: 'error', label: 'ERROR' },
-];
-
-const STATUS_LINE: Record<InvokeState, string> = {
-  idle: 'AWAITING INSTRUCTION. NOTHING SIGNED, NOTHING SENT.',
-  connecting: 'CONNECTING WALLET — SWITCHING CHAIN TO BASE SEPOLIA.',
-  paying: '402 RECEIVED — SIGN, DON’T SEND. THE FACILITATOR SETTLES.',
-  running: 'PAYMENT SETTLED — SKILL EXECUTING. OUTPUT INBOUND.',
-  done: 'DELIVERED. YOU GOT THE OUTPUT. THE SKILL STAYED HOME.',
-  error: 'STOPPED. SEE INCIDENT REPORT BELOW.',
-};
 
 const shortTx = (tx: string) => `${tx.slice(0, 10)}…${tx.slice(-8)}`;
 
@@ -66,20 +46,23 @@ function Barcode() {
 }
 
 export default function VariantA({ manifesto }: { manifesto: Manifesto }) {
-  const { state, output, paid, error, account, connect, invoke, needsWallet } = useInvoke();
-  const [input, setInput] = useState('');
-  const busy = state === 'connecting' || state === 'paying' || state === 'running';
-
   return (
     <main className={`${styles.page} min-h-screen uppercase`}>
       {/* ————— STICKY INDUSTRIAL MASTHEAD STRIP ————— */}
       <header className="sticky top-0 z-40 border-b-2 border-black bg-white">
         <div className="flex items-center justify-between px-4 py-2 text-[10px] font-bold tracking-[0.25em] md:px-8">
           <span>{manifesto.project}</span>
-          <span aria-hidden className="hidden sm:inline">&ldquo;MANIFESTO&rdquo;</span>
+          <span className="hidden sm:inline">ARCHIVED EXPERIMENT</span>
           <span aria-hidden>N&ordm; 402</span>
         </div>
       </header>
+
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-black px-4 py-3 text-[10px] font-bold tracking-[0.16em] text-white md:px-8">
+        <p>STATIC HISTORY — NOT THE CURRENT PRODUCT OR A LIVE PAYMENT ENDPOINT</p>
+        <Link className="border-b border-white" href="/">
+          OPEN THE CURRENT WALLET KERNEL PREVIEW &rarr;
+        </Link>
+      </div>
 
       {/* ————— MASTHEAD: TITLE / SUBTITLE / PREAMBLE ————— */}
       <section className="px-4 pt-16 pb-20 md:px-8 md:pt-28 md:pb-36">
@@ -91,7 +74,7 @@ export default function VariantA({ manifesto }: { manifesto: Manifesto }) {
           {manifesto.preamble}
         </p>
         <p aria-hidden className="mt-14 text-[9px] font-bold tracking-[0.3em] opacity-60">
-          SCROLL &darr; — 10 PRINCIPLES · 2 RECEIPTS · 1 METERED ENDPOINT
+          SCROLL &darr; — 10 HISTORICAL PRINCIPLES · 1 VERIFIED RECEIPT · NO LIVE ENDPOINT
         </p>
       </section>
 
@@ -128,10 +111,10 @@ export default function VariantA({ manifesto }: { manifesto: Manifesto }) {
       <Hazard />
 
       {/* ————— PROOF — THE RECEIPTS ————— */}
-      <section aria-label="Proof" className="px-4 py-20 md:px-8 md:py-32">
+      <section id="proof" aria-label="Proof" className="px-4 py-20 md:px-8 md:py-32">
         <div className="flex items-baseline justify-between text-[10px] font-bold tracking-[0.25em]">
           <span>SECTION — EVIDENCE</span>
-          <span aria-hidden>&ldquo;RECEIPTS&rdquo;</span>
+          <span aria-hidden>&ldquo;ONE RECEIPT&rdquo;</span>
         </div>
         <h2 className="mt-4 text-[clamp(2.4rem,10vw,7rem)] leading-none font-bold tracking-[-0.02em]">
           {manifesto.proof.heading}
@@ -142,7 +125,7 @@ export default function VariantA({ manifesto }: { manifesto: Manifesto }) {
 
         <div className="mt-10 max-w-2xl border-2 border-black">
           <p className="border-b-2 border-black px-3 py-2 text-[9px] font-bold tracking-[0.25em]">
-            &ldquo;LEDGER&rdquo; — EVERY CENT RECONCILED
+            HISTORICAL TRANSFER — ONE RECEIPT VERIFIED
           </p>
           <p className="px-3 py-4 font-mono text-[11px] leading-[1.9] normal-case md:text-[12px]">
             {manifesto.proof.ledger}
@@ -175,7 +158,7 @@ export default function VariantA({ manifesto }: { manifesto: Manifesto }) {
       <Hazard />
 
       {/* ————— DO IT YOURSELF — SHIPPING LABEL / CUSTOMS FORM ————— */}
-      <section aria-label="Do it yourself" className="px-6 py-20 md:px-8 md:py-32">
+      <section id="invoke" aria-label="Retired endpoint archive" className="px-6 py-20 md:px-8 md:py-32">
         <div
           className="relative mx-auto max-w-3xl border-2 border-black p-5 md:p-10"
           style={{ background: YELLOW }}
@@ -199,19 +182,11 @@ export default function VariantA({ manifesto }: { manifesto: Manifesto }) {
             {manifesto.doIt.intro}
           </p>
 
-          {/* Monopoly-money customs declaration + faucet */}
+          {/* Static archive notice */}
           <div className="mt-6 border-2 border-dashed border-black p-4">
             <p className="text-[10px] leading-[1.8] font-bold tracking-[0.12em]">
               {manifesto.doIt.monopoly}
             </p>
-            <a
-              href={manifesto.doIt.faucet}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="mt-3 inline-block border-2 border-black bg-white px-3 py-2 text-[10px] font-bold tracking-[0.15em] transition-colors hover:bg-black hover:text-white"
-            >
-              &ldquo;FREE MONEY&rdquo; &rarr; FAUCET.CIRCLE.COM &nearr;
-            </a>
           </div>
 
           {/* The four steps — form fields */}
@@ -232,123 +207,16 @@ export default function VariantA({ manifesto }: { manifesto: Manifesto }) {
             </ol>
           </div>
 
-          {/* Field 04 — the signatory (step 01 made pressable) */}
-          <div className="mt-8">
-            <p className="text-[9px] font-bold tracking-[0.3em]">
-              FIELD 04 — SIGNATORY (STEP 01: CONNECT A WALLET)
+          <div className="mt-8 border-2 border-black bg-white p-4">
+            <p className="text-[10px] leading-[1.8] font-bold tracking-[0.12em]">
+              RETIRED — NO WALLET CONNECTION OR PAYMENT IS AVAILABLE ON THIS
+              WEBSITE.
             </p>
-            {account ? (
-              <p className="mt-2 inline-block border-2 border-black bg-white px-3 py-2 font-mono text-[11px] normal-case">
-                CONNECTED — {shortTx(account)} · BASE SEPOLIA
-              </p>
-            ) : (
-              <button
-                type="button"
-                onClick={() => void connect()}
-                disabled={busy}
-                className="mt-2 cursor-pointer border-2 border-black bg-white px-4 py-3 text-[11px] font-bold tracking-[0.2em] transition-colors hover:bg-black hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {state === 'connecting' ? 'CONNECTING…' : '“CONNECT A WALLET”'}
-              </button>
-            )}
-          </div>
-
-          {/* Field 05 — the prompt */}
-          <div className="mt-8">
-            <label htmlFor="variant-a-input" className="text-[9px] font-bold tracking-[0.3em]">
-              FIELD 05 — DECLARE CONTENTS (A PROMPT TO OPTIMIZE)
-            </label>
-            <textarea
-              id="variant-a-input"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              disabled={busy}
-              rows={4}
-              placeholder="PASTE A CLAUDE CODE PROMPT HERE. THE HOSTED SKILL OPTIMIZES IT AND SHIPS THE RESULT BACK."
-              className="mt-2 w-full resize-y border-2 border-black bg-white p-3 font-mono text-[12px] leading-relaxed normal-case outline-none placeholder:uppercase placeholder:opacity-40 disabled:opacity-60"
-            />
-            <button
-              type="button"
-              onClick={() => void invoke(input.trim())}
-              disabled={busy || input.trim().length === 0}
-              className="mt-3 w-full cursor-pointer border-2 border-black bg-black px-8 py-4 text-[13px] font-bold tracking-[0.3em] text-[#FFD100] transition-colors hover:bg-white hover:text-black disabled:cursor-not-allowed disabled:opacity-40 md:w-auto"
-            >
-              {busy ? 'IN TRANSIT…' : '“INVOKE” — PAY $0.25'}
-            </button>
-            {input.trim().length === 0 && !busy && (
-              <p className="mt-2 text-[8px] font-bold tracking-[0.25em] opacity-60">
-                FIELD 05 REQUIRED — EMPTY PARCELS DO NOT SHIP.
-              </p>
-            )}
-          </div>
-
-          {/* Tracking — the full state machine, always visible */}
-          <div className="mt-8 border-t-2 border-black pt-5">
-            <p className="text-[9px] font-bold tracking-[0.3em]">TRACKING — STATE MACHINE</p>
-            <ol className="mt-3 flex flex-wrap items-center gap-1">
-              {STATES.map((s, i) => (
-                <li key={s.key} className="flex items-center gap-1">
-                  {i > 0 && <span aria-hidden className="text-[9px] font-bold">&rarr;</span>}
-                  <span
-                    className={`border-2 border-black px-2 py-1 text-[9px] font-bold tracking-[0.15em] ${
-                      state === s.key
-                        ? `bg-black text-[#FFD100] ${busy ? 'animate-pulse' : ''}`
-                        : 'text-black'
-                    }`}
-                  >
-                    {s.label}
-                  </span>
-                </li>
-              ))}
-            </ol>
-            <p aria-live="polite" className="mt-3 text-[10px] font-bold tracking-[0.15em]">
-              STATUS: {STATUS_LINE[state]}
+            <p className="mt-2 font-mono text-[10px] leading-relaxed normal-case">
+              Current development belongs in the customer-hosted Wallet Kernel,
+              behind explicit policy and release evidence gates.
             </p>
           </div>
-
-          {/* No wallet */}
-          {needsWallet && (
-            <p className="mt-4 border-2 border-dashed border-black p-3 text-[10px] leading-[1.8] font-bold tracking-[0.12em]">
-              NO WALLET DETECTED — INSTALL METAMASK (OR ANY INJECTED WALLET) TO PAY. THE WIELDER IS A WALLET.
-            </p>
-          )}
-
-          {/* Incident report */}
-          {state === 'error' && error && (
-            <div className="mt-4 border-2 border-black bg-white">
-              <p className="border-b-2 border-black px-3 py-2 text-[9px] font-bold tracking-[0.25em]">
-                &ldquo;INCIDENT REPORT&rdquo;
-              </p>
-              <p className="p-4 font-mono text-[11px] leading-relaxed break-words normal-case">{error}</p>
-            </div>
-          )}
-
-          {/* The delivered output */}
-          {state === 'done' && output !== null && (
-            <div className="mt-4 border-2 border-black bg-white">
-              <p className="border-b-2 border-black px-3 py-2 text-[9px] font-bold tracking-[0.25em]">
-                &ldquo;OUTPUT&rdquo; — YOURS. THE SKILL — NOT INCLUDED.
-              </p>
-              <pre className="max-h-96 overflow-auto p-4 font-mono text-[11px] leading-relaxed whitespace-pre-wrap normal-case">
-                {output}
-              </pre>
-            </div>
-          )}
-
-          {/* The settled receipt */}
-          {paid && (
-            <a
-              href={`${manifesto.proof.basescan}${paid.txHash}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="mt-4 flex flex-wrap items-center justify-between gap-x-6 gap-y-1 border-2 border-black bg-white px-3 py-3 text-[10px] font-bold tracking-[0.12em] transition-colors hover:bg-black hover:text-white"
-            >
-              <span>&ldquo;RECEIPT&rdquo; — ${paid.amountUSDC.toFixed(2)} USDC SETTLED</span>
-              <span className="font-mono normal-case">
-                {shortTx(paid.txHash)} &nearr; SEPOLIA.BASESCAN.ORG
-              </span>
-            </a>
-          )}
         </div>
       </section>
 
@@ -376,7 +244,7 @@ export default function VariantA({ manifesto }: { manifesto: Manifesto }) {
               </a>
             </p>
             <p aria-hidden className="mt-6 text-[7px] font-bold tracking-[0.2em] opacity-60">
-              DO NOT HAND OVER · MACHINE WASH ON-CHAIN · 100% AUTHORED WORK
+              ARCHIVED MANIFESTO · STATIC RECEIPT · NO LIVE ENDPOINT
             </p>
           </div>
         </div>
