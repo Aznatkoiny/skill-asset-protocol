@@ -94,11 +94,20 @@ jobs:
           test "$qualification_commit" = "$(git rev-parse HEAD)"
           qualification_root=/opt/wallet-kernel-qualification
           test ! -e "$qualification_root"
+          # Hosted tool installation can leave /opt writable by the runner.
+          # Establish the immutable ancestor required by the release contract
+          # on this disposable VM; never weaken the installed path checks.
+          test -d /opt
+          test ! -L /opt
+          stat --format='qualification ancestor before: %n uid=%u gid=%g mode=%a' / /opt
+          sudo chown 0:0 /opt
+          sudo chmod 0755 /opt
           sudo install -d -m 0755 "$qualification_root/releases/$qualification_commit" "$qualification_root/node/bin"
           sudo cp -R "$qualification_stage/source" "$qualification_root/source"
           sudo cp -R "$qualification_stage/release/." "$qualification_root/releases/$qualification_commit/"
           sudo install -m 0755 "$(command -v node)" "$qualification_root/node/bin/node"
           sudo chown -hR 0:0 "$qualification_root"
+          stat --format='qualification ancestor prepared: %n uid=%u gid=%g mode=%a' / /opt "$qualification_root" "$qualification_root/node" "$qualification_root/node/bin" "$qualification_root/node/bin/node"
 
       - name: Qualify installed deterministic startup and recovery with PID1
         shell: bash
