@@ -514,13 +514,17 @@ async function main() {
       '--deployment', path.join(RELEASE_ROOT, 'deployment.json'), '--source-checkout', sourceCheckoutPath]));
     record('install.execution', install.execution); record('install.status', install.status);
     record('install.serviceStopped', install.started === false && unitState(SERVICE).MainPID === '0');
+    stage = 'installed manifest read';
     const manifest = readManifestOnce(path.join(RELEASE_ROOT, 'manifest.json'));
+    stage = 'installed release verification';
     binding = verifyReleaseIntegrity({ mode: 'cdp-testnet', releaseRoot: RELEASE_ROOT, manifest,
       expectedOwnerUid: 0, expectedKernelUid: config.kernelUid, expectedKernelGid: config.kernelGid,
       nodePath: config.nodePath, nodeVersion: process.version, environmentPath: config.environmentPath,
       serviceArtifactPaths: { 'kernel-service': config.serviceOutputPath, 'console-socket': config.socketOutputPath } });
+    stage = 'installed PID1 binding';
     const observed = await inspectEffectiveSystemd({ expected: renderSystemdUnits(deploymentRendererInput(config)).expectedEffectiveConfig });
     record('install.pid1Bound', Object.entries(manifest.systemd).every(([key, value]) => observed[key] === value), { systemd: observed, release: binding });
+    stage = 'initial isolation attestation';
     await refreshIsolation(); await exercise();
   } catch (error) {
     failure = { stage, code: /^[A-Z_]{2,100}$/.test(error.code ?? '') ? error.code : 'QUALIFICATION_FAILED',

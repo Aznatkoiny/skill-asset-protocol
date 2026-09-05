@@ -30,9 +30,20 @@ const TREE_DOMAIN = 'wallet-kernel/release-tree/v1\0';
 const SERVICE_DOMAIN = 'wallet-kernel/service-artifacts/v1\0';
 const ENVIRONMENT_DOMAIN = 'wallet-kernel/environment-metadata/v1\0';
 const PATH_DOMAIN = 'wallet-kernel/absolute-path/v1\0';
+// The locked dependency tree currently produces about 10 MB of canonical
+// entries. Builders, writers, and installed readers share one supported bound.
+export const MAXIMUM_RELEASE_MANIFEST_BYTES = 16 * 1024 * 1024;
 
 function fail(code, message, cause) {
   throw new KernelError(code, message, cause ? { cause } : undefined);
+}
+
+export function serializeReleaseManifest(manifest) {
+  const bytes = Buffer.from(`${canonicalJson(manifest)}\n`);
+  if (bytes.length > MAXIMUM_RELEASE_MANIFEST_BYTES) {
+    fail('RELEASE_MANIFEST_SIZE', 'release manifest exceeds the supported byte limit');
+  }
+  return bytes;
 }
 
 function canonicalHash(value, label) {
@@ -330,7 +341,9 @@ export function validateReleaseManifest(value) {
     fail('RELEASE_MANIFEST_SCHEMA', 'release entrypoint is missing from the tree');
   }
   validateSystemd(manifest.systemd);
-  return frozenCopy({ ...manifest, kernelIdentity, node, environment, serviceArtifacts, entries });
+  const validated = { ...manifest, kernelIdentity, node, environment, serviceArtifacts, entries };
+  serializeReleaseManifest(validated);
+  return frozenCopy(validated);
 }
 
 function captureBuildInput(input) {

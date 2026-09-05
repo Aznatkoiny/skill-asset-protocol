@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { canonicalJson } from '../src/kernel/canonical.mjs';
+import { canonicalJson, KernelError } from '../src/kernel/canonical.mjs';
 import {
   captureDeploymentIsolationMetadata,
   captureDeploymentAuthorityMetadata,
@@ -18,6 +18,8 @@ import { renderSystemdUnits } from './render-systemd-units.mjs';
 import { probeAgentIsolation } from './preflight-agent-isolation.mjs';
 import {
   assertClosedLoaderEnvironment,
+  MAXIMUM_RELEASE_MANIFEST_BYTES,
+  serializeReleaseManifest,
   validateReleaseManifest,
   verifyReleaseIntegrity,
 } from '../src/kernel/release-integrity.mjs';
@@ -57,17 +59,37 @@ export function parsePreflightArguments(argv) {
 }
 
 export function readManifestOnce(manifestPath) {
-  const descriptor = fs.openSync(manifestPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  let descriptor;
+  try { descriptor = fs.openSync(manifestPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK); }
+  catch (cause) { throw new KernelError('RELEASE_MANIFEST_FILE', 'release manifest could not be opened directly', { cause }); }
   try {
-    const stat = fs.fstatSync(descriptor);
-    if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== 0 || (stat.mode & 0o022) !== 0
-        || stat.size <= 0 || stat.size > 4 * 1024 * 1024) {
-      throw new Error('release manifest must be one bounded regular file');
+    const stat = fs.fstatSync(descriptor, { bigint: true });
+    if (!stat.isFile() || stat.nlink !== 1n || stat.uid !== 0n || (stat.mode & 0o022n) !== 0n) {
+      throw new KernelError('RELEASE_MANIFEST_FILE', 'release manifest must be one immutable root-owned regular file');
     }
-    const bytes = fs.readFileSync(descriptor);
-    const value = JSON.parse(bytes.toString('utf8'));
-    if (!bytes.equals(Buffer.from(`${canonicalJson(value)}\n`))) {
-      throw new Error('release manifest must be canonical JSON plus newline');
+    if (stat.size <= 0n || stat.size > BigInt(MAXIMUM_RELEASE_MANIFEST_BYTES)) {
+      throw new KernelError('RELEASE_MANIFEST_SIZE', 'release manifest is outside the supported byte limit');
+    }
+    // Read at most the stat size plus one, so growth cannot turn this bounded
+    // reader into an unbounded allocation after the metadata check.
+    const buffer = Buffer.alloc(Number(stat.size) + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const count = fs.readSync(descriptor, buffer, length, buffer.length - length, length);
+      if (count === 0) break;
+      length += count;
+    }
+    const after = fs.fstatSync(descriptor, { bigint: true });
+    if (length !== Number(stat.size) || ['dev', 'ino', 'size', 'uid', 'gid', 'mode', 'nlink', 'mtimeNs', 'ctimeNs']
+      .some(field => stat[field] !== after[field])) {
+      throw new KernelError('RELEASE_MANIFEST_RACE', 'release manifest changed while being read');
+    }
+    const bytes = buffer.subarray(0, length);
+    let value;
+    try { value = JSON.parse(bytes.toString('utf8')); }
+    catch (cause) { throw new KernelError('RELEASE_MANIFEST_JSON', 'release manifest is not JSON', { cause }); }
+    if (!bytes.equals(serializeReleaseManifest(value))) {
+      throw new KernelError('RELEASE_MANIFEST_CANONICAL', 'release manifest must be canonical JSON plus newline');
     }
     return validateReleaseManifest(value);
   } finally { fs.closeSync(descriptor); }
