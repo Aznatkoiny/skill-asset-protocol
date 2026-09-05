@@ -11,6 +11,7 @@ import {
   captureDeploymentAuthorityMetadata,
   deploymentRendererInput,
   readDeploymentConfig,
+  isInstalledQualificationRelease,
 } from '../src/kernel/deployment.mjs';
 import { inspectEffectiveSystemd } from './inspect-systemd-effective.mjs';
 import { renderSystemdUnits } from './render-systemd-units.mjs';
@@ -22,11 +23,14 @@ import {
 } from '../src/kernel/release-integrity.mjs';
 
 const READER_RELATIVE = 'scripts/prelaunch-kernel-reader.mjs';
+const INSTALLED_ROOT = fileURLToPath(new URL('../', import.meta.url)).replace(/\/$/, '');
 
 // The installed preflight, runtime, credential delivery and native listeners are
 // composed below and in src/runtime/. Offline tests cannot qualify PID1, actual
 // dropped identities or installed start/restart/cleanup. Keep both executable
-// entrypoints closed until a reviewed release retains that Linux evidence.
+// CDP entrypoints closed until a reviewed release retains that Linux evidence.
+// A manifest-bound offline-qualification profile exercises the same installed
+// lifecycle with fixed deterministic adapters and a loopback-only network envelope.
 export const LIVE_LAUNCH_GATE = Object.freeze({
   schemaVersion: 1,
   status: 'blocked',
@@ -248,7 +252,7 @@ export async function runInstalledLivePreflight({ argv, environment }, effects =
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  if (LIVE_LAUNCH_GATE.status === 'blocked') {
+  if (LIVE_LAUNCH_GATE.status === 'blocked' && !isInstalledQualificationRelease(INSTALLED_ROOT)) {
     process.stderr.write(`${canonicalJson(LIVE_LAUNCH_GATE)}\n`);
     // EX_CONFIG with Restart=no prevents privileged restart storms.
     process.exitCode = LIVE_LAUNCH_GATE.exitStatus;

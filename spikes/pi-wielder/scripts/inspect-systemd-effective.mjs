@@ -15,15 +15,15 @@ export const COMMON_PROPERTIES = Object.freeze([
 export const SERVICE_PROPERTIES = Object.freeze([
   ...COMMON_PROPERTIES, 'User', 'Group', 'SupplementaryGroups', 'Environment',
   'EnvironmentFiles', 'PassEnvironment', 'LoadCredential',
-  'ExecStartPreEx', 'ExecStartEx', 'Restart', 'RestartUSec', 'RestartPreventExitStatus',
+  'ExecStartPreEx', 'ExecStartEx', 'ExecStopPostEx', 'Restart', 'RestartUSec', 'RestartPreventExitStatus',
   'UMask', 'NoNewPrivileges',
   'CapabilityBoundingSet', 'AmbientCapabilities', 'ProtectSystem', 'ProtectHome',
   'PrivateTmp', 'PrivateDevices', 'ProtectKernelTunables', 'ProtectKernelModules',
   'ProtectControlGroups', 'LockPersonality', 'RestrictAddressFamilies', 'ReadWritePaths',
-  'UnsetEnvironment', 'Requires', 'After',
+  'UnsetEnvironment', 'IPAddressAllow', 'IPAddressDeny', 'Requires', 'After',
 ]);
 export const SOCKET_PROPERTIES = Object.freeze([
-  ...COMMON_PROPERTIES, 'Listen', 'Accept', 'Service', 'FileDescriptorName', 'ReusePort',
+  ...COMMON_PROPERTIES, 'Listen', 'Accept', 'Triggers', 'FileDescriptorName', 'ReusePort',
 ]);
 
 function fail(code, message, cause) {
@@ -104,7 +104,12 @@ export function validateEffectiveProjection({ service, socket, expected }) {
   const expectedData = exactRecord(expected, [
     'kernelUid', 'kernelGid', 'releaseRoot', 'nodePath', 'environmentPath',
     'servicePath', 'socketPath', 'readWritePaths',
-  ], [], 'SYSTEMD_EFFECTIVE', 'expected systemd configuration');
+  ], ['executionProfile'], 'SYSTEMD_EFFECTIVE', 'expected systemd configuration');
+  if (Object.hasOwn(expectedData, 'executionProfile')
+      && !['cdp-testnet', 'offline-qualification'].includes(expectedData.executionProfile)) {
+    fail('SYSTEMD_EFFECTIVE', 'execution profile is not supported');
+  }
+  const qualification = expectedData.executionProfile === 'offline-qualification';
   for (const [data, unitId, fragment, state] of [
     [serviceData, 'wallet-kernel.service', expectedData.servicePath, 'static'],
     [socketData, 'wallet-kernel-console.socket', expectedData.socketPath, 'enabled'],
@@ -119,16 +124,20 @@ export function validateEffectiveProjection({ service, socket, expected }) {
   }
   const preflight = parseExec(serviceData.ExecStartPreEx, 'ExecStartPreEx');
   const main = parseExec(serviceData.ExecStartEx, 'ExecStartEx');
+  const cleanup = parseExec(serviceData.ExecStopPostEx, 'ExecStopPostEx');
   const expectedPreflight = [
     expectedData.nodePath, `${expectedData.releaseRoot}/scripts/preflight-live-deployment.mjs`,
     '--release-manifest', `${expectedData.releaseRoot}/manifest.json`,
     '--kernel-uid', expectedData.kernelUid, '--kernel-gid', expectedData.kernelGid,
   ];
   const expectedMain = [expectedData.nodePath, `${expectedData.releaseRoot}/src/control-plane.mjs`];
+  const expectedCleanup = [expectedData.nodePath, `${expectedData.releaseRoot}/scripts/cleanup-live-deployment.mjs`];
   if (canonicalJson(preflight.argv) !== canonicalJson(expectedPreflight)
       || canonicalJson(preflight.flags) !== canonicalJson(['privileged'])
       || canonicalJson(main.argv) !== canonicalJson(expectedMain)
-      || main.flags.length !== 0) {
+      || main.flags.length !== 0
+      || canonicalJson(cleanup.argv) !== canonicalJson(expectedCleanup)
+      || canonicalJson(cleanup.flags) !== canonicalJson(['privileged'])) {
     fail('SYSTEMD_EXEC', 'loaded executable argv or flags differ from the rendered contract');
   }
   const scalar = {
@@ -140,7 +149,9 @@ export function validateEffectiveProjection({ service, socket, expected }) {
     UMask: '0077', NoNewPrivileges: 'yes', CapabilityBoundingSet: '', AmbientCapabilities: '',
     ProtectSystem: 'strict', ProtectHome: 'yes', PrivateTmp: 'yes', PrivateDevices: 'yes',
     ProtectKernelTunables: 'yes', ProtectKernelModules: 'yes', ProtectControlGroups: 'yes',
-    LockPersonality: 'yes', Accept: 'no', Service: 'wallet-kernel.service',
+    // Socket Service= is not a systemd v255 D-Bus property. Its resolved Unit
+    // Triggers relationship must bind the one exact service instead.
+    LockPersonality: 'yes', Accept: 'no', Triggers: 'wallet-kernel.service',
     FileDescriptorName: 'wallet-kernel-console', ReusePort: 'no',
   };
   for (const [field, expectedValue] of Object.entries(scalar)) {
@@ -148,6 +159,10 @@ export function validateEffectiveProjection({ service, socket, expected }) {
     requireValue(target[field], expectedValue, field);
   }
   const sets = {
+    // systemctl v255 prints these a(iayu) fields as expanded CIDRs. These are
+    // loaded configuration facts; lifecycle evidence must prove enforcement.
+    IPAddressAllow: qualification ? ['127.0.0.0/8', '::1/128'] : [],
+    IPAddressDeny: qualification ? ['0.0.0.0/0', '::/0'] : [],
     RestrictAddressFamilies: ['AF_INET', 'AF_INET6', 'AF_UNIX'],
     ReadWritePaths: [...expectedData.readWritePaths].sort(),
     UnsetEnvironment: [
@@ -177,7 +192,8 @@ export function validateEffectiveProjection({ service, socket, expected }) {
       ['network-online.target', 'wallet-kernel-console.socket'], 'After'),
   };
   const normalized = {
-    service: { ...serviceData, ExecStartPreEx: preflight, ExecStartEx: main,
+    service: { ...serviceData, ExecStartPreEx: preflight, ExecStartEx: main, ExecStopPostEx: cleanup,
+      IPAddressAllow: sets.IPAddressAllow, IPAddressDeny: sets.IPAddressDeny,
       RestrictAddressFamilies: sets.RestrictAddressFamilies,
       ReadWritePaths: sets.ReadWritePaths, UnsetEnvironment: sets.UnsetEnvironment,
       Requires: dependencies.Requires, After: dependencies.After },

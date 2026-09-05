@@ -22,7 +22,8 @@ seller.
 | Mode | What has been exercised | Honest status |
 |---|---|---|
 | `offline-deterministic` | Real local child processes, SQLite authority, policy/approval paths, restart recovery, deterministic x402 settlement, Pi adapter path, signed per-session projections, and recomputable evidence | **Measured offline**; wallet, deployment, and OS isolation are explicitly simulated. No external provider or chain is contacted. |
-| `cdp-testnet` | The prepared-release installer, privileged preflight, Kernel credential delivery, native listeners, and durable runtime composition have offline tests | **Not run.** Actual Linux/systemd lifecycle qualification remains incomplete. Both installed entrypoints stop with `LIVE_LAUNCH_NOT_READY` (exit 78); there is no override switch. |
+| Installed `offline-qualification` profile | A prepared Ubuntu 24.04 workflow exercises the installed service, PID1 credential delivery, dropped identities, socket activation, and recovery with fixed synthetic wallet/seller/chain adapters | **Not yet qualified.** Component tests do not supply a retained passing run on Linux with root, systemd as PID1, and exactly Node 24.18.1. |
+| `cdp-testnet` profile (explicit or default) | The prepared-release installer, privileged preflight, Kernel credential delivery, native listeners, and durable runtime composition have offline tests | **Not run.** Both installed CDP entrypoints stop with `LIVE_LAUNCH_NOT_READY` (exit 78); there is no override switch. |
 | Mainnet | No mode, route, deployment, or evidence path exists | **Out of scope and unsupported.** No automated funding, mainnet transaction, or real-funds operation is allowed. |
 
 An offline pass is not evidence of live isolation, CDP payment, wallet funding, or a
@@ -52,6 +53,31 @@ The automated proof is fully offline: an unfunded throwaway wallet signs determi
 x402 authorizations, injected adapters verify and synthesize settlement, and canned
 model responses avoid external APIs. Mock execution is fail-closed and remains the
 default when `MOCK_LLM` is unset.
+
+### Installed Linux qualification
+
+The [`installed-lifecycle` workflow](../../.github/workflows/pi-wielder-systemd.yml)
+prepares a standalone, root-owned release addressed by the exact reviewed commit.
+Dependency installation runs unprivileged with lifecycle scripts disabled; the
+installer checks source provenance and the locked package tree before sealing it.
+Successful installation means `sealed_not_started`, not a lifecycle pass.
+
+`executionProfile: "offline-qualification"` is immutable deployment data covered by
+the release manifest. It selects fixed synthetic CDP, seller, and chain behavior
+and renders loopback-only systemd IP rules. It has no live-provider fallback and
+needs no wallet funding or customer secrets. Actual processes, HTTP listeners,
+SQLite recovery, signature creation, and PID1 credential isolation are the host
+behaviors under examination. Inspecting the IP rules alone does not demonstrate
+that the host enforces them.
+
+The harness retains only public lifecycle events, their summary, and a manifest
+under `/opt/wallet-kernel-qualification/report`; the workflow verifies and uploads
+those three files. A passing result would qualify only the named installed offline
+scenarios at that revision. It would not establish a CDP payment, a Base Sepolia
+transaction, reboot recovery, customer demand, or public-release readiness. No
+passing host artifact is claimed here. See the
+[qualification procedure and cleanup rules](RUNBOOK.md#disposable-installed-qualification)
+before using the disposable-host workflow.
 
 ## Agent approval and call identity
 

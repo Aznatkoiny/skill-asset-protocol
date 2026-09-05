@@ -19,6 +19,7 @@ const REQUIRED_SOURCE_FILES = Object.freeze([
   'package.json', 'package-lock.json', 'src/control-plane.mjs',
   'src/kernel/canonical.mjs', 'src/kernel/deployment.mjs', 'src/kernel/release-integrity.mjs',
   'scripts/install-live-deployment.mjs', 'scripts/preflight-live-deployment.mjs',
+  'scripts/cleanup-live-deployment.mjs',
   'scripts/render-systemd-units.mjs', 'scripts/inspect-systemd-effective.mjs', 'scripts/build-release-manifest.mjs',
   'deploy/systemd/wallet-kernel.service', 'deploy/systemd/wallet-kernel-console.socket',
 ]);

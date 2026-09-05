@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { canonicalJson } from '../src/kernel/canonical.mjs';
-import { readDeploymentConfig, validateDeploymentConfig } from '../src/kernel/deployment.mjs';
+import { deploymentRendererInput, isInstalledQualificationRelease, readDeploymentConfig, validateDeploymentConfig } from '../src/kernel/deployment.mjs';
 import { REQUIRED_ISOLATION_PROBE_RESULTS } from '../src/agent/isolation-preflight.mjs';
 import { runInstalledLivePreflight } from '../scripts/preflight-live-deployment.mjs';
 
@@ -37,7 +37,15 @@ test('public deployment rejects mixed releases, authority overlap, aliases, and 
     { environmentPath: '/srv/wallet/authority/kernel.env' },
     { databasePath: '/srv/wallet/authority/../kernel.sqlite' },
     { CDP_API_KEY_SECRET: 'never-public' },
+    { executionProfile: 'live-override' }, { executionProfile: true },
   ]) assert.throws(() => validateDeploymentConfig({ ...configuration(), ...change }));
+});
+
+test('qualification is an explicit sealed deployment profile, never selected by caller environment', () => {
+  const config = validateDeploymentConfig({ ...configuration(), executionProfile: 'offline-qualification' });
+  assert.equal(deploymentRendererInput(config).executionProfile, 'offline-qualification');
+  assert.equal(deploymentRendererInput(configuration()).executionProfile, undefined);
+  assert.equal(isInstalledQualificationRelease('/does/not/exist'), false);
 });
 
 test('deployment input is canonical, bounded, immutable, and bound to its release directory', () => {

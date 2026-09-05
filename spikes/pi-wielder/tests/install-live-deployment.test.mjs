@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { canonicalJson, KernelError } from '../src/kernel/canonical.mjs';
-import { readDeploymentConfig } from '../src/kernel/deployment.mjs';
+import { deploymentRendererInput, readDeploymentConfig } from '../src/kernel/deployment.mjs';
 import { buildReleaseManifest, verifyReleaseIntegrity } from '../src/kernel/release-integrity.mjs';
 import { writeReleaseManifestExclusive } from '../scripts/build-release-manifest.mjs';
 import {
@@ -51,6 +51,7 @@ function fixture(t) {
   fs.mkdirSync(path.join(packageRoot, 'deploy/systemd'), { recursive: true, mode: 0o755 });
   for (const name of ['src/kernel/canonical.mjs', 'src/kernel/deployment.mjs', 'src/kernel/release-integrity.mjs',
     'scripts/render-systemd-units.mjs', 'scripts/inspect-systemd-effective.mjs', 'scripts/build-release-manifest.mjs',
+    'scripts/cleanup-live-deployment.mjs',
     'deploy/systemd/wallet-kernel.service', 'deploy/systemd/wallet-kernel-console.socket']) {
     write(path.join(packageRoot, name), 'fixture privileged helper bytes; never executed\n');
   }
@@ -165,6 +166,25 @@ test('seals a clean prepared release in order, without starting or claiming qual
   await assert.rejects(h.install(), { code: 'LIVE_INSTALL_EXISTS' });
 });
 
+test('the explicit offline qualification render restricts IP traffic and uses the same failure cleanup hook', (t) => {
+  const f = fixture(t);
+  const input = deploymentRendererInput(f.config);
+  const live = renderSystemdUnits(input);
+  const explicitLive = renderSystemdUnits({ ...input, executionProfile: 'cdp-testnet' });
+  const qualified = renderSystemdUnits({ ...input, executionProfile: 'offline-qualification' });
+  assert.equal(live.serviceBytes.toString().includes('IPAddressDeny='), false);
+  assert.equal(live.serviceBytes.toString().includes('IPAddressAllow='), false);
+  assert.equal(Object.hasOwn(live.expectedEffectiveConfig, 'executionProfile'), false);
+  assert.deepEqual(explicitLive.serviceBytes, live.serviceBytes);
+  assert.deepEqual(explicitLive.expectedEffectiveConfig, live.expectedEffectiveConfig);
+  const bytes = qualified.serviceBytes.toString();
+  assert.equal(bytes.includes('IPAddressDeny=any\nIPAddressAllow=localhost\n'), true);
+  assert.equal(bytes.includes(`ExecStopPost=+${f.config.nodePath} ${f.config.releaseRoot}/scripts/cleanup-live-deployment.mjs\n`), true);
+  assert.equal(qualified.expectedEffectiveConfig.executionProfile, 'offline-qualification');
+  assert.throws(() => renderSystemdUnits({ ...input, executionProfile: 'live' }), { code: 'SYSTEMD_RENDER_INPUT' });
+  assert.throws(() => renderSystemdUnits({ ...input, executionProfile: undefined }), { code: 'SYSTEMD_RENDER_INPUT' });
+});
+
 test('cleanup attempts all steps after partial enablement, preserving the original failure code', async (t) => {
   const f = fixture(t);
   const h = harness(f);
@@ -235,7 +255,7 @@ test('real temporary Git provenance accepts the exact clean source and installed
   const result = verifyPreparedRelease({ config: f.config, sourceCheckoutPath: f.sourceCheckoutPath },
     { expectedOwnerUid: UID, runGit: f.runGit });
   assert.equal(result.commit, f.config.commit);
-  assert.equal(result.sourceFiles, 13);
+  assert.equal(result.sourceFiles, 14);
   assert.equal(result.installedPackages, 1);
 });
 

@@ -10,6 +10,7 @@ import { recoverKernelAuthority } from '../kernel/recovery.mjs';
 import { openRuntimeAuthority } from './authority.mjs';
 import { listenActivatedConsole, listenLoopback, listenUnixAdmin } from './listeners.mjs';
 import { assertKernelProcessIdentity, loadDeliveredEnvironment } from './secret-delivery.mjs';
+import { createOfflineQualificationClients, OFFLINE_QUALIFICATION } from './qualification-clients.mjs';
 
 async function productionExternalClients(environment) {
   const [{ CdpClient }, {createPublicClient, http}, {baseSepolia}] = await Promise.all([
@@ -48,6 +49,11 @@ export async function startInstalledControlPlane(input, external = {}) {
     'assertLiveAdmission', 'consoleActivation', 'publishReady', 'deployment',
   ], ['environmentFilePath', 'kernelUid', 'kernelGid', 'release', 'assertLiveAdmission', 'consoleActivation']);
   const injected = capture(external, ['externalClients'], []);
+  const profile = options.deployment?.executionProfile ?? 'cdp-testnet';
+  if (!['cdp-testnet', 'offline-qualification'].includes(profile)
+      || (profile === 'offline-qualification' && Object.hasOwn(injected, 'externalClients'))) {
+    throw new KernelError('RUNTIME_PROFILE', 'Installed runtime profile is invalid');
+  }
   assertKernelProcessIdentity(options);
   if (typeof options.assertLiveAdmission !== 'function'
       || (options.publishReady !== undefined && typeof options.publishReady !== 'function')) {
@@ -55,8 +61,9 @@ export async function startInstalledControlPlane(input, external = {}) {
   }
   const environment = loadDeliveredEnvironment(options);
   let composition;
+  let authorityLock;
+  let qualification;
   try {
-    const clients = injected.externalClients ?? await productionExternalClients(environment);
     return await startControlPlane({env: environment, dependencies: {
       checkoutRoot: path.resolve(environment.WALLET_KERNEL_RELEASE_ROOT),
       verifyRelease: async () => options.release,
@@ -67,15 +74,28 @@ export async function startInstalledControlPlane(input, external = {}) {
         return loaded;
       },
       acquireAuthorityLock({config, role}) {
-        return acquireAuthorityLock({databasePath: config.databasePath, role,
+        authorityLock = acquireAuthorityLock({databasePath: config.databasePath, role,
           pathTrust: Object.freeze({mode: config.mode, trustedAncestor: config.trustedAncestor,
             kernelUid: options.kernelUid, agentUid: config.expectedAgentUid})});
+        return authorityLock;
       },
-      openAuthority({config, routes}) {
-        composition = openRuntimeAuthority({config, routes, clients,
-          pathTrust: Object.freeze({mode: config.mode, trustedAncestor: config.trustedAncestor,
-            kernelUid: options.kernelUid, agentUid: config.expectedAgentUid})});
-        return composition.authority;
+      async openAuthority({config, routes}) {
+        const pathTrust = Object.freeze({mode: config.mode, trustedAncestor: config.trustedAncestor,
+          kernelUid: options.kernelUid, agentUid: config.expectedAgentUid});
+        if (profile === 'offline-qualification') {
+          qualification = createOfflineQualificationClients({environment, config, routes, pathTrust, authorityLock});
+        }
+        const clients = profile === 'offline-qualification'
+          ? qualification.clients
+          : injected.externalClients ?? await productionExternalClients(environment);
+        composition = openRuntimeAuthority({config, routes, clients, pathTrust});
+        if (qualification && composition.authority.walletIdentity().address !== OFFLINE_QUALIFICATION.walletAddress) {
+          await composition.authority.close();
+          throw new KernelError('QUALIFICATION_WALLET', 'Offline qualification wallet differs from policy');
+        }
+        return Object.freeze({...composition.authority, async close() {
+          try {await composition.authority.close();} finally {qualification?.close();}
+        }});
       },
       recoverAuthority: (dependencies) => recoverKernelAuthority(dependencies),
       async assertLiveAdmission(context) {
@@ -88,13 +108,15 @@ export async function startInstalledControlPlane(input, external = {}) {
         return Object.freeze({isolation: 'verified', observer: 'verified'});
       },
       listenOperatorAdmin: (request) => listenUnixAdmin({...request,
-        kernelUid: options.kernelUid, kernelGid: options.kernelGid}),
+        kernelUid: options.kernelUid, kernelGid: options.kernelGid,
+        authorityLock, databasePath: environment.WALLET_KERNEL_DB_FILE}),
       listenOperatorConsole: (request) => listenActivatedConsole({...request,
         activation: options.consoleActivation}),
       listenAgent: listenLoopback,
       ...(options.publishReady ? {publishReady: options.publishReady} : {}),
     }});
   } catch (error) {
+    try {qualification?.close();} catch {}
     // Provider errors can contain credential-bearing URLs. Expose codes only;
     // never retain their raw message/cause in bootstrap diagnostics.
     const code = error instanceof KernelError && /^[A-Z][A-Z0-9_]{0,127}$/u.test(error.code)

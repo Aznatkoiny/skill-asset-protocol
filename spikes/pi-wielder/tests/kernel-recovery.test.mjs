@@ -1208,6 +1208,43 @@ test('recovery releases reserved work but retains every claimed signature as unr
   }
 });
 
+test('recovery binds an ambiguous payment to its durable hold when the clock advances', async (t) => {
+  for (const state of ['signing', 'signed', 'retrying']) {
+    await t.test(state, (st) => {
+      const context = setup(st);
+      const seeded = seedPaymentCrashGap(context, state);
+      const before = context.store.readOne(
+        'SELECT * FROM payment_attempts WHERE intent_id = ?', [seeded.intent.id],
+      );
+      let milliseconds = Date.parse(NOW) + 1_000;
+      Object.defineProperty(CLOCKS.get(context), 'value', {
+        get: () => new Date(milliseconds++).toISOString(),
+      });
+
+      const report = recoverKernelAuthority(context);
+      assert.equal(report.ready, true);
+      assert.equal(report.unresolvedIntentCount, 1);
+      const attempt = context.store.readOne(
+        'SELECT * FROM payment_attempts WHERE intent_id = ?', [seeded.intent.id],
+      );
+      const budget = context.store.readOne(
+        'SELECT * FROM budget_reservations WHERE intent_id = ?', [seeded.intent.id],
+      );
+      const event = JSON.parse(context.store.readOne(`SELECT data_json FROM events
+        WHERE entity_id = ? AND event_type = 'payment.unresolved'`, [seeded.intent.id]).data_json);
+      assert.equal(attempt.updated_at, budget.updated_at);
+      assert.equal(event.recordedAt, budget.updated_at);
+      for (const field of ['nonce', 'payment_payload_json', 'payment_header', 'payment_hash',
+        'signing_claimed_at', 'signed_at', 'retry_started_at']) {
+        assert.equal(attempt[field], before[field], `${field} must survive recovery`);
+      }
+      assert.equal(context.receipts.latest(seeded.intent.id).receipt.payment.state, 'unresolved');
+      assert.equal(context.receipts.assertParity(), true);
+      assert.equal(recoverKernelAuthority(context).repairedIntentCount, 0);
+    });
+  }
+});
+
 test('recovery retains live approval authority and atomically expires only due work', async (t) => {
   await t.test('unexpired pending approval', (st) => {
     const context = setup(st);

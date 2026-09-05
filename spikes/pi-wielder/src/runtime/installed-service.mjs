@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { canonicalJson, KernelError } from '../kernel/canonical.mjs';
 import {
   captureDeploymentAuthorityMetadata, deploymentRendererInput, readDeploymentConfig,
+  isInstalledQualificationRelease,
 } from '../kernel/deployment.mjs';
 import {
   assertClosedLoaderEnvironment, captureInheritedConsoleSocket, verifyReleaseIntegrity,
@@ -17,6 +18,19 @@ import { renderSystemdUnits } from '../../scripts/render-systemd-units.mjs';
 const RELEASE_ROOT = fileURLToPath(new URL('../../', import.meta.url)).replace(/\/$/, '');
 
 function fail(code, message) { throw new KernelError(code, message); }
+
+export function assertServiceConfinement(status) {
+  if (typeof status !== 'string' || Buffer.byteLength(status) > 64 * 1024) {
+    fail('RUNTIME_CONFINEMENT', 'service process confinement is unavailable');
+  }
+  for (const field of ['CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb', 'NoNewPrivs']) {
+    const matches = [...status.matchAll(new RegExp(`^${field}:\\s*([0-9a-f]+)$`, 'gm'))];
+    if (matches.length !== 1 || (field === 'NoNewPrivs'
+      ? matches[0][1] !== '1' : !/^0+$/.test(matches[0][1]))) {
+      fail('RUNTIME_CONFINEMENT', 'service must have no capabilities and no new privileges');
+    }
+  }
+}
 
 export function inspectActivatedConsole(fd) {
   if (process.platform !== 'linux' || fd !== 3 || !fs.fstatSync(fd).isSocket()) {
@@ -44,6 +58,7 @@ export async function composeInstalledService({ environment, releaseRoot = RELEA
       || processApi.getgroups().some((group) => group !== gid)) {
     fail('RUNTIME_IDENTITY', 'service must already run as the exact unprivileged Kernel identity');
   }
+  assertServiceConfinement((effects.readProcessStatus ?? (() => fs.readFileSync('/proc/self/status', 'utf8')))());
   if (releaseRoot !== config.releaseRoot || processApi.execPath !== config.nodePath
       || processApi.version !== 'v24.18.1') fail('RELEASE_VERIFY_INPUT', 'service runtime differs from public deployment');
   const captured = { ...environment };
@@ -103,8 +118,9 @@ export async function composeInstalledService({ environment, releaseRoot = RELEA
 }
 
 export async function runInstalledService() {
+  // A sealed deterministic qualification profile never loads live providers.
   // No environment flag or CLI switch can turn an unqualified release live.
-  if (LIVE_LAUNCH_GATE.status === 'blocked') {
+  if (LIVE_LAUNCH_GATE.status === 'blocked' && !isInstalledQualificationRelease(RELEASE_ROOT)) {
     process.stderr.write(`${canonicalJson(LIVE_LAUNCH_GATE)}\n`);
     process.exitCode = LIVE_LAUNCH_GATE.exitStatus;
     return;

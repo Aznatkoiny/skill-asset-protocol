@@ -9,6 +9,7 @@ const SQLITE_BUSY = 5;
 const SQLITE_LOCKED = 6;
 const ACQUISITION_ATTEMPTS = 4;
 const RETRY_SIGNAL = new Int32Array(new SharedArrayBuffer(4));
+const LOCK_OWNERS = new WeakMap();
 
 class RetryableJournalTransition extends Error {
   constructor() {
@@ -118,7 +119,7 @@ export function acquireAuthorityLock({ databasePath, role, pathTrust }) {
   }
 
   let state = 'transaction-held';
-  return Object.freeze({
+  const handle = Object.freeze({
     close() {
       if (state === 'closed' || state === 'rolling-back' || state === 'closing') return;
       if (state === 'transaction-held') {
@@ -142,4 +143,14 @@ export function acquireAuthorityLock({ databasePath, role, pathTrust }) {
       state = 'closed';
     },
   });
+  LOCK_OWNERS.set(handle, { databasePath, role, held: () => state === 'transaction-held' });
+  return handle;
+}
+
+/** A private in-process witness for restart cleanup; the public handle stays close-only. */
+export function assertHeldKernelAuthorityLock(handle, { databasePath }) {
+  const owner = LOCK_OWNERS.get(handle);
+  if (!owner || owner.role !== 'kernel' || owner.databasePath !== databasePath || !owner.held()) {
+    throw new KernelError('AUTHORITY_LOCK_REQUIRED', 'A held Kernel authority lock is required');
+  }
 }

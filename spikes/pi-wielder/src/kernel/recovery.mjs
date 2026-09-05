@@ -2606,11 +2606,19 @@ function applyRepair({ store, intents, budgets, approvals, now }, repair, startu
         intentId: repair.intentId,
         reasonCode: 'RECOVERY_PAYMENT_AMBIGUOUS',
       });
+      // The budget ledger samples its own clock. Bind the PaymentAttempt to
+      // that durable hold timestamp, not the earlier repair timestamp.
+      const heldAt = safeTimestamp(store.within(token, ({ db }) => db.prepare(
+        'SELECT updated_at FROM budget_reservations WHERE intent_id = ?',
+      ).get(repair.intentId)?.updated_at), 'recovery budget hold timestamp');
+      if (Date.parse(heldAt) < Date.parse(recordedAt)) {
+        throw semantic('recovery budget hold clock regressed');
+      }
       store.within(token, ({ db, appendEvent }) => {
         const changed = db.prepare(`UPDATE payment_attempts
           SET state = 'unresolved', reason_code = 'RECOVERY_PAYMENT_AMBIGUOUS', updated_at = ?
           WHERE intent_id = ? AND state = ?`).run(
-          recordedAt,
+          heldAt,
           repair.intentId,
           repair.expectedState,
         );
@@ -2619,7 +2627,7 @@ function applyRepair({ store, intents, budgets, approvals, now }, repair, startu
           entityType: 'payment_attempt',
           entityId: repair.intentId,
           eventType: 'payment.unresolved',
-          data: { reasonCode: 'RECOVERY_PAYMENT_AMBIGUOUS', recordedAt },
+          data: { reasonCode: 'RECOVERY_PAYMENT_AMBIGUOUS', recordedAt: heldAt },
         });
       });
       intents.transitionInTransaction(token, {
