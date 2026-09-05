@@ -16,7 +16,11 @@ import {
 const HASH = `sha256:${'a'.repeat(64)}`;
 
 function fixture() {
-  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'wallet-release-'));
+  // Root verification checks every environment ancestor. A private directory
+  // beneath world-writable /tmp is not a valid root-owned deployment hierarchy.
+  const fixtureRoot = process.platform === 'linux' && process.getuid() === 0
+    ? '/run' : os.tmpdir();
+  const parent = fs.mkdtempSync(path.join(fixtureRoot, 'wallet-release-'));
   fs.chmodSync(parent, 0o700);
   const releaseRoot = path.join(parent, 'release');
   fs.mkdirSync(path.join(releaseRoot, 'src'), { recursive: true, mode: 0o755 });
