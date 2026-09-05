@@ -775,10 +775,12 @@ function verifyIsolation(snapshot, enrollments, startupAt) {
           || normalized.kernelUid === normalized.agentUid
           || normalized.probedAt !== probedAt
           || normalized.expiresAt !== expiresAt
-          || Date.parse(importedAt) > Date.parse(startupAt)
-          || Date.parse(expiresAt) <= Date.parse(startupAt)) {
+          || Date.parse(importedAt) > Date.parse(startupAt)) {
         throw semantic('current isolation report identity or time binding changed');
       }
+      // "Current" identifies the latest imported report, not perpetual admission.
+      // Expiry alone does not corrupt its history or prevent an Operator from
+      // renewing it. Prelaunch and live admission independently enforce freshness.
       for (const name of [
         'authorityMetadataHash', 'credentialMetadataHash', 'releaseManifestHash',
         'releaseTreeHash', 'nodeExecutableHash', 'serviceArtifactsHash',

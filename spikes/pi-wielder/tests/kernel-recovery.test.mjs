@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { createIsolationAttestationRepository } from '../src/agent/isolation-preflight.mjs';
+import { createIsolationAttestationRepository, validateIsolationReportBytes } from '../src/agent/isolation-preflight.mjs';
 import { createAgentEnrollmentRepository } from '../src/kernel/agent-enrollment.mjs';
 import { createApprovalQueue } from '../src/kernel/approval-queue.mjs';
 import { createBudgetLedger } from '../src/kernel/budget-ledger.mjs';
@@ -503,6 +503,54 @@ test('recovery retains each legal enrollment and session authority shape', async
     ).count, 1n);
   });
 
+  await t.test('expired isolation history can be renewed without admitting the expired report', (st) => {
+    const context = setup(st);
+    seedCapturedAuthority(context);
+    // Finish the unsigned intent first, retaining its real receipt and history.
+    recoverKernelAuthority(context);
+    const enrollmentHash = sha256(canonicalJson(DESCRIPTOR));
+    let id = 0;
+    const attestations = createIsolationAttestationRepository({ store: context.store,
+      now: context.now, idFactory: () => `isolation-renewal-${++id}` });
+    const first = enforcedIsolationReport(enrollmentHash);
+    const bytes = report => Buffer.from(`${canonicalJson(report)}\n`);
+    const importReport = report => attestations.importCurrent({ reportBytes: bytes(report),
+      expectedReportHash: sha256(canonicalJson(report)), operatorIdHash: OPERATOR_HASH });
+    const lookup = report => attestations.currentFor({ enrollmentHash,
+      authorityMetadataHash: report.authorityMetadataHash,
+      releaseManifestHash: report.releaseManifestHash,
+      expectedReportHash: sha256(canonicalJson(report)) });
+    const firstImport = importReport(first);
+    const before = Object.fromEntries(['spend_intents', 'budget_reservations', 'payment_attempts',
+      'buyer_outcomes', 'signed_receipts', 'isolation_attestations', 'events']
+      .map(table => [table, context.store.readAll(`SELECT * FROM ${table}`)]));
+    CLOCKS.get(context).value = first.expiresAt;
+
+    assert.throws(() => validateIsolationReportBytes(bytes(first), { now: context.now }),
+      { code: 'ISOLATION_EXPIRED' });
+    assert.equal(lookup(first), null);
+    const recovered = recoverKernelAuthority(context);
+    assert.equal(recovered.ready, true);
+    assert.equal(recovered.repairedIntentCount, 0);
+    assert.equal(recovered.repairedReceiptCount, 0);
+    for (const [table, rows] of Object.entries(before)) {
+      assert.deepEqual(context.store.readAll(`SELECT * FROM ${table}`), rows, table);
+    }
+    assert.equal(lookup(first), null, 'historical recovery cannot renew admission');
+
+    const replacement = { ...first, probedAt: context.now(),
+      expiresAt: '2026-07-31T12:30:00.000Z' };
+    const replacementImport = importReport(replacement);
+    assert.equal(recoverKernelAuthority(context).ready, true);
+    assert.equal(validateIsolationReportBytes(bytes(replacement), { now: context.now }).reportHash,
+      replacementImport.reportHash);
+    assert.equal(lookup(replacement).reportHash, replacementImport.reportHash);
+    assert.equal(lookup(first), null);
+    assert.equal(context.store.readOne('SELECT state FROM isolation_attestations WHERE id = ?',
+      [firstImport.id]).state, 'superseded');
+    assert.equal(context.store.events().filter(event => event.event_type === 'isolation.attestation_superseded').length, 1);
+  });
+
   await t.test('guarded closed session with retained active enrollment', (st) => {
     const context = setup(st);
     const seeded = seedCapturedAuthority(context);
@@ -810,59 +858,47 @@ test('recovery rejects well-formed cross-table and lifecycle corruption with zer
     ).length, 2);
   });
 
-  await t.test('current isolation report with a weakened enforced probe', (st) => {
+  await t.test('expired isolation report with a weakened enforced probe blocks all recovery writes', (st) => {
     const context = setup(st);
-    createPolicyRepository(context.store).apply(structuredClone(BASE_POLICY), NOW);
-    const enrollment = createAgentEnrollmentRepository({
-      store: context.store,
-      now: context.now,
-    }).enroll({
-      descriptor: DESCRIPTOR,
-      expectedDescriptorHash: sha256(canonicalJson(DESCRIPTOR)),
-      operatorIdHash: OPERATOR_HASH,
-      mode: 'cdp-testnet',
-      kernelUid: 502,
-      kernelGid: 502,
-      expectedAgentUid: 501,
-      expectedAgentGid: 20,
-    });
-    const report = enforcedIsolationReport(enrollment.enrollmentHash);
+    const seeded = seedCapturedAuthority(context);
+    const enrollmentHash = sha256(canonicalJson(DESCRIPTOR));
+    const report = enforcedIsolationReport(enrollmentHash);
     report.probeResults.database = 'READABLE';
-    insertCurrentIsolation(context, enrollment.enrollmentHash, report);
+    insertCurrentIsolation(context, enrollmentHash, report);
+    CLOCKS.get(context).value = report.expiresAt;
+    const beforeEvents = context.store.events();
 
     assert.throws(
       () => recoverKernelAuthority(context),
       (error) => error?.code === 'AUTHORITY_SEMANTIC_CORRUPTION',
     );
+    assert.deepEqual(context.store.events(), beforeEvents);
+    assert.equal(context.store.readOne('SELECT state FROM spend_intents WHERE id = ?',
+      [seeded.intent.id]).state, 'captured');
+    assert.equal(context.store.readOne('SELECT COUNT(*) AS count FROM buyer_outcomes').count, 0n);
+    assert.equal(context.store.readOne('SELECT COUNT(*) AS count FROM signed_receipts').count, 0n);
   });
 
-  await t.test('expired current isolation report', (st) => {
+  await t.test('current isolation import from the future blocks all recovery writes', (st) => {
     const context = setup(st);
-    createPolicyRepository(context.store).apply(structuredClone(BASE_POLICY), NOW);
-    const enrollment = createAgentEnrollmentRepository({
-      store: context.store,
-      now: context.now,
-    }).enroll({
-      descriptor: DESCRIPTOR,
-      expectedDescriptorHash: sha256(canonicalJson(DESCRIPTOR)),
-      operatorIdHash: OPERATOR_HASH,
-      mode: 'cdp-testnet',
-      kernelUid: 502,
-      kernelGid: 502,
-      expectedAgentUid: 501,
-      expectedAgentGid: 20,
-    });
-    insertCurrentIsolation(
-      context,
-      enrollment.enrollmentHash,
-      enforcedIsolationReport(enrollment.enrollmentHash),
-    );
-    CLOCKS.get(context).value = '2026-07-31T12:15:00.000Z';
+    const seeded = seedCapturedAuthority(context);
+    const enrollmentHash = sha256(canonicalJson(DESCRIPTOR));
+    insertCurrentIsolation(context, enrollmentHash, enforcedIsolationReport(enrollmentHash));
+    context.store.transaction(token => context.store.within(token, ({ db }) => {
+      db.prepare('UPDATE isolation_attestations SET imported_at = ? WHERE id = ?')
+        .run('2026-07-31T12:00:00.001Z', 'isolation-current');
+    }));
+    const beforeEvents = context.store.events();
 
     assert.throws(
       () => recoverKernelAuthority(context),
       (error) => error?.code === 'AUTHORITY_SEMANTIC_CORRUPTION',
     );
+    assert.deepEqual(context.store.events(), beforeEvents);
+    assert.equal(context.store.readOne('SELECT state FROM spend_intents WHERE id = ?',
+      [seeded.intent.id]).state, 'captured');
+    assert.equal(context.store.readOne('SELECT COUNT(*) AS count FROM buyer_outcomes').count, 0n);
+    assert.equal(context.store.readOne('SELECT COUNT(*) AS count FROM signed_receipts').count, 0n);
   });
 
   await t.test('replacement supersession without an exact replacement attestation', (st) => {
