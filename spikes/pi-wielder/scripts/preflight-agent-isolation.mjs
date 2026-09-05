@@ -130,6 +130,18 @@ function spawnProbe(config, spawnImpl = fork) {
   });
 }
 
+// Startup repeats the actual dropped-identity probes without publishing or
+// importing a new attestation. Only the Operator may approve a new report.
+export async function probeAgentIsolation(config, spawnImpl = fork) {
+  if (process.getuid?.() !== 0) throw new Error('privileged isolation probe requires root');
+  const input = exactRecord(config, [
+    'agentUid', 'agentGid', 'credentialPath', 'protectedReadPaths', 'writePaths',
+  ], [], 'ISOLATION_PREFLIGHT_CONFIG', 'startup isolation probes');
+  positiveText(input.agentUid, 'Agent UID');
+  positiveText(input.agentGid, 'Agent GID');
+  return spawnProbe(input, spawnImpl);
+}
+
 function publishReport({ reportPath, reportBytes, kernelUid, kernelGid, chown = fs.fchownSync }) {
   const parent = fs.lstatSync(path.dirname(reportPath));
   if (!parent.isDirectory() || parent.isSymbolicLink() || (parent.mode & 0o077) !== 0) {

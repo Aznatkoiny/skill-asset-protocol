@@ -22,7 +22,7 @@ seller.
 | Mode | What has been exercised | Honest status |
 |---|---|---|
 | `offline-deterministic` | Real local child processes, SQLite authority, policy/approval paths, restart recovery, deterministic x402 settlement, Pi adapter path, signed per-session projections, and recomputable evidence | **Measured offline**; wallet, deployment, and OS isolation are explicitly simulated. No external provider or chain is contacted. |
-| `cdp-testnet` | Closed configuration, CDP adapter, Base Sepolia observer, release-integrity, systemd, isolation, run-intent, and evidence gates have offline tests | **Not run.** The production listener/secret-delivery composition and Linux lifecycle evidence are incomplete. The installed launch path deliberately stops with `LIVE_LAUNCH_NOT_READY` (exit 78). |
+| `cdp-testnet` | The prepared-release installer, privileged preflight, Kernel credential delivery, native listeners, and durable runtime composition have offline tests | **Not run.** Actual Linux/systemd lifecycle qualification remains incomplete. Both installed entrypoints stop with `LIVE_LAUNCH_NOT_READY` (exit 78); there is no override switch. |
 | Mainnet | No mode, route, deployment, or evidence path exists | **Out of scope and unsupported.** No automated funding, mainnet transaction, or real-funds operation is allowed. |
 
 An offline pass is not evidence of live isolation, CDP payment, wallet funding, or a
@@ -235,8 +235,11 @@ The quoted execution catalog is immutable and versioned. Its initial rates are l
 The new Wielder-side control plane is composed from `src/control-plane.mjs`. It keeps
 Agent admission, Operator authority, policy decisions, wallet signing, and public
 projections as separate capabilities. The deterministic acceptance runner supplies the
-complete offline dependency graph. The direct production entrypoint refuses to invent
-that graph; live launch remains blocked as described above.
+offline graph. `src/runtime/installed-service.mjs` verifies the installed process,
+release, PID1 configuration, activation descriptor, and isolation report before
+`installed-runtime.mjs` loads PID1-delivered credentials and composes the real authority,
+wallet adapter, observer, Agent listener, and Operator transports. The executable gate
+remains closed pending actual Linux lifecycle qualification. See [RUNBOOK §10](RUNBOOK.md#10-clean-install-bootstrap-and-the-intentional-live-block).
 
 ```text
 Pi or another HTTP client (legacy Collar demonstration)
@@ -340,6 +343,8 @@ blocked live boundary, see [RUNBOOK.md](./RUNBOOK.md).
 | `scripts/lib/spend-control-process-runner.mjs` | Reused real-process deterministic acceptance runner |
 | `src/evidence-bundle.mjs` and `scripts/verify-evidence.mjs` | Sanitized five-file evidence builder and externally anchored independent verifier |
 | `deploy/systemd/` and `scripts/preflight-live-deployment.mjs` | Root-owned deployment contract and explicit `LIVE_LAUNCH_NOT_READY` live gate |
+| `scripts/install-live-deployment.mjs` | Verifies and seals a prepared, committed release and exact unit artifacts; never starts a service |
+| `src/runtime/` | Installed bootstrap, PID1 credential loader, authority composition, and native listeners |
 
 ## Security and operational boundaries
 

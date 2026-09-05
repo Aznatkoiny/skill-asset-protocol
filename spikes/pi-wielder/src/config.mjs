@@ -214,9 +214,22 @@ function statMode(stat) {
   return Number(stat.mode & 0o7777n);
 }
 
-function descriptorStat(location, expectedType, label) {
+function descriptorStat(location, expectedType, label, { metadataOnly = false } = {}) {
   let descriptor;
   try {
+    if (metadataOnly) {
+      // PID1 delivers the source's private contents separately with LoadCredential.
+      // A Kernel UID may inspect this root-owned 0600 inode but may not open it.
+      const before = fs.lstatSync(location, { bigint: true });
+      const after = fs.lstatSync(location, { bigint: true });
+      if (!before.isFile() || before.isSymbolicLink()
+          || ['dev', 'ino', 'mode', 'nlink', 'uid', 'gid', 'size', 'mtimeNs', 'ctimeNs']
+            .some(field => before[field] !== after[field])) {
+        fail('CONFIG_PATH', `${label} metadata changed or is not a regular file`);
+      }
+      return Object.freeze({uid: Number(before.uid), gid: Number(before.gid),
+        mode: statMode(before), nlink: Number(before.nlink)});
+    }
     const directoryFlag = expectedType === 'directory' ? fs.constants.O_DIRECTORY : 0;
     descriptor = fs.openSync(
       location,
@@ -279,12 +292,20 @@ function inspectPath({
   exactTerminalLinks,
   parentOwner,
   exactParentMode,
+  metadataOnly = false,
+  verifiedReleaseRoot = null,
 }) {
   const target = canonicalAbsolutePath(value, label);
   if (target === trustedAncestor) {
     fail('CONFIG_PATH', `${label} must name a descendant below the trusted ancestor`);
   }
-  if (isInside(checkoutRoot, target)) {
+  const immutableReleaseRole = new Set([
+    'WALLET_KERNEL_RELEASE_ROOT', 'WALLET_KERNEL_RELEASE_MANIFEST',
+    'WALLET_KERNEL_POLICY_FILE', 'WALLET_KERNEL_ROUTE_FILE',
+    'WALLET_KERNEL_SERVICE_DEFINITION_FILE', 'WALLET_KERNEL_SOCKET_DEFINITION_FILE',
+  ]).has(label);
+  if (isInside(checkoutRoot, target)
+      && !(verifiedReleaseRoot && immutableReleaseRole && isInside(verifiedReleaseRoot, target))) {
     fail('CONFIG_PATH', `${label} must be outside the checkout`);
   }
   const chain = pathChain(trustedAncestor, target);
@@ -315,7 +336,9 @@ function inspectPath({
     const location = chain[index];
     const terminal = terminalExists && index === chain.length - 1;
     const expectedType = terminal ? type : 'directory';
-    const metadata = descriptorStat(location, expectedType, label);
+    const metadata = descriptorStat(location, expectedType, label, {
+      metadataOnly: terminal && metadataOnly,
+    });
     if ((metadata.mode & 0o022) !== 0) {
       fail('CONFIG_PATH_MODE', `${label} has a group/other-writable path component`);
     }
@@ -446,7 +469,7 @@ export function loadControlPlaneConfig(input) {
   const request = captureClosedCall(
     input,
     ['env', 'checkoutRoot'],
-    ['uid', 'gid', 'platform'],
+    ['uid', 'gid', 'platform', 'verifiedReleaseRoot'],
     'CONFIG_SCHEMA',
     'configuration request',
   );
@@ -466,6 +489,12 @@ export function loadControlPlaneConfig(input) {
   }
 
   const live = mode === 'cdp-testnet';
+  const verifiedReleaseRoot = request.verifiedReleaseRoot === undefined ? null
+    : canonicalAbsolutePath(request.verifiedReleaseRoot, 'verified release root');
+  if (verifiedReleaseRoot !== null && (!live
+      || verifiedReleaseRoot !== capturedValue(descriptors, 'WALLET_KERNEL_RELEASE_ROOT'))) {
+    fail('CONFIG_RELEASE_BOUNDARY', 'verified release root must match the live release exactly');
+  }
   const kernelUid = injectedIdentity(uid, 'Kernel UID', { positive: live });
   injectedIdentity(gid, 'Kernel GID', { positive: live });
   const expectedAgentUid = canonicalPositiveInteger(
@@ -524,6 +553,7 @@ export function loadControlPlaneConfig(input) {
     mode,
     kernelUid,
     expectedAgentUid,
+    verifiedReleaseRoot,
   };
   const inspect = (key, options) => {
     const value = rawPaths[key];
@@ -576,12 +606,15 @@ export function loadControlPlaneConfig(input) {
   });
   const environmentFilePath = inspect('WALLET_KERNEL_ENV_FILE', {
     type: 'file', requireLeaf: live, terminalOwner: live ? 'root' : undefined,
+    metadataOnly: true,
   });
   const evidenceRoot = inspect('WALLET_KERNEL_EVIDENCE_ROOT', {
     type: 'directory', requireLeaf: live,
   });
   const isolationReportPath = inspect('WALLET_KERNEL_ISOLATION_REPORT_FILE', {
-    type: 'file', requireLeaf: live, exactTerminalMode: live ? 0o600 : undefined,
+    // Recovery-only startup has no enrolled Agent to attest. Enrolled admission
+    // must subsequently read this report and match the authoritative stored row.
+    type: 'file', requireLeaf: false, exactTerminalMode: live ? 0o600 : undefined,
   });
 
   if (live && (!isInside(releaseRoot, policyPath) || policyPath === releaseRoot

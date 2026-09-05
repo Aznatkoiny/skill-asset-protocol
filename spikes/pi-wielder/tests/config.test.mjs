@@ -581,6 +581,53 @@ function route(overrides = {}) {
   };
 }
 
+test('installed release configuration excludes private state and inspects the closed source by metadata only', (t) => {
+  const fixture = makeFixture(t);
+  const source = writeFixtureFile(path.join(fixture.root, 'kernel.env'), 'synthetic-source-never-opened\n');
+  const env = {...fixture.env, WALLET_KERNEL_MODE:'cdp-testnet', WALLET_KERNEL_ENV_FILE:source,
+    WALLET_KERNEL_EXPECTED_AGENT_UID:String(CURRENT_UID + 1),
+    WALLET_KERNEL_EXPECTED_AGENT_GID:String(CURRENT_GID + 1),
+    CDP_API_KEY_ID:'synthetic-id', CDP_API_KEY_SECRET:'synthetic-secret',
+    CDP_WALLET_SECRET:'synthetic-wallet-secret', CDP_WALLET_NAME:'pilot-wallet',
+    WALLET_KERNEL_BASE_SEPOLIA_RPC_URL:'https://rpc.example'};
+  // Model only immutable ownership metadata. No host chown or secret reads.
+  const rootOwned = (location) => location === fixture.root || location === source
+    || location === fixture.paths.releaseRoot || location.startsWith(`${fixture.paths.releaseRoot}/`);
+  const originalOpen = fs.openSync;
+  const originalLstat = fs.lstatSync;
+  const originalFstat = fs.fstatSync;
+  const descriptors = new Map();
+  let sourceOpens = 0;
+  let policyOpens = 0;
+  const project = (stat, location) => {
+    if (rootOwned(location)) stat.uid = typeof stat.uid === 'bigint' ? 0n : 0;
+    return stat;
+  };
+  t.mock.method(fs, 'openSync', (location, ...args) => {
+    if (location === source) {sourceOpens++; throw Error('root source cannot be opened');}
+    if (location === fixture.paths.policy) policyOpens++;
+    const descriptor = originalOpen(location, ...args);
+    descriptors.set(descriptor, location);
+    return descriptor;
+  });
+  t.mock.method(fs, 'lstatSync', (location, ...args) => project(originalLstat(location, ...args), location));
+  t.mock.method(fs, 'fstatSync', (descriptor, ...args) => project(originalFstat(descriptor, ...args), descriptors.get(descriptor)));
+  const input = {env, checkoutRoot:fixture.paths.releaseRoot, uid:CURRENT_UID, gid:CURRENT_GID, platform:'linux'};
+  assertKernelError(() => loadControlPlaneConfig(input), 'CONFIG_PATH');
+  const installed = {...input, verifiedReleaseRoot:fixture.paths.releaseRoot};
+  assert.equal(loadControlPlaneConfig(installed).publicConfig.environmentFilePath, source);
+  assert.equal(sourceOpens, 0);
+  assert.ok(policyOpens > 0, 'immutable public files retain descriptor checks');
+  assertKernelError(() => loadControlPlaneConfig({...installed, env:{...env,
+    WALLET_KERNEL_DB_FILE:path.join(fixture.paths.releaseRoot, 'private.sqlite')}}), 'CONFIG_PATH');
+  assertKernelError(() => loadControlPlaneConfig({...installed, env:{...env,
+    WALLET_KERNEL_ENV_FILE:fixture.paths.environmentFile}}), 'CONFIG_PATH');
+  fs.unlinkSync(fixture.paths.isolationReport);
+  assert.equal(loadControlPlaneConfig(installed).publicConfig.isolationReportPath, fixture.paths.isolationReport);
+  writeFixtureFile(fixture.paths.isolationReport, '{}\n', 0o644);
+  assertKernelError(() => loadControlPlaneConfig(installed), 'CONFIG_PATH_MODE');
+});
+
 function routeDocument(routes = [route()]) {
   return { schemaVersion: 1, routes };
 }

@@ -10,9 +10,9 @@ Current release status is intentionally asymmetric:
 - deterministic verification and evidence are **measured offline**; wallet settlement,
   deployment, and cross-UID isolation are simulated;
 - live CDP and Base Sepolia payment are **not-run**;
-- Linux/systemd launch is **blocked** by `LIVE_LAUNCH_NOT_READY` (exit 78) until the
-  production preflight/control-plane composition, secret delivery, compatible listener
-  adapters, and Linux lifecycle evidence exist;
+- the installed preflight, runtime, secret delivery, and native listener composition
+  have offline tests; Linux/systemd launch remains **blocked** by
+  `LIVE_LAUNCH_NOT_READY` (exit 78) until actual installed lifecycle evidence qualifies;
 - there is no mainnet mode, automated funding, custody service, or real-funds workflow.
 
 Do not interpret a local macOS pass, a deterministic adapter, or a skipped systemd test
@@ -413,7 +413,7 @@ operator can review the trust boundary; satisfying them does not remove the curr
    | Pi credential parent | Pi `0700` | Raw Agent credential `0600`; Kernel traversal must receive `EACCES` |
    | Enrollment inbox | Pi `0755` | Pi writes one non-secret descriptor `0644`; Kernel can read but must not write/rename/delete |
    | Agent-run outbox | Kernel `0755` | Kernel writes one public run descriptor `0644`; Pi can read but must not write/rename/delete |
-   | Attested environment file | root-owned regular file, `0600` | Names the future Kernel inputs; current secret-delivery composition is missing and blocked |
+   | Attested environment file | root-owned regular file, `0600`; traversable immutable root-owned ancestors | Closed Kernel inputs; root checks metadata only and PID1 supplies a separate credential copy |
 
 The two handoff parents are deliberately separate. Before live admission, dropped-UID
 probes must prove both wrong-direction write/rename/delete attempts fail with `EACCES`,
@@ -422,10 +422,44 @@ release, service, environment, or evidence state.
 
 ## 10. Clean install, bootstrap, and the intentional live block
 
-There is not yet a complete privileged installer or production listener/secret-loader
-composition. The repository contains independently tested release-manifest, systemd
-rendering/inspection, isolation-probe, offline bootstrap, and control-plane primitives.
-Do not wire them together with an ad hoc root shell or bypass the readiness gate.
+`scripts/install-live-deployment.mjs` seals a **prepared** release; account provisioning,
+offline authority bootstrap, and separately confirmed enrollment/policy inputs remain
+explicit prerequisites. It verifies a clean standalone source checkout at the declared
+commit, the prepared source bytes/modes, and installed package metadata against the
+committed lock, then hashes every installed byte into the release manifest. It does not
+run npm as root or claim to reproduce registry tarballs. Both installed entrypoints
+remain gated; there is no environment flag or CLI switch that enables an unqualified
+release.
+
+Start from [deployment.example.json](deploy/deployment.example.json) and
+[kernel.env.example](deploy/kernel.env.example). Replace the zero commit, choose actual
+distinct non-root Kernel/Agent UIDs **and GIDs**, and commit the selected policy/route
+files in the reviewed source. The public deployment file must be canonical JSON plus
+one newline at `<releaseRoot>/deployment.json`; it contains paths and identities only.
+The separate environment source contains customer CDP/RPC inputs as inert, bounded
+`KEY=VALUE` data. Do not use the legacy mixed-purpose `.env.example` for this service.
+The example uses trusted ancestor `/` to cover `/opt`, `/var`, `/run`, and `/etc`;
+every traversed directory still must pass its ownership and non-symlink checks.
+
+Production unit artifacts have fixed paths:
+`/etc/systemd/system/wallet-kernel.service` and
+`/etc/systemd/system/wallet-kernel-console.socket`. Linked or custom search-path units
+are unsupported. Run the installer only from the verified source or prepared release,
+using the exact pinned Node binary, after completing the offline prerequisites:
+
+```text
+<pinned-node> <reviewed-source>/spikes/pi-wielder/scripts/install-live-deployment.mjs \
+  --deployment <immutable-release>/deployment.json \
+  --source-checkout <clean-standalone-reviewed-source>
+```
+
+Successful sealing reports `sealed_not_started`, `started: false`, and
+`qualification: not_performed`. It refuses existing artifacts and performs
+render → daemon-reload → enable socket **without start** → inspect PID1 → build/write/
+verify manifest. Failure after attempted enablement independently attempts service
+stop, socket stop, and socket disable, retaining the original failure code and each
+cleanup result. Review any failed cleanup before retrying; a successful command is
+not itself lifecycle qualification.
 
 The required clean-install order is exact:
 
@@ -457,22 +491,34 @@ The required clean-install order is exact:
 12. Verify the same effective configuration, run
     `systemctl start wallet-kernel-console.socket`, and only then start the service.
 
-The loaded service must pass only `WALLET_KERNEL_ENV_FILE=<absolute path>` to the
+The loaded service passes only `WALLET_KERNEL_ENV_FILE=<absolute path>` as its custom
+environment input to the
 root-prefixed preflight. It may not use `EnvironmentFile=`, `PassEnvironment=`, or
 place CDP/RPC secret values in root's environment. Loader controls including
 `NODE_OPTIONS`, `NODE_PATH`, `LD_*`, `DYLD_*`, `GCONV_PATH`, and `GLIBC_TUNABLES` are
-forbidden. Root verifies public release, unit, PID1, and path facts, then spawns one
-empty-environment child that clears groups and drops to the exact Kernel GID/UID before
-opening the authority for a read-only recovery/parity audit.
+forbidden. Root verifies public release, unit, PID1, and path facts, then uses an
+empty-environment child that clears groups and drops to the exact Kernel GID/UID for
+read-only enrollment inspection. A recovery-only authority requires no retained Agent
+credential. An enrolled authority additionally requires fresh dropped-Agent probes,
+unchanged before/after credential and authority metadata, and a second dropped-Kernel
+audit that compares the confirmed report with stored authority. No report is silently
+approved or imported by startup.
+
+`LoadCredential=wallet-kernel-environment:<source>` lets PID1 deliver the credential
+at `/run/credentials/wallet-kernel.service/wallet-kernel-environment`. The Kernel
+checks its real/effective IDs and supplementary groups before opening that copy.
+Root-owned ACL delivery is accepted only at that fixed path on the verified read-only
+tmpfs/ramfs credential mount; the unmounted plain-directory fallback is unsupported.
+The loader never sources shell text or mutates `process.env`. Native Hono adapters use
+`overrideGlobalObjects: false`. The Operator Unix socket and inherited console listener
+start before Agent admission; the runtime closes its authority and listeners on startup
+failure. Actual PID1 delivery, dropped-Agent denial of the delivered copy, and installed
+start/restart/cleanup must still be qualified on the target Linux host.
 
 At present, step 12 does **not** produce a live service. The preflight command emits a
-machine-readable gate with code `LIVE_LAUNCH_NOT_READY` and exits 78. Its unresolved
-requirements are:
+machine-readable gate with code `LIVE_LAUNCH_NOT_READY` and exits 78. The remaining
+release blocker is:
 
-- `LIVE_PREFLIGHT_COMPOSITION_REQUIRED`;
-- `CONTROL_PLANE_COMPOSITION_REQUIRED`;
-- `LIVE_SECRET_DELIVERY_COMPOSITION_REQUIRED`;
-- `LIVE_LISTENER_RESPONSE_COMPATIBILITY_REQUIRED`;
 - `LIVE_SYSTEMD_LIFECYCLE_EVIDENCE_REQUIRED`.
 
 The listener requirement includes production `@hono/node-server` adapters configured
@@ -755,6 +801,6 @@ website reframe remains gated on fresh qualifying testnet evidence; the quaranti
 were not retained.
 
 The following remain outside this spike: mainnet, real funds, custody, hosted policy
-authority, automated funding, live CDP payment, production secret delivery, a complete
-privileged installer/launcher, and any public commercialization claim based only on
-offline evidence.
+authority, automated funding, qualified installed Linux lifecycle, demonstrated live
+CDP payment or PID1 secret delivery, and any public commercialization claim based only
+on offline evidence.

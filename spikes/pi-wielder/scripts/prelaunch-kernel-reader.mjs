@@ -5,14 +5,29 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { types as utilTypes } from 'node:util';
 
 const HASH = /^sha256:[0-9a-f]{64}$/;
 const POSITIVE = /^[1-9][0-9]*$/;
 const ALLOWED_REQUEST_FIELDS = Object.freeze([
   'nonce', 'parentPid', 'kernelUid', 'kernelGid', 'releaseRoot',
-  'releaseManifestHash', 'authorityMetadataHash', 'probeResults', 'databasePath',
-  'pathTrust', 'isolationReportPath', 'now',
+  'releaseManifestHash', 'authorityMetadataHash', 'credentialMetadataHash',
+  'probeResults', 'databasePath', 'pathTrust', 'isolationReportPath', 'now',
 ]);
+// Keep this public result contract local: project imports happen only after the
+// identity drop. A contract test binds it to REQUIRED_ISOLATION_PROBE_RESULTS.
+const EXPECTED_PROBE_RESULTS = Object.freeze({
+  authorityDirectory: 'EACCES',
+  database: 'EACCES',
+  operatorToken: 'EACCES',
+  receiptKey: 'EACCES',
+  kernelEnvironment: 'EACCES',
+  agentCredential: 'READABLE',
+  releaseTreeWrite: 'EACCES',
+  dependencyTreeWrite: 'EACCES',
+  serviceArtifactsWrite: 'EACCES',
+  kernelEnvironmentParentWrite: 'EACCES',
+});
 
 function fail(message) { throw new Error(message); }
 
@@ -62,14 +77,29 @@ export function dropToKernelIdentity({ uid, gid, processApi = process }) {
   return Object.freeze({ uid, gid });
 }
 
+function validateProbeResults(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || utilTypes.isProxy(value)
+      || Object.getPrototypeOf(value) !== Object.prototype
+      || Reflect.ownKeys(value).length !== Object.keys(EXPECTED_PROBE_RESULTS).length) {
+    fail('prelaunch reader probe results do not match the closed schema');
+  }
+  for (const [field, expected] of Object.entries(EXPECTED_PROBE_RESULTS)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, field);
+    if (!descriptor?.enumerable || !Object.hasOwn(descriptor, 'value')
+        || descriptor.value !== expected) {
+      fail('prelaunch reader probe results do not match the closed schema');
+    }
+  }
+}
+
 export function validateReaderRequest(value, { nonce, parentPid, uid, gid }) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
       || Object.getPrototypeOf(value) !== Object.prototype
-      || Reflect.ownKeys(value).length !== ALLOWED_REQUEST_FIELDS.length
+      || Reflect.ownKeys(value).some(field => field !== 'phase' && !ALLOWED_REQUEST_FIELDS.includes(field))
       || ALLOWED_REQUEST_FIELDS.some((field) => !Object.hasOwn(value, field))) {
     fail('prelaunch reader request fields do not match the closed schema');
   }
-  for (const field of ALLOWED_REQUEST_FIELDS) {
+  for (const field of Reflect.ownKeys(value)) {
     const descriptor = Object.getOwnPropertyDescriptor(value, field);
     if (!descriptor?.enumerable || !Object.hasOwn(descriptor, 'value')) {
       fail('prelaunch reader request must contain only enumerable data fields');
@@ -79,22 +109,23 @@ export function validateReaderRequest(value, { nonce, parentPid, uid, gid }) {
       || value.kernelUid !== String(uid) || value.kernelGid !== String(gid)
       || typeof value.releaseRoot !== 'string' || !path.isAbsolute(value.releaseRoot)
       || !HASH.test(value.releaseManifestHash) || !HASH.test(value.authorityMetadataHash)
-      || !value.probeResults || typeof value.probeResults !== 'object'
       || typeof value.databasePath !== 'string' || !path.isAbsolute(value.databasePath)
       || typeof value.isolationReportPath !== 'string' || !path.isAbsolute(value.isolationReportPath)
       || !value.pathTrust || typeof value.pathTrust !== 'object'
       || typeof value.now !== 'string' || new Date(value.now).toISOString() !== value.now) {
     fail('prelaunch reader request binding is invalid');
   }
-  const forbidden = /(?:database|token|credential|secret|key|listener|descriptor|socket)/i;
-  const visit = (item) => {
-    if (!item || typeof item !== 'object') return;
-    for (const [key, child] of Object.entries(item)) {
-      if (forbidden.test(key)) fail('prelaunch reader request names forbidden authority or secret data');
-      visit(child);
+  const phase = Object.hasOwn(value, 'phase') ? value.phase : 'audit';
+  if (phase === 'inspect') {
+    if (value.probeResults !== null || value.credentialMetadataHash !== null) {
+      fail('prelaunch inspection may not contain credential metadata or probe results');
     }
-  };
-  visit(value.probeResults);
+  } else if (phase === 'audit') {
+    if (typeof value.credentialMetadataHash !== 'string' || !HASH.test(value.credentialMetadataHash)) {
+      fail('prelaunch audit requires the current credential metadata hash');
+    }
+    validateProbeResults(value.probeResults);
+  } else fail('prelaunch reader phase is invalid');
   return value;
 }
 
@@ -114,15 +145,25 @@ async function auditAuthorityAfterDrop(request) {
   try {
     database = new sqlite.DatabaseSync(request.databasePath, { readOnly: true, readBigInts: true });
     database.exec('PRAGMA query_only = ON; PRAGMA foreign_keys = ON; PRAGMA trusted_schema = OFF;');
-    const enrollments = database.prepare("SELECT * FROM agent_enrollments WHERE state = 'active'").all();
+    // Inspection reads only public identity/cardinality facts. In particular, no
+    // attestation report bytes or Agent credential are needed for recovery-only.
+    const enrollments = database.prepare("SELECT enrollment_hash FROM agent_enrollments WHERE state = 'active'").all();
     const attestations = database.prepare(
-      "SELECT * FROM isolation_attestations WHERE state = 'current'",
+      "SELECT id FROM isolation_attestations WHERE state = 'current'",
     ).all();
     if (enrollments.length > 1 || attestations.length > 1) {
       fail('prelaunch authority contains ambiguous active identity state');
     }
     if (enrollments.length === 0) {
       if (attestations.length !== 0) fail('prelaunch recovery state retains a current attestation');
+    }
+    if (request.phase === 'inspect') {
+      const data = { phase: 'inspect', status: enrollments.length === 0 ? 'recovery_only' : 'enrolled',
+        releaseManifestHash: request.releaseManifestHash, authorityMetadataHash: request.authorityMetadataHash };
+      return Object.freeze({ status: data.status,
+        preflightDigest: canonical.sha256(`wallet-kernel/prelaunch-result/v1\0${canonical.canonicalJson(data)}`) });
+    }
+    if (enrollments.length === 0) {
       const data = { status: 'recovery_only', releaseManifestHash: request.releaseManifestHash,
         authorityMetadataHash: request.authorityMetadataHash };
       return Object.freeze({ ...data,
@@ -130,7 +171,7 @@ async function auditAuthorityAfterDrop(request) {
     }
     if (attestations.length !== 1) fail('active enrollment requires one current isolation attestation');
     const enrollment = enrollments[0];
-    const row = attestations[0];
+    const row = database.prepare("SELECT * FROM isolation_attestations WHERE state = 'current'").get();
     const reportBytes = storage.readPrivateInputFile(
       request.isolationReportPath, 'Wallet Kernel isolation report',
       { maximumBytes: 16 * 1024, pathTrust },
@@ -150,6 +191,7 @@ async function auditAuthorityAfterDrop(request) {
     if (row.enrollment_hash !== enrollment.enrollment_hash
         || row.report_json !== canonical.canonicalJson(validated.report)
         || row.probed_at !== validated.report.probedAt || row.expires_at !== validated.report.expiresAt
+        || validated.report.credentialMetadataHash !== request.credentialMetadataHash
         || canonical.canonicalJson(validated.report.probeResults)
           !== canonical.canonicalJson(request.probeResults)) {
       fail('prelaunch isolation authority differs from the fresh privileged probe');

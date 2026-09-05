@@ -1,5 +1,12 @@
 # Handoff: premise-review follow-ups (for Codex, branch `codex/prd-execution`)
 
+> **Historical handoff — not a current assignment.** The tasks, branch
+> instructions, and execution assumptions below describe July 2026. Start
+> current work at [AGENTS.md](../../AGENTS.md). Use the
+> [precedence addendum](../evidence-precedence.md) for current v1 scope,
+> execution authorization, and later evidence corrections. The original
+> record is preserved below.
+
 *2026-07-11. From a Claude Code session that ran an adversarial premise review,
 reframed the corpus, and built the first Wielder-side spike. You are picking up
 the remaining agent-doable work.*

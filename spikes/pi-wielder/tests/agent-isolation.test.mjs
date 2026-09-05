@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import { openKernelStore } from '../src/kernel/sqlite-store.mjs';
 import {
+  REQUIRED_ISOLATION_PROBE_RESULTS,
   createIsolationAttestationRepository,
   hashIsolationMetadata,
   validateIsolationMetadata,
@@ -193,7 +194,8 @@ test('prelaunch protocols reject argument, environment, identity, nonce, and sec
   const request = {
     nonce: 'n', parentPid: 7, kernelUid: '501', kernelGid: '20',
     releaseRoot: '/opt/wallet/releases/a', releaseManifestHash: H('5'),
-    authorityMetadataHash: H('3'), probeResults: { authorityDirectory: 'EACCES' },
+    authorityMetadataHash: H('3'), credentialMetadataHash: H('4'),
+    probeResults: { ...REQUIRED_ISOLATION_PROBE_RESULTS },
     databasePath: '/private/kernel/kernel.sqlite',
     pathTrust: { mode: 'cdp-testnet', trustedAncestor: '/private', kernelUid: 501, agentUid: 502 },
     isolationReportPath: '/private/kernel/report.json', now: '2026-07-31T12:00:00.000Z',
@@ -201,7 +203,7 @@ test('prelaunch protocols reject argument, environment, identity, nonce, and sec
   assert.equal(validateReaderRequest(request, { nonce: 'n', parentPid: 7, uid: 501, gid: 20 }), request);
   assert.throws(() => validateReaderRequest({
     ...request, probeResults: { receiptKeyPath: '/private/key' },
-  }, { nonce: 'n', parentPid: 7, uid: 501, gid: 20 }), /forbidden/);
+  }, { nonce: 'n', parentPid: 7, uid: 501, gid: 20 }), /probe results/);
   assert.throws(() => validateReaderRequest({ ...request, nonce: 'wrong' }, {
     nonce: 'n', parentPid: 7, uid: 501, gid: 20,
   }), /binding/);
