@@ -22,6 +22,13 @@ export const SERVICE_PROPERTIES = Object.freeze([
   'ProtectControlGroups', 'LockPersonality', 'RestrictAddressFamilies', 'ReadWritePaths',
   'UnsetEnvironment', 'IPAddressAllow', 'IPAddressDeny', 'Requires', 'After',
 ]);
+// v255 omits an empty EnvironmentFiles array even with --all, and renders
+// LoadCredential as [unprintable]. Read those two typed properties directly.
+export const SERVICE_SHOW_PROPERTIES = Object.freeze(SERVICE_PROPERTIES.filter(
+  property => property !== 'EnvironmentFiles' && property !== 'LoadCredential',
+));
+const BUSCTL_PATH = '/usr/bin/busctl';
+const SERVICE_OBJECT_PATH = '/org/freedesktop/systemd1/unit/wallet_2dkernel_2eservice';
 export const SOCKET_PROPERTIES = Object.freeze([
   ...COMMON_PROPERTIES, 'Listen', 'Accept', 'Triggers', 'FileDescriptorName', 'ReusePort',
 ]);
@@ -57,6 +64,39 @@ export function parseSystemctlShow(output, properties, maximumBytes = MAXIMUM_OU
     fail('SYSTEMD_OUTPUT', 'systemctl output is missing a requested property');
   }
   return result;
+}
+
+function parseBusctlJson(output, signature, label) {
+  if (typeof output !== 'string' || Buffer.byteLength(output) > MAXIMUM_OUTPUT
+      || output.includes('\0')) fail('SYSTEMD_DBUS_OUTPUT', `${label} is not bounded JSON`);
+  let value;
+  try { value = JSON.parse(output); } catch (cause) {
+    fail('SYSTEMD_DBUS_OUTPUT', `${label} is not JSON`, cause);
+  }
+  const record = exactRecord(value, ['type', 'data'], [], 'SYSTEMD_DBUS_OUTPUT', label);
+  // busctl --json=short emits this compact envelope in type/data order. Require
+  // its exact encoding as well as the schema, so duplicate keys are rejected.
+  if (JSON.stringify(record) !== output.trim() || record.type !== signature
+      || !Array.isArray(record.data)) fail('SYSTEMD_DBUS_OUTPUT', `${label} has an invalid typed envelope`);
+  return record.data;
+}
+
+export function parseSystemdCredentialProperties(input, environmentPath) {
+  const outputs = exactRecord(input, ['environmentFiles', 'loadCredential'], [],
+    'SYSTEMD_DBUS_OUTPUT', 'systemd credential property replies');
+  if (typeof environmentPath !== 'string' || environmentPath.length > 4096
+      || !path.isAbsolute(environmentPath) || path.resolve(environmentPath) !== environmentPath
+      || /[\x00-\x20\x7f]/.test(environmentPath)) {
+    fail('SYSTEMD_EFFECTIVE', 'expected credential source path is invalid');
+  }
+  const files = parseBusctlJson(outputs.environmentFiles, 'a(sb)', 'EnvironmentFiles');
+  const credentials = parseBusctlJson(outputs.loadCredential, 'a(ss)', 'LoadCredential');
+  if (files.length !== 0 || credentials.length !== 1 || !Array.isArray(credentials[0])
+      || credentials[0].length !== 2 || credentials[0][0] !== 'wallet-kernel-environment'
+      || credentials[0][1] !== environmentPath) {
+    fail('SYSTEMD_EFFECTIVE', 'loaded environment or credential sources differ from the rendered contract');
+  }
+  return Object.freeze({ EnvironmentFiles: '', LoadCredential: `${credentials[0][0]}:${credentials[0][1]}` });
 }
 
 function parseExec(value, label) {
@@ -220,6 +260,34 @@ function assertSystemctl(systemctlPath) {
   };
 }
 
+function assertBusctl() {
+  let current = '/';
+  for (const component of ['', ...BUSCTL_PATH.slice(1).split('/')]) {
+    if (component) current = path.join(current, component);
+    const stat = fs.lstatSync(current, { bigint: true });
+    const leaf = current === BUSCTL_PATH;
+    if (stat.uid !== 0n || stat.isSymbolicLink() || (stat.mode & 0o7022n) !== 0n
+        || (leaf ? !stat.isFile() || stat.nlink !== 1n || (stat.mode & 0o111n) === 0n
+          : !stat.isDirectory())) {
+      fail('SYSTEMD_BINARY', 'busctl and its ancestors must be immutable and root-owned');
+    }
+  }
+}
+
+function readServiceCredentialProperties(environmentPath) {
+  assertBusctl();
+  const outputs = {};
+  for (const [key, property] of [['environmentFiles', 'EnvironmentFiles'], ['loadCredential', 'LoadCredential']]) {
+    outputs[key] = execFileSync(BUSCTL_PATH, [
+      '--system', '--no-pager', '--json=short', '--timeout=10',
+      'get-property', 'org.freedesktop.systemd1', SERVICE_OBJECT_PATH,
+      'org.freedesktop.systemd1.Service', property,
+    ], { encoding: 'utf8', maxBuffer: MAXIMUM_OUTPUT, timeout: 10_000,
+      env: { PATH: '/usr/bin:/bin', LANG: 'C', LC_ALL: 'C' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  }
+  return parseSystemdCredentialProperties(outputs, environmentPath);
+}
+
 function show(systemctlPath, unit, properties) {
   const property = properties.join(',');
   const output = execFileSync(systemctlPath, [
@@ -237,7 +305,10 @@ export async function inspectEffectiveSystemd(input) {
     'SYSTEMD_INSPECT_INPUT', 'systemd inspection input');
   const systemctlPath = options.systemctlPath ?? '/usr/bin/systemctl';
   const binary = assertSystemctl(systemctlPath);
-  const service = show(systemctlPath, 'wallet-kernel.service', SERVICE_PROPERTIES);
+  const service = {
+    ...show(systemctlPath, 'wallet-kernel.service', SERVICE_SHOW_PROPERTIES),
+    ...readServiceCredentialProperties(options.expected.environmentPath),
+  };
   const socket = show(systemctlPath, 'wallet-kernel-console.socket', SOCKET_PROPERTIES);
   const projection = validateEffectiveProjection({ service, socket, expected: options.expected });
   const manager = execFileSync(systemctlPath, [

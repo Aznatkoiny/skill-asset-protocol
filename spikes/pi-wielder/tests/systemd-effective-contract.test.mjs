@@ -1,8 +1,15 @@
 import assert from 'node:assert/strict';
+import childProcess from 'node:child_process';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import test from 'node:test';
 
 import {
+  inspectEffectiveSystemd,
+  parseSystemdCredentialProperties,
   parseSystemctlShow,
+  SERVICE_PROPERTIES,
+  SERVICE_SHOW_PROPERTIES,
   SOCKET_PROPERTIES,
   validateEffectiveProjection,
 } from '../scripts/inspect-systemd-effective.mjs';
@@ -154,6 +161,124 @@ test('v255 socket inspection binds the real Triggers property and never requests
   delete unsupported.Triggers;
   assert.throws(() => validateEffectiveProjection({ ...input, socket: unsupported }),
     { code: 'SYSTEMD_EFFECTIVE' });
+});
+
+function credentialReplies(environmentPath) {
+  // Real busctl v255 get-property JSON envelopes, not a PID1 lifecycle claim:
+  // https://github.com/systemd/systemd/blob/v255/src/busctl/busctl.c#L1983-L2019
+  return {
+    environmentFiles: '{"type":"a(sb)","data":[]}\n',
+    loadCredential: `${JSON.stringify({ type: 'a(ss)',
+      data: [['wallet-kernel-environment', environmentPath]] })}\n`,
+  };
+}
+
+test('v255 typed credential properties preserve the exact complete projection despite text formatter omissions', () => {
+  const input = fixture();
+  const raw = { ...input.service, LoadCredential: '[unprintable]' };
+  delete raw.EnvironmentFiles;
+  const show = value => Object.entries(value).map(([key, entry]) => `${key}=${entry}\n`).join('');
+  // v255 emits no empty EnvironmentFiles line; it cannot print LoadCredential.
+  // https://github.com/systemd/systemd/blob/v255/src/systemctl/systemctl-show.c#L1168-L1184
+  assert.throws(() => parseSystemctlShow(show(raw), SERVICE_PROPERTIES), { code: 'SYSTEMD_OUTPUT' });
+  assert.deepEqual(SERVICE_PROPERTIES.filter(key => !SERVICE_SHOW_PROPERTIES.includes(key)),
+    ['EnvironmentFiles', 'LoadCredential']);
+  delete raw.LoadCredential;
+  const fields = parseSystemctlShow(show(raw), SERVICE_SHOW_PROPERTIES);
+  const typed = parseSystemdCredentialProperties(credentialReplies(input.expected.environmentPath),
+    input.expected.environmentPath);
+  assert.deepEqual(typed, { EnvironmentFiles: '', LoadCredential: input.service.LoadCredential });
+  assert.equal(validateEffectiveProjection({ ...input, service: { ...fields, ...typed } }).effectiveConfigHash,
+    validateEffectiveProjection(input).effectiveConfigHash);
+  for (const key of SERVICE_SHOW_PROPERTIES) {
+    const missing = { ...raw };
+    delete missing[key];
+    assert.throws(() => parseSystemctlShow(show(missing), SERVICE_SHOW_PROPERTIES), { code: 'SYSTEMD_OUTPUT' });
+  }
+});
+
+test('typed credential replies reject absent, malformed, excess, duplicate, and mismatched values', () => {
+  const environmentPath = fixture().expected.environmentPath;
+  for (const malformed of ['', '[unprintable]', 'null', '[]', '{}',
+    '{"type":"a(sb)","data":null}', '{"type":"as","data":[]}',
+    '{"type":"a(sb)","data":[],"extra":true}',
+    '{"type":"a(sb)","data":[["/etc/extra.env",false]],"data":[]}',
+    '{"type":"a(sb)","data":[]}\n{"type":"a(sb)","data":[]}',
+    `${' '.repeat(65536)}{"type":"a(sb)","data":[]}`, '\0']) {
+    assert.throws(() => parseSystemdCredentialProperties({
+      ...credentialReplies(environmentPath), environmentFiles: malformed,
+    }, environmentPath), { code: 'SYSTEMD_DBUS_OUTPUT' });
+  }
+  for (const data of [[['/etc/extra.env', false]], [['/etc/optional.env', true]], ['malformed']]) {
+    assert.throws(() => parseSystemdCredentialProperties({ ...credentialReplies(environmentPath),
+      environmentFiles: JSON.stringify({ type: 'a(sb)', data }),
+    }, environmentPath), { code: 'SYSTEMD_EFFECTIVE' });
+  }
+  for (const data of [[], [['wrong-id', environmentPath]], [['wallet-kernel-environment', '/tmp/other']],
+    [['wallet-kernel-environment', environmentPath, 'extra']],
+    [['wallet-kernel-environment', environmentPath], ['extra', '/tmp/extra']],
+    [['wallet-kernel-environment', environmentPath], ['wallet-kernel-environment', environmentPath]],
+    ['wallet-kernel-environment', environmentPath], [null]]) {
+    assert.throws(() => parseSystemdCredentialProperties({ ...credentialReplies(environmentPath),
+      loadCredential: JSON.stringify({ type: 'a(ss)', data }),
+    }, environmentPath), { code: 'SYSTEMD_EFFECTIVE' });
+  }
+  for (const malformed of ['', '{"type":"a(sb)","data":[]}',
+    '{"type":"a(ss)","data":[],"data":[["wallet-kernel-environment","/etc/wallet/kernel.env"]]}']) {
+    assert.throws(() => parseSystemdCredentialProperties({ ...credentialReplies(environmentPath),
+      loadCredential: malformed }, environmentPath), { code: 'SYSTEMD_DBUS_OUTPUT' });
+  }
+});
+
+test('inspector uses fixed immutable busctl and bounded read-only queries without inheriting environment', async t => {
+  const input = fixture();
+  const calls = [];
+  let mutableAncestor = false;
+  const replies = credentialReplies(input.expected.environmentPath);
+  t.mock.method(fs, 'lstatSync', location => ({
+    uid: 0n, nlink: 1n, mode: mutableAncestor && location === '/usr' ? 0o40777n : 0o100755n,
+    isFile: () => ['/usr/bin/systemctl', '/usr/bin/busctl'].includes(location),
+    isDirectory: () => ['/', '/usr', '/usr/bin'].includes(location), isSymbolicLink: () => false,
+  }));
+  t.mock.method(fs, 'readFileSync', location => {
+    assert.equal(location, '/usr/bin/systemctl');
+    return Buffer.from('test-only systemctl bytes');
+  });
+  t.mock.method(childProcess, 'execFileSync', (executable, args, options) => {
+    calls.push({ executable, args, options });
+    if (executable === '/usr/bin/busctl') {
+      assert.deepEqual(args.slice(0, -1), ['--system', '--no-pager', '--json=short', '--timeout=10',
+        'get-property', 'org.freedesktop.systemd1',
+        '/org/freedesktop/systemd1/unit/wallet_2dkernel_2eservice', 'org.freedesktop.systemd1.Service']);
+      assert.deepEqual(options.env, { PATH: '/usr/bin:/bin', LANG: 'C', LC_ALL: 'C' });
+      assert.equal(options.timeout, 10000);
+      assert.equal(options.maxBuffer, 65536);
+      assert.deepEqual(options.stdio, ['ignore', 'pipe', 'pipe']);
+      assert.ok(['EnvironmentFiles', 'LoadCredential'].includes(args.at(-1)));
+      return args.at(-1) === 'EnvironmentFiles' ? replies.environmentFiles : replies.loadCredential;
+    }
+    assert.equal(executable, '/usr/bin/systemctl');
+    if (args[0] === '--version') return 'systemd 255\n';
+    if (args.at(-1) === '--property=Version') return 'Version=255\n';
+    const service = args.at(-1) === 'wallet-kernel.service';
+    const properties = service ? SERVICE_SHOW_PROPERTIES : SOCKET_PROPERTIES;
+    assert.equal(args[3], `--property=${properties.join(',')}`);
+    const values = service ? input.service : input.socket;
+    return properties.map(key => `${key}=${values[key]}\n`).join('');
+  });
+  syncBuiltinESMExports();
+  try {
+    const actual = await inspectEffectiveSystemd({ expected: input.expected });
+    assert.equal(actual.effectiveConfigHash, validateEffectiveProjection(input).effectiveConfigHash);
+    assert.equal(calls.filter(call => call.executable === '/usr/bin/busctl').length, 2);
+    calls.length = 0;
+    mutableAncestor = true;
+    await assert.rejects(inspectEffectiveSystemd({ expected: input.expected }), { code: 'SYSTEMD_BINARY' });
+    assert.equal(calls.some(call => call.executable === '/usr/bin/busctl'), false);
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
 });
 
 test('cleanup execution remains exact and privileged while runtime status stays unhashed', () => {

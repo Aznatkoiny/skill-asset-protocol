@@ -13,7 +13,7 @@ import { captureDeploymentIsolationMetadata, deploymentRendererInput, validateDe
 import { verifyReleaseIntegrity } from '../src/kernel/release-integrity.mjs';
 import { assertServiceConfinement } from '../src/runtime/installed-service.mjs';
 import { OFFLINE_QUALIFICATION } from '../src/runtime/qualification-clients.mjs';
-import { inspectEffectiveSystemd, parseSystemctlShow } from './inspect-systemd-effective.mjs';
+import { inspectEffectiveSystemd, parseSystemctlShow, SERVICE_PROPERTIES, SOCKET_PROPERTIES } from './inspect-systemd-effective.mjs';
 import { readManifestOnce } from './preflight-live-deployment.mjs';
 import { runPrivilegedAgentIsolationPreflight } from './preflight-agent-isolation.mjs';
 import { renderSystemdUnits } from './render-systemd-units.mjs';
@@ -54,6 +54,30 @@ function command(binary, args, { input, timeout = 60_000, allowFailure = false }
   }
 }
 const ctl = (args, options) => command('/usr/bin/systemctl', args, options);
+function capturePid1PropertyNames() {
+  for (const [unit, properties] of [[SERVICE, SERVICE_PROPERTIES], [SOCKET, SOCKET_PROPERTIES]]) {
+    try {
+      const raw = ctl(['show', '--all', '--no-pager', `--property=${properties.join(',')}`, unit]);
+      const names = raw.split('\n').map((line) => line.match(/^([A-Za-z][A-Za-z0-9]*)=/)?.[1]).filter(Boolean);
+      // Property names diagnose unsupported PID1 interfaces without exporting
+      // environment values or arbitrary unit/drop-in content.
+      process.stdout.write(`${canonicalJson({ diagnostic: 'pid1-property-names', unit,
+        missing: properties.filter((name) => !names.includes(name)),
+        duplicates: properties.filter((name) => names.filter((value) => value === name).length > 1),
+        malformedLines: raw.split('\n').filter((line) => line && !/^[A-Za-z][A-Za-z0-9]*=/.test(line)).length })}\n`);
+    } catch {}
+  }
+  try {
+    const raw = command('/usr/bin/journalctl', ['--unit', SERVICE, '--no-pager', '--output=cat', '--lines=60']);
+    const codes = [];
+    for (const line of raw.split('\n')) {
+      let candidate = line;
+      try { candidate = JSON.parse(line)?.code; } catch {}
+      if (typeof candidate === 'string' && /^(?:LIVE|SYSTEMD|RELEASE|RUNTIME|DEPLOYMENT|QUALIFICATION|AUTHORITY)_[A-Z_]{2,100}$/.test(candidate)) codes.push(candidate);
+    }
+    process.stdout.write(`${canonicalJson({ diagnostic: 'installed-service-codes', codes: [...new Set(codes)] })}\n`);
+  } catch {}
+}
 function writePublic(location, value) {
   fs.writeFileSync(location, `${canonicalJson(value)}\n`, { mode: 0o644 });
 }
@@ -492,6 +516,7 @@ async function main() {
       childCode: error.childCode ?? null, binary: error.binary ?? null, status: error.status ?? null,
       label: error.label ?? null };
     process.stderr.write(`${canonicalJson(failure)}\n`);
+    if (config && ownsDeployment) capturePid1PropertyNames();
   } finally {
     if (ownsDeployment) {
       try {

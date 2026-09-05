@@ -453,7 +453,10 @@ file, the selected policy/routes, and the committed executable graph.
 Production unit artifacts have fixed paths:
 `/etc/systemd/system/wallet-kernel.service` and
 `/etc/systemd/system/wallet-kernel-console.socket`. Linked or custom search-path units
-are unsupported. Run the installer only from the verified source or prepared release,
+are unsupported. The host must provide immutable root-owned `/usr/bin/systemctl`
+and `/usr/bin/busctl`. The inspector reads credential mappings and the environment-file
+list as typed PID1 properties because systemd v255 does not faithfully print them
+through `systemctl show`. Run the installer only from the verified source or prepared release,
 using the exact pinned Node binary, after completing the offline prerequisites:
 
 ```text
