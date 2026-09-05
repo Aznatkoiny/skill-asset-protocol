@@ -55,6 +55,13 @@ function command(binary, args, { input, timeout = 60_000, allowFailure = false }
 }
 const ctl = (args, options) => command('/usr/bin/systemctl', args, options);
 function capturePid1PropertyNames() {
+  const publicFields = new Set(['User', 'Group', 'SupplementaryGroups', 'Restart', 'RestartUSec',
+    'RestartPreventExitStatus', 'UMask', 'NoNewPrivileges', 'CapabilityBoundingSet', 'AmbientCapabilities',
+    'ProtectSystem', 'ProtectHome', 'PrivateTmp', 'PrivateDevices', 'ProtectKernelTunables',
+    'ProtectKernelModules', 'ProtectControlGroups', 'LockPersonality', 'RestrictAddressFamilies',
+    'ReadWritePaths', 'IPAddressAllow', 'IPAddressDeny', 'Requires', 'After', 'LoadState', 'UnitFileState',
+    'DropInPaths', 'NeedDaemonReload', 'Transient', 'Listen', 'Accept', 'Triggers', 'FileDescriptorName',
+    'ReusePort', 'UnsetEnvironment']);
   for (const [unit, properties] of [[SERVICE, SERVICE_PROPERTIES], [SOCKET, SOCKET_PROPERTIES]]) {
     try {
       const raw = ctl(['show', '--all', '--no-pager', `--property=${properties.join(',')}`, unit]);
@@ -65,6 +72,10 @@ function capturePid1PropertyNames() {
         missing: properties.filter((name) => !names.includes(name)),
         duplicates: properties.filter((name) => names.filter((value) => value === name).length > 1),
         malformedLines: raw.split('\n').filter((line) => line && !/^[A-Za-z][A-Za-z0-9]*=/.test(line)).length })}\n`);
+      const publicValues = Object.fromEntries(raw.split('\n').map((line) => {
+        const split = line.indexOf('='); return [line.slice(0, split), line.slice(split + 1)];
+      }).filter(([name, value]) => publicFields.has(name) && value.length <= 4096));
+      process.stdout.write(`${canonicalJson({ diagnostic: 'pid1-public-properties-after-failure', unit, properties: publicValues })}\n`);
     } catch {}
   }
   try {
