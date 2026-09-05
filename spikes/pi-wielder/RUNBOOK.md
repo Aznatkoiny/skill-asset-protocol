@@ -1,18 +1,19 @@
 # RUNBOOK - Pi Wielder Agent Spend Control Plane
 
-The supported automated workflow is deterministic and offline. It covers both the
-legacy Collar proof and the newer Wallet Kernel process-acceptance path. No funded
+The supported automated workflows are offline. They cover the legacy Collar proof,
+Wallet Kernel process acceptance, and disposable installed Linux qualification. No funded
 wallet, provider key, CDP credential, or live facilitator is needed. Pi is the Wielder;
 Agent and Operator name local control-plane security roles.
 
-Current release status is intentionally asymmetric:
+Current release status:
 
 - deterministic verification and evidence are **measured offline**; wallet settlement,
   deployment, and cross-UID isolation are simulated;
 - live CDP and Base Sepolia payment are **not-run**;
-- the installed preflight, runtime, secret delivery, and native listener composition
-  have offline tests; a sealed `offline-qualification` profile and disposable Linux
-  workflow are prepared, but no passing installed-host artifact is claimed here;
+- installed `offline-qualification` passed all 43 required checks at source
+  `3ef2dbcb78bb7c04ec19aa34b0af7dc73eadeef2`, with root, systemd PID1, and exactly
+  Node 24.18.1 on Ubuntu 24.04; see the
+  [original run and evidence](#disposable-installed-qualification);
 - the default or explicit `cdp-testnet` profile remains **blocked** by
   `LIVE_LAUNCH_NOT_READY` (exit 78); offline qualification does not enable live CDP;
 - there is no mainnet mode, automated funding, custody service, or real-funds workflow.
@@ -525,13 +526,19 @@ The loader never sources shell text or mutates `process.env`. Native Hono adapte
 `overrideGlobalObjects: false`. The Operator Unix socket and inherited console listener
 start before Agent admission; the runtime closes its authority and listeners on startup
 failure. Actual PID1 delivery, dropped-Agent denial of the delivered copy, and installed
-start/restart/cleanup must still be qualified on the target Linux host.
+start/restart/cleanup passed in the revision-bound
+[offline qualification below](#disposable-installed-qualification). A changed
+release or target host needs fresh evidence.
 
 For the default or explicit `cdp-testnet` profile, step 12 does **not** produce a live
-service. The preflight command emits a machine-readable gate with code
-`LIVE_LAUNCH_NOT_READY` and exits 78. The remaining release blocker is:
+service. The preflight command still emits a machine-readable gate with code
+`LIVE_LAUNCH_NOT_READY` and exits 78. It continues to report:
 
 - `LIVE_SYSTEMD_LIFECYCLE_EVIDENCE_REQUIRED`.
+
+The passing installed offline result does not change that executable admission
+gate or authorize CDP execution. Accepting the evidence in a reviewed CDP/testnet
+runner remains separate work.
 
 The listener requirement includes production `@hono/node-server` adapters configured
 with `overrideGlobalObjects: false`. A local macOS test cannot supply the required
@@ -542,12 +549,21 @@ disabled and the service stopped.
 ### Disposable installed qualification
 
 The [`installed-lifecycle` job](../../.github/workflows/pi-wielder-systemd.yml)
-is the prepared host procedure for `executionProfile: "offline-qualification"`.
+is the host procedure for `executionProfile: "offline-qualification"`.
 It needs a disposable Ubuntu 24.04 VM with systemd as PID1, root for installation,
 and exactly Node 24.18.1. It creates dedicated Kernel/Agent accounts and installs the
 fixed unit names under `/etc/systemd/system`. Use a clean VM with none of the fixed
 qualification directories or Wallet Kernel units already present. This procedure
 creates and resets synthetic authority; it must not select a customer deployment.
+
+This procedure passed all **43 required checks** at source commit
+`3ef2dbcb78bb7c04ec19aa34b0af7dc73eadeef2` in
+[run 33993435474, attempt 1](https://github.com/Aznatkoiny/skill-asset-protocol/actions/runs/33993435474/attempts/1).
+The [installed job](https://github.com/Aznatkoiny/skill-asset-protocol/actions/runs/33993435474/job/101379614017)
+completed qualification, independent verification, and final teardown successfully.
+Local verification of the original artifact recomputed 43 checks, no missing or
+failed checks, and a null manifest failure. This result identifies the qualified
+source revision; a later documentation or merge commit is not the measured revision.
 
 The workflow checks out the exact qualification revision, creates a standalone
 source clone, installs locked dependencies unprivileged with `npm ci --ignore-scripts`,
@@ -558,8 +574,8 @@ deployment, fixture policy, and route files are generated only in
 the source commit and bytes, package lock, ownership, unit paths, and PID1 configuration;
 it enables the console socket without starting it.
 
-The qualification harness then uses the installed commands and listeners. Its intended
-coverage includes actual process IDs, capabilities and inherited socket identity;
+The qualification harness uses the installed commands and listeners. The verified
+result covers actual process IDs, capabilities and inherited socket identity;
 Agent/Kernel filesystem boundaries and PID1 credential delivery; automatic payment and
 exact approval with deliberate retry; clean restart and forced-process recovery;
 rejected invalid starts; and durable holds, signatures and signed receipts across
@@ -570,8 +586,8 @@ must never receive funds. No customer CDP/RPC values are supplied or live adapte
 The profile renders `IPAddressDeny=any` and `IPAddressAllow=localhost`, and the inspector
 checks the effective properties. Those properties alone are not a network-denial test.
 The workflow does not establish reboot recovery or recreate `/run` state across a VM
-reboot. No passing installed-host run is recorded by this documentation; a local pass
-or skipped test cannot supply one.
+reboot. Local component passes and skipped tests remain separate from the measured
+installed run.
 
 Only `manifest.json`, `events.jsonl`, and `summary.json` in
 `/opt/wallet-kernel-qualification/report` are uploaded. These public files contain
@@ -583,6 +599,16 @@ together; an uploaded failure report is not successful qualification. The eviden
 scope remains `installed-offline-qualification`, with live CDP and testnet transactions
 `not-run` and public release `not-qualified`.
 
+For the passing run, the [original Actions artifact](https://github.com/Aznatkoiny/skill-asset-protocol/actions/runs/33993435474/artifacts/9977391251)
+contains the three unchanged public files. The downloaded ZIP matches GitHub's
+reported digest
+`sha256:2b00a4e7e1b00bffdc805e043c59308e0ffb89fbfa0be86b2b36129c670e40f9`;
+the original manifest's byte digest is
+`sha256:7c6a88a82d9c73cc3ba39f7449f8b1bb955d72d4d2bc494c3476169e56cb84d8`.
+The files and separately authored provenance are preserved locally, without
+repository publication. The original Actions artifact expires at
+`2026-10-05T21:39:28Z`; the local copy does not create a durable public archive.
+
 The final workflow step invokes `scripts/cleanup-systemd-qualification.mjs` with
 `--deployment <release>/deployment.json` and the pinned Node executable. This helper accepts only
 the exact disposable profile/paths and verifies installed unit bytes, PID1 fragment
@@ -592,9 +618,10 @@ socket, and closed TCP/admin listeners. It deletes only the verified unit files 
 quiescence and reloads PID1. Failed ownership or quiescence checks retain the unit
 files; any cleanup error fails the step. The helper never deletes unrelated units
 or accounts. The VM, fixture state and dedicated accounts may then be discarded as
-a whole.
+a whole. This final step runs after artifact upload and passed in the qualified
+job above; an uploaded artifact alone does not establish teardown success.
 
-This job prepares evidence for the installed-host prerequisite. It does not remove
+This job supplies evidence for the named installed offline scenarios. It does not remove
 `LIVE_LAUNCH_NOT_READY`, authorize a funded run, or satisfy the separately human-gated
 Base Sepolia runner and evidence requirements in section 14.
 
@@ -885,7 +912,8 @@ website reframe remains gated on fresh qualifying testnet evidence; the quaranti
 2026-07-15 n=48 aggregate cannot satisfy that gate because normalized per-call samples
 were not retained.
 
-The following remain unqualified: an actual passing installed Linux lifecycle run,
-PID1 credential delivery on that host, and live CDP payment with retained Base Sepolia
-evidence. Mainnet, real funds, custody, hosted policy authority, automated funding, and
+The installed offline lifecycle and PID1 credential delivery are qualified for the
+source revision and host procedure recorded in section 10. Live CDP payment with
+retained Base Sepolia evidence remains unqualified. Mainnet, real funds, custody,
+hosted policy authority, automated funding, and
 public commercialization claims based only on offline evidence remain outside scope.
