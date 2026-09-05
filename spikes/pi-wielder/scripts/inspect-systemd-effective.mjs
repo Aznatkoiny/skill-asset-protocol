@@ -232,7 +232,7 @@ export function validateEffectiveProjection({ service, socket, expected }) {
       'CDP_WALLET_NAME', 'WALLET_KERNEL_BASE_SEPOLIA_RPC_URL',
       'CREDENTIALS_DIRECTORY', 'HOME', 'LOGNAME', 'USER', 'SHELL', 'INVOCATION_ID',
       'JOURNAL_STREAM', 'SYSTEMD_EXEC_PID', 'MEMORY_PRESSURE_WATCH', 'MEMORY_PRESSURE_WRITE',
-      'NOTIFY_SOCKET', 'WATCHDOG_PID', 'WATCHDOG_USEC', 'LISTEN_PIDFDID',
+      'NOTIFY_SOCKET', 'WATCHDOG_PID', 'WATCHDOG_USEC', 'LISTEN_PIDFDID', 'SGX_AESM_ADDR',
     ].sort(),
   };
   for (const [field, expectedSet] of Object.entries(sets)) {

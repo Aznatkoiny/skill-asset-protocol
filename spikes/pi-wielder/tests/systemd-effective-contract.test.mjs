@@ -45,7 +45,7 @@ function fixture() {
       LockPersonality: 'yes', RestrictAddressFamilies: 'AF_UNIX AF_INET AF_INET6',
       ReadWritePaths: expected.readWritePaths.join(' '),
       IPAddressAllow: '', IPAddressDeny: '',
-      UnsetEnvironment: 'NODE_OPTIONS NODE_PATH LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_DEBUG LD_PROFILE GLIBC_TUNABLES GCONV_PATH PRIVATE_KEY ANTHROPIC_API_KEY OPENAI_API_KEY CDP_API_KEY_ID CDP_API_KEY_SECRET CDP_WALLET_SECRET CDP_WALLET_NAME WALLET_KERNEL_BASE_SEPOLIA_RPC_URL CREDENTIALS_DIRECTORY HOME LOGNAME USER SHELL INVOCATION_ID JOURNAL_STREAM SYSTEMD_EXEC_PID MEMORY_PRESSURE_WATCH MEMORY_PRESSURE_WRITE NOTIFY_SOCKET WATCHDOG_PID WATCHDOG_USEC LISTEN_PIDFDID',
+      UnsetEnvironment: 'NODE_OPTIONS NODE_PATH LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_DEBUG LD_PROFILE GLIBC_TUNABLES GCONV_PATH PRIVATE_KEY ANTHROPIC_API_KEY OPENAI_API_KEY CDP_API_KEY_ID CDP_API_KEY_SECRET CDP_WALLET_SECRET CDP_WALLET_NAME WALLET_KERNEL_BASE_SEPOLIA_RPC_URL CREDENTIALS_DIRECTORY HOME LOGNAME USER SHELL INVOCATION_ID JOURNAL_STREAM SYSTEMD_EXEC_PID MEMORY_PRESSURE_WATCH MEMORY_PRESSURE_WRITE NOTIFY_SOCKET WATCHDOG_PID WATCHDOG_USEC LISTEN_PIDFDID SGX_AESM_ADDR',
       Requires: 'sysinit.target wallet-kernel-console.socket',
       After: 'sysinit.target basic.target systemd-tmpfiles-setup.service systemd-journald.socket network-online.target wallet-kernel-console.socket',
     },
@@ -104,6 +104,16 @@ test('real execution metadata does not relax the pinned executable, argument, or
     candidate.service.ExecStartPreEx = mutate(candidate.service.ExecStartPreEx);
     assert.throws(() => validateEffectiveProjection(candidate), { code: 'SYSTEMD_EXEC' });
   }
+});
+
+test('PID1 must remove the incidental SGX_AESM_ADDR variable observed on the installed host', () => {
+  // Name-only diagnostics from run33991226160/job101373703167 identified this
+  // field in both ExecStartPre and ExecStopPost. Application allowlists stay closed.
+  const input = fixture();
+  assert.ok(validateEffectiveProjection(input).normalized.service.UnsetEnvironment.includes('SGX_AESM_ADDR'));
+  input.service.UnsetEnvironment = input.service.UnsetEnvironment.split(' ')
+    .filter(name => name !== 'SGX_AESM_ADDR').join(' ');
+  assert.throws(() => validateEffectiveProjection(input), { code: 'SYSTEMD_EFFECTIVE' });
 });
 
 test('PID1 dependency sets keep mandatory template edges and hash every resolved edge', () => {

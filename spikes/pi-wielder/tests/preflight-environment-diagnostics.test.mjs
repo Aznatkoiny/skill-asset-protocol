@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { KernelError } from '../src/kernel/canonical.mjs';
-import { cleanupEnvironmentDiagnostic } from '../scripts/cleanup-live-deployment.mjs';
+import { assertClosedLoaderEnvironment } from '../src/kernel/release-integrity.mjs';
+import { cleanupEnvironmentDiagnostic, validateCleanupEnvironment } from '../scripts/cleanup-live-deployment.mjs';
 import {
   assertRootPreflightEnvironment,
   preflightEnvironmentDiagnostic,
@@ -60,4 +61,15 @@ test('diagnostic observation does not admit an unexpected environment field', ()
     assert.deepEqual(preflightFailureDiagnostic(error), { code: 'LIVE_PREFLIGHT_FAILED', causeCode: 'RELEASE_ENVIRONMENT' });
     return true;
   });
+});
+
+test('SGX_AESM_ADDR injection remains rejected by preflight, runtime loader, and cleanup validation', () => {
+  const environment = { PATH: '/usr/bin:/bin', WALLET_KERNEL_ENV_FILE: '/etc/wallet-kernel/kernel.env',
+    SGX_AESM_ADDR: 'synthetic-never-export' };
+  assert.throws(() => assertRootPreflightEnvironment(environment), { code: 'RELEASE_ENVIRONMENT' });
+  assert.throws(() => assertClosedLoaderEnvironment(environment, {
+    allowedWalletKernelFields: ['WALLET_KERNEL_ENV_FILE'],
+  }), { code: 'RELEASE_ENVIRONMENT' });
+  assert.throws(() => validateCleanupEnvironment({ ...environment, SERVICE_RESULT: 'success' }),
+    { code: 'LIVE_CLEANUP_ENVIRONMENT' });
 });
