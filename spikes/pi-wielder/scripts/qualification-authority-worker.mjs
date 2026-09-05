@@ -132,14 +132,18 @@ export function validateQualificationIdentity({config, action, platform, version
   return role;
 }
 
-function readBoundedInput() {
+export async function readQualificationInput() {
   const bytes = Buffer.alloc(MAXIMUM_INPUT_BYTES + 1);
   let length = 0;
   try {
-    while (length < bytes.length) {
-      const count = fs.readSync(0, bytes, length, bytes.length - length, null);
-      if (count === 0) break;
-      length += count;
+    // setpriv can preserve a nonblocking stdin pipe. Wait for the stream's EOF
+    // rather than treating an interim EAGAIN after a complete chunk as bad JSON.
+    for await (const chunk of process.stdin) {
+      try {
+        if (!Buffer.isBuffer(chunk) || length + chunk.length > MAXIMUM_INPUT_BYTES) fail();
+        chunk.copy(bytes, length);
+        length += chunk.length;
+      } finally { if (Buffer.isBuffer(chunk)) chunk.fill(0); }
     }
     if (length === 0 || length > MAXIMUM_INPUT_BYTES) fail();
     return JSON.parse(new TextDecoder('utf-8', {fatal:true}).decode(bytes.subarray(0, length)));
@@ -483,7 +487,7 @@ function boundaryProbes(config, role) {
 
 async function run() {
   const input = parseQualificationArguments(process.argv.slice(2));
-  const payload = validateQualificationPayload(input.action, readBoundedInput());
+  const payload = validateQualificationPayload(input.action, await readQualificationInput());
   // Public metadata is the only project import before the exact identity check.
   const {readDeploymentConfig} = await import('../src/kernel/deployment.mjs');
   const config = readDeploymentConfig(input.deploymentPath);
