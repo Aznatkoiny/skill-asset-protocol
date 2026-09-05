@@ -52,6 +52,12 @@ export function preflightEnvironmentDiagnostic(environment) {
   return Object.freeze({ diagnostic: 'installed-preflight-environment', names: Object.freeze(names) });
 }
 
+// Node's process.env has a special prototype. Snapshot only this trusted native
+// source at the CLI boundary; caller-supplied validation remains strict.
+export function capturePreflightProcessEnvironment() {
+  return Object.freeze({ ...process.env });
+}
+
 export function preflightFailureDiagnostic(error) {
   const code = error instanceof KernelError ? Object.getOwnPropertyDescriptor(error, 'code')?.value : null;
   const causeCode = typeof code === 'string' && code.length <= 128
@@ -296,8 +302,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     // EX_CONFIG with Restart=no prevents privileged restart storms.
     process.exitCode = LIVE_LAUNCH_GATE.exitStatus;
   } else {
-    process.stderr.write(`${canonicalJson(preflightEnvironmentDiagnostic(process.env))}\n`);
-    runInstalledLivePreflight({ argv: process.argv.slice(2), environment: process.env })
+    const environment = capturePreflightProcessEnvironment();
+    process.stderr.write(`${canonicalJson(preflightEnvironmentDiagnostic(environment))}\n`);
+    runInstalledLivePreflight({ argv: process.argv.slice(2), environment })
       .then(({ status, preflightDigest }) => process.stdout.write(`${canonicalJson({ status, preflightDigest })}\n`))
       .catch((error) => {
         process.stderr.write(`${canonicalJson(preflightFailureDiagnostic(error))}\n`);

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 
 import { KernelError } from '../src/kernel/canonical.mjs';
@@ -72,4 +73,46 @@ test('SGX_AESM_ADDR injection remains rejected by preflight, runtime loader, and
   }), { code: 'RELEASE_ENVIRONMENT' });
   assert.throws(() => validateCleanupEnvironment({ ...environment, SERVICE_RESULT: 'success' }),
     { code: 'LIVE_CLEANUP_ENVIRONMENT' });
+});
+
+test('CLI captures real Node process.env as plain data and still rejects injected fields', () => {
+  const moduleUrl = new URL('../scripts/preflight-live-deployment.mjs', import.meta.url).href;
+  const script = `
+    import { assertRootPreflightEnvironment, capturePreflightProcessEnvironment }
+      from ${JSON.stringify(moduleUrl)};
+    const snapshot = capturePreflightProcessEnvironment();
+    let code = null;
+    try { assertRootPreflightEnvironment(snapshot); } catch (error) { code = error.code; }
+    process.stdout.write(JSON.stringify({
+      nativePrototypeIsPlain: Object.getPrototypeOf(process.env) === Object.prototype,
+      snapshotIsPlain: Object.getPrototypeOf(snapshot) === Object.prototype,
+      snapshotIsFrozen: Object.isFrozen(snapshot),
+      sameNames: JSON.stringify(Object.keys(snapshot).sort()) === JSON.stringify(Object.keys(process.env).sort()),
+      code,
+    }));
+  `;
+  for (const injected of [false, true]) {
+    const child = spawnSync(process.execPath, ['--input-type=module', '--eval', script], {
+      encoding: 'utf8', timeout: 10_000, maxBuffer: 4096,
+      env: { PATH: '/usr/bin:/bin', LANG: 'C', WALLET_KERNEL_ENV_FILE: '/etc/wallet-kernel/kernel.env',
+        ...(injected ? { SGX_AESM_ADDR: 'synthetic-never-export' } : {}) },
+    });
+    assert.equal(child.status, 0, child.stderr);
+    assert.equal(child.stderr, '');
+    assert.deepEqual(JSON.parse(child.stdout), {
+      nativePrototypeIsPlain: false, snapshotIsPlain: true, snapshotIsFrozen: true, sameNames: true,
+      code: injected ? 'RELEASE_ENVIRONMENT' : null,
+    });
+  }
+});
+
+test('trusted CLI capture does not relax caller getter or proxy validation', () => {
+  const base = { PATH: '/usr/bin:/bin', WALLET_KERNEL_ENV_FILE: '/etc/wallet-kernel/kernel.env' };
+  const getter = Object.defineProperty({ ...base }, 'LANG', {
+    enumerable: true, get() { throw new Error('caller getter must never run'); },
+  });
+  const proxy = new Proxy(base, { ownKeys() { throw new Error('caller proxy must never run'); } });
+  for (const environment of [getter, proxy]) {
+    assert.throws(() => assertRootPreflightEnvironment(environment), { code: 'RELEASE_ENVIRONMENT' });
+  }
 });
