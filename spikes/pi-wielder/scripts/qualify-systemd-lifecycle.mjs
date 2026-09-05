@@ -175,16 +175,80 @@ function worker(role, action, payload = {}, mountPid) {
 function backgroundWorker(role, action, payload) {
   const selected = roleCommand(role, action);
   const child = spawn(selected.binary, selected.args, { env: CLEAN_ENV, stdio: ['pipe', 'pipe', 'pipe'] });
+  const request = observeQualificationRequest(child);
+  child.stdin.on('error', () => {}); // The bounded completion captures early worker exits.
   child.stdin.end(`${canonicalJson(payload)}\n`);
-  let bytes = ''; child.stdout.on('data', (chunk) => { bytes += chunk; if (bytes.length > 2 * 1024 * 1024) child.kill('SIGKILL'); });
+  return request;
+}
+
+const diagnosticCode = value => typeof value === 'string' && /^[A-Z][A-Z0-9_]{0,127}$/.test(value) ? value : null;
+const RESPONSE_STATUSES = new Set(['completed', 'completed_replay', 'upstream_failed', 'payment_denied',
+  'payment_failed', 'payment_unresolved', 'payment_rejected', 'execution_failed', 'execution_unknown',
+  'refunded', 'approval_required', 'approval_pending', 'in_progress', 'payment_approval_required', 'request_in_flight']);
+
+/** Observe the fixed Agent request helper; never forward its raw output. */
+export function observeQualificationRequest(child) {
+  let bytes = ''; let size = 0; let overflow = false; let spawnCode = null; let completion = null;
+  child.stdout.on('data', chunk => {
+    size += Buffer.byteLength(chunk);
+    if (size > 1_048_576) { overflow = true; bytes = ''; child.kill('SIGKILL'); }
+    else if (!overflow) bytes += chunk;
+  });
   child.stderr.resume();
   const done = new Promise((resolve) => {
-    child.once('error', () => resolve({ exitCode: 1 }));
-    child.once('exit', (exitCode) => {
-      try { resolve({ exitCode, result: JSON.parse(bytes) }); } catch { resolve({ exitCode }); }
+    child.once('error', error => { spawnCode = diagnosticCode(error.code) ?? 'QUALIFICATION_BACKGROUND_SPAWN'; });
+    // 'close' follows complete stdout delivery, unlike 'exit'.
+    child.once('close', (exitCode, signal) => {
+      let value;
+      try { value = JSON.parse(bytes); } catch {}
+      bytes = '';
+      const profile = value?.schemaVersion === 1 && value?.profile === 'offline-qualification';
+      const result = profile && value.action === 'agent-request' && value.role === 'agent' ? value.result : null;
+      completion = Object.freeze({ diagnostic: 'qualification-background-worker', role: 'agent', action: 'agent-request',
+        exitCode: Number.isInteger(exitCode) && exitCode >= 0 && exitCode <= 255 ? exitCode : null,
+        signal: ['SIGKILL', 'SIGTERM', 'SIGABRT', 'SIGSEGV', 'SIGPIPE'].includes(signal) ? signal : null,
+        childCode: overflow ? 'QUALIFICATION_BACKGROUND_OUTPUT_BOUNDS' : spawnCode
+          ?? (profile ? diagnosticCode(value.code) : 'QUALIFICATION_BACKGROUND_OUTPUT'),
+        httpStatus: Number.isInteger(result?.httpStatus) && result.httpStatus >= 100 && result.httpStatus <= 599 ? result.httpStatus : null,
+        responseStatus: RESPONSE_STATUSES.has(result?.response?.status) ? result.response.status : null,
+        responseCode: diagnosticCode(result?.response?.code) ?? diagnosticCode(result?.response?.reasonCode) });
+      resolve(completion);
     });
   });
-  return { child, done };
+  return { child, done, completion: () => completion };
+}
+
+/** Retry transient snapshot reads, but never hide an ended request or its cause. */
+export async function waitForQualificationBarrier({ barrier, request, readSnapshot,
+  timeout = 45_000, pollMs = 250, writeDiagnostic = value => process.stdout.write(`${canonicalJson(value)}\n`) }) {
+  assert.ok(['signer_blocked', 'retry_blocked'].includes(barrier));
+  const deadline = Date.now() + timeout;
+  let last = null; let snapshotCode = null;
+  while (Date.now() < deadline) {
+    try {
+      last = await readSnapshot();
+      if (last.journal?.lastEvent?.kind === barrier) return last;
+    } catch (error) { snapshotCode = diagnosticCode(error.childCode) ?? diagnosticCode(error.code) ?? 'QUALIFICATION_SNAPSHOT_FAILED'; }
+    if (request.completion()) break;
+    await pause(pollMs);
+  }
+  const completion = request.completion();
+  if (completion) writeDiagnostic(completion);
+  const event = last?.journal?.lastEvent;
+  const kinds = ['provider_opened', 'unpaid_requested', 'paid_requested', 'signer_started',
+    'signer_completed', 'signer_blocked', 'retry_blocked'];
+  const fields = ['providerOpens', 'unpaidRequests', 'signerCalls', 'signaturesProduced', 'paidRequests'];
+  const counters = last?.journal?.counters;
+  writeDiagnostic({ diagnostic: 'qualification-barrier-observation', barrier, snapshotCode,
+    lastEventKind: kinds.includes(event?.kind) ? event.kind : null,
+    lastEventRouteId: OFFLINE_QUALIFICATION.routes.some(route => route.id === event?.routeId) ? event.routeId : null,
+    counters: fields.every(field => Number.isInteger(counters?.[field]) && counters[field] >= 0 && counters[field] <= 512)
+      ? Object.fromEntries(fields.map(field => [field, counters[field]])) : null });
+  throw Object.assign(new Error('Qualification barrier was not observed'), {
+    code: completion ? 'QUALIFICATION_BACKGROUND_COMPLETED' : 'QUALIFICATION_TIMEOUT', label: barrier,
+    binary: completion ? 'setpriv' : null, status: completion?.exitCode ?? null,
+    childCode: completion?.childCode ?? completion?.responseCode ?? snapshotCode,
+  });
 }
 function privateDirectory(location, uid, gid, mode = 0o700) {
   fs.mkdirSync(location, { recursive: true, mode }); fs.chmodSync(location, mode); fs.chownSync(location, uid, gid);
@@ -478,7 +542,7 @@ async function exercise() {
     const call = callPayload(scenario); const request = backgroundWorker('agent', 'agent-request', call);
     let before;
     try {
-      before = await waitFor(barrier, () => { const state = snapshot(); return state.journal.lastEvent?.kind === barrier ? state : false; });
+      before = await waitForQualificationBarrier({ barrier, request, readSnapshot: snapshot });
       await killService();
     } finally { request.child.kill('SIGKILL'); await request.done; }
     await refreshIsolation(); await start();
