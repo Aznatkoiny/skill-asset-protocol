@@ -14,7 +14,7 @@ export const COMMON_PROPERTIES = Object.freeze([
 ]);
 export const SERVICE_PROPERTIES = Object.freeze([
   ...COMMON_PROPERTIES, 'User', 'Group', 'SupplementaryGroups', 'Environment',
-  'EnvironmentFiles', 'PassEnvironment',
+  'EnvironmentFiles', 'PassEnvironment', 'LoadCredential',
   'ExecStartPreEx', 'ExecStartEx', 'Restart', 'RestartUSec', 'RestartPreventExitStatus',
   'UMask', 'NoNewPrivileges',
   'CapabilityBoundingSet', 'AmbientCapabilities', 'ProtectSystem', 'ProtectHome',
@@ -63,8 +63,14 @@ function parseExec(value, label) {
   if (typeof value !== 'string' || value.length > 8192 || /[\r\n\0]/.test(value)) {
     fail('SYSTEMD_EXEC', `${label} is malformed`);
   }
-  const match = /^\{ path=([^ ;]+) ; argv\[\]=([^;]+?) ; flags=([^;]*?) ; \}$/.exec(value);
+  // systemctl v255 prints runtime status even for a command that has never run.
+  // Parse that closed record, but keep only configuration in the stable hash.
+  const match = /^\{ path=([^ ;]+) ; argv\[\]=([^;]+?) ; flags=([^;]*?) ; start_time=\[([^\]\[;\x00-\x1f\x7f]{1,128})\] ; stop_time=\[([^\]\[;\x00-\x1f\x7f]{1,128})\] ; pid=(0|[1-9][0-9]*) ; code=(\(null\)|exited|killed|dumped|trapped|stopped|continued) ; status=((?:0|[1-9][0-9]*)(?:\/(?:[A-Z][A-Z0-9+-]*|0|[1-9][0-9]*))?) \}$/.exec(value);
   if (!match) fail('SYSTEMD_EXEC', `${label} has an unsupported structure`);
+  if (!Number.isSafeInteger(Number(match[6])) || Number(match[6]) > 2_147_483_647
+      || Number(match[8].split('/')[0]) > 2_147_483_647) {
+    fail('SYSTEMD_EXEC', `${label} has invalid runtime status`);
+  }
   const executable = match[1];
   const argv = match[2].trim().split(/\s+/);
   const flags = match[3].trim() === '' ? [] : match[3].trim().split(/\s+/).sort();
@@ -77,6 +83,17 @@ function parseExec(value, label) {
 
 function requireValue(actual, expected, label) {
   if (actual !== expected) fail('SYSTEMD_EFFECTIVE', `${label} differs from the rendered contract`);
+}
+
+function resolvedDependencies(value, mandatory, label) {
+  const units = sortedSet(value);
+  const unitName = /^(?:[A-Za-z0-9:_.@-]|\\x[0-9a-fA-F]{2})+\.(?:service|socket|device|mount|automount|swap|target|path|timer|slice|scope)$/;
+  if (new Set(units).size !== units.length
+      || units.some(unit => unit.length > 255 || !unitName.test(unit))
+      || mandatory.some(unit => !units.includes(unit))) {
+    fail('SYSTEMD_EFFECTIVE', `${label} has malformed or missing dependency edges`);
+  }
+  return units;
 }
 
 export function validateEffectiveProjection({ service, socket, expected }) {
@@ -118,6 +135,7 @@ export function validateEffectiveProjection({ service, socket, expected }) {
     User: expectedData.kernelUid, Group: expectedData.kernelGid, SupplementaryGroups: '',
     Environment: `WALLET_KERNEL_ENV_FILE=${expectedData.environmentPath}`,
     EnvironmentFiles: '', PassEnvironment: '',
+    LoadCredential: `wallet-kernel-environment:${expectedData.environmentPath}`,
     Restart: 'no', RestartUSec: '2s', RestartPreventExitStatus: '',
     UMask: '0077', NoNewPrivileges: 'yes', CapabilityBoundingSet: '', AmbientCapabilities: '',
     ProtectSystem: 'strict', ProtectHome: 'yes', PrivateTmp: 'yes', PrivateDevices: 'yes',
@@ -137,9 +155,10 @@ export function validateEffectiveProjection({ service, socket, expected }) {
       'LD_PROFILE', 'GLIBC_TUNABLES', 'GCONV_PATH', 'PRIVATE_KEY', 'ANTHROPIC_API_KEY',
       'OPENAI_API_KEY', 'CDP_API_KEY_ID', 'CDP_API_KEY_SECRET', 'CDP_WALLET_SECRET',
       'CDP_WALLET_NAME', 'WALLET_KERNEL_BASE_SEPOLIA_RPC_URL',
+      'CREDENTIALS_DIRECTORY', 'HOME', 'LOGNAME', 'USER', 'SHELL', 'INVOCATION_ID',
+      'JOURNAL_STREAM', 'SYSTEMD_EXEC_PID', 'MEMORY_PRESSURE_WATCH', 'MEMORY_PRESSURE_WRITE',
+      'NOTIFY_SOCKET', 'WATCHDOG_PID', 'WATCHDOG_USEC', 'LISTEN_PIDFDID',
     ].sort(),
-    Requires: ['wallet-kernel-console.socket'],
-    After: ['network-online.target', 'wallet-kernel-console.socket'].sort(),
   };
   for (const [field, expectedSet] of Object.entries(sets)) {
     if (canonicalJson(sortedSet(serviceData[field])) !== canonicalJson(expectedSet)) {
@@ -149,11 +168,19 @@ export function validateEffectiveProjection({ service, socket, expected }) {
   if (!/^127\.0\.0\.1:8405 \(Stream\)$/.test(socketData.Listen)) {
     fail('SYSTEMD_EFFECTIVE', 'socket must contain exactly one loopback stream');
   }
+  // PID1 adds default, journal, and mount dependencies. Require the template's
+  // explicit edges and hash the entire resolved sets, so later drift still fails
+  // the release-manifest comparison instead of disappearing during normalization.
+  const dependencies = {
+    Requires: resolvedDependencies(serviceData.Requires, ['wallet-kernel-console.socket'], 'Requires'),
+    After: resolvedDependencies(serviceData.After,
+      ['network-online.target', 'wallet-kernel-console.socket'], 'After'),
+  };
   const normalized = {
     service: { ...serviceData, ExecStartPreEx: preflight, ExecStartEx: main,
       RestrictAddressFamilies: sets.RestrictAddressFamilies,
       ReadWritePaths: sets.ReadWritePaths, UnsetEnvironment: sets.UnsetEnvironment,
-      Requires: sets.Requires, After: sets.After },
+      Requires: dependencies.Requires, After: dependencies.After },
     socket: socketData,
   };
   return Object.freeze({
@@ -198,7 +225,7 @@ export async function inspectEffectiveSystemd(input) {
   const socket = show(systemctlPath, 'wallet-kernel-console.socket', SOCKET_PROPERTIES);
   const projection = validateEffectiveProjection({ service, socket, expected: options.expected });
   const manager = execFileSync(systemctlPath, [
-    'show', '--all', '--no-pager', '--property=Version', '--', '-.mount',
+    'show', '--all', '--no-pager', '--property=Version',
   ], { encoding: 'utf8', maxBuffer: 4096, env: { PATH: '/usr/bin:/bin' } });
   const managerVersion = parseSystemctlShow(manager, ['Version'], 4096).Version;
   const client = execFileSync(systemctlPath, ['--version'], {

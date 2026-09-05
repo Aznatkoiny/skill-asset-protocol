@@ -91,6 +91,7 @@ export function runProbeRequest(request) {
         fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
         0o600);
       fs.closeSync(descriptor);
+      fs.unlinkSync(target);
     });
   }
   return Object.freeze(result);

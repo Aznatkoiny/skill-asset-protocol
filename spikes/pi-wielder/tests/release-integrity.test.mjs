@@ -53,9 +53,16 @@ function systemdFixture() {
   };
 }
 
-test('builds and verifies a closed synthetic release manifest', () => {
+test('builds and verifies a release without opening the source credentials', (t) => {
   const f = fixture();
   try {
+    const open = fs.openSync;
+    t.mock.method(fs, 'openSync', (filePath, ...args) => {
+      if (filePath === f.environmentPath) {
+        throw Object.assign(new Error('source credentials are not readable by the verifier'), { code: 'EACCES' });
+      }
+      return open(filePath, ...args);
+    });
     const manifest = buildReleaseManifest({
       mode: 'deterministic',
       releaseRoot: f.releaseRoot,
@@ -139,6 +146,33 @@ test('tree mutation, extra entries, mutable files, hardlinks, and escaping links
       fs.rmSync(f.parent, { recursive: true, force: true });
     }
   }
+});
+
+test('normal npm executable symlinks seal, while targets outside the release are rejected', () => {
+  const f = fixture();
+  try {
+    fs.mkdirSync(path.join(f.releaseRoot, 'node_modules', '.bin'), { recursive: true, mode: 0o755 });
+    fs.symlinkSync('../../src/control-plane.mjs', path.join(f.releaseRoot, 'node_modules', '.bin', 'wallet'));
+    const input = {
+      mode: 'deterministic', releaseRoot: f.releaseRoot,
+      manifestPath: path.join(f.releaseRoot, 'manifest.json'), commit: '2'.repeat(40),
+      createdAt: '2026-09-05T12:00:00.000Z', kernelUid: '501', kernelGid: '20',
+      node: { path: f.nodePath, version: 'v24.18.1' }, environmentPath: f.environmentPath,
+      serviceArtifacts: [
+        { role: 'kernel-service', path: f.servicePath }, { role: 'console-socket', path: f.socketPath },
+      ], systemd: systemdFixture(), expectedOwnerUid: process.getuid(),
+    };
+    const manifest = buildReleaseManifest(input);
+    assert.equal(manifest.entries.find((entry) => entry.path === 'node_modules/.bin/wallet').kind, 'symlink');
+    verifyReleaseIntegrity({
+      mode: 'deterministic', releaseRoot: f.releaseRoot, manifest,
+      expectedOwnerUid: process.getuid(), expectedKernelUid: '501', expectedKernelGid: '20',
+      nodePath: f.nodePath, nodeVersion: 'v24.18.1', environmentPath: f.environmentPath,
+      serviceArtifactPaths: { 'kernel-service': f.servicePath, 'console-socket': f.socketPath },
+    });
+    fs.symlinkSync(f.environmentPath, path.join(f.releaseRoot, 'node_modules', '.bin', 'outside'));
+    assert.throws(() => buildReleaseManifest(input), /symlink/);
+  } finally { fs.rmSync(f.parent, { recursive: true, force: true }); }
 });
 
 test('manifest rejects unknown fields, duplicate roles, and a non-pinned runtime', () => {

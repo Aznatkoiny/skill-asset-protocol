@@ -1,5 +1,12 @@
 # Handoff — launch-week state (2026-07-15)
 
+> **Historical handoff — not a current assignment.** The launch tasks and
+> appended July 18 readiness ledger describe their recorded commits, not the
+> current Wallet Kernel's completion or release status. Start current work at
+> [AGENTS.md](../../AGENTS.md). The [precedence addendum](../evidence-precedence.md)
+> records later claim corrections, including the invalid clone benchmark and
+> retired website endpoint. The original record is preserved below.
+
 Supersedes `2026-07-11-codex-premise-review-followups.md` (all four tasks
 executed and committed by 2026-07-12; see `docs/plans/2026-07-12-phase-a-findings.md`).
 

@@ -1,11 +1,12 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+
+import { codeBoundaryRoot } from '../code-root.mjs';
 
 import { openAgentTrustedParent, openTrustedParent } from './trusted-path.mjs';
 
-const CHECKOUT_ROOT = fs.realpathSync(fileURLToPath(new URL('../../../../', import.meta.url)));
+const CHECKOUT_ROOT = codeBoundaryRoot();
 const MAXIMUM_PRIVATE_BYTES = 1_048_576;
 const NOFOLLOW = fs.constants.O_NOFOLLOW;
 const PRIVATE_TEMP_LIST = Symbol.for(

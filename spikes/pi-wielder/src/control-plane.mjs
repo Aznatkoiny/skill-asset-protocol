@@ -1,10 +1,11 @@
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { types as utilTypes } from 'node:util';
 
 import { Hono } from 'hono';
 
 import { createAgentAuth } from './agent/auth.mjs';
+import { codeBoundaryRoot } from './code-root.mjs';
 import {
   loadControlPlaneConfig,
   readBoundedRouteDocument,
@@ -202,16 +203,7 @@ function captureOptions(value) {
 }
 
 function defaultCheckoutRoot() {
-  const sourceDirectory = path.dirname(fileURLToPath(import.meta.url));
-  const packageRoot = path.resolve(sourceDirectory, '..');
-  // A source checkout nests this package under `spikes/pi-wielder`; an installed
-  // immutable release places `src/` directly below the release root. Keep the
-  // exclusion boundary exact in either layout instead of broadening it to an
-  // arbitrary ancestor such as `/`.
-  return path.basename(packageRoot) === 'pi-wielder'
-      && path.basename(path.dirname(packageRoot)) === 'spikes'
-    ? path.resolve(packageRoot, '../..')
-    : packageRoot;
+  return codeBoundaryRoot();
 }
 
 function defaultsFor(input) {
@@ -1260,6 +1252,7 @@ export async function createControlPlane(options = undefined) {
       state,
       walletIdentity,
       operatorReads: authority.operatorReads,
+      onListenerFatal: Object.freeze(() => markAuthorityUnhealthy('RUNTIME_LISTENER')),
       listeners: { admin: null, console: null, agent: null },
       startState: 'created',
     });
@@ -1295,29 +1288,44 @@ export async function startControlPlane(options = undefined) {
     state,
     walletIdentity,
     operatorReads,
+    onListenerFatal,
     listeners,
   } = internals;
+  const ownListener = async (name, factory, input) => {
+    const assertOpen = () => {
+      if (state.gate !== 'open') {
+        fail(state.reasonCode ?? 'AUTHORITY_UNHEALTHY', 'Listener admission closed during startup');
+      }
+    };
+    assertOpen();
+    const listener = await Reflect.apply(factory, dependencies, [Object.freeze({ ...input, onFatal: onListenerFatal })]);
+    ensureFacade(listener, ['close'], `${name} listener`);
+    listeners[name] = listener;
+    // A synchronous fatal callback can complete plane.close() before the
+    // factory resolves. Explicitly release this late listener in that case.
+    if (state.gate !== 'open') {
+      try { await closeResource(listener); } catch {}
+      assertOpen();
+    }
+  };
   try {
     if (config.mode === 'cdp-testnet') {
-      listeners.admin = await dependencies.listenOperatorAdmin(Object.freeze({
+      await ownListener('admin', dependencies.listenOperatorAdmin, {
         app: plane.apps.operatorAdmin,
         socketPath: config.operatorSocketPath,
-      }));
-      ensureFacade(listeners.admin, ['close'], 'operator admin listener');
-      listeners.console = await dependencies.listenOperatorConsole(Object.freeze({
+      });
+      await ownListener('console', dependencies.listenOperatorConsole, {
         app: plane.apps.operatorConsole,
         activationName: config.operatorConsoleActivationName,
         host: endpoints.operatorHost,
         port: endpoints.operatorPort,
-      }));
-      ensureFacade(listeners.console, ['close'], 'operator console listener');
+      });
     } else {
-      listeners.console = await dependencies.listenOperatorConsole(Object.freeze({
+      await ownListener('console', dependencies.listenOperatorConsole, {
         app: plane.apps.operatorConsole,
         host: endpoints.operatorHost,
         port: endpoints.operatorPort,
-      }));
-      ensureFacade(listeners.console, ['close'], 'operator console listener');
+      });
     }
     const receiptPublicKey = projectOperatorPublicResult(
       await operatorReads.receiptPublicKey({}),
@@ -1340,13 +1348,15 @@ export async function startControlPlane(options = undefined) {
         'Wallet authority admission closed during listener startup',
       );
     }
-    listeners.agent = await dependencies.listenAgent(Object.freeze({
+    await ownListener('agent', dependencies.listenAgent, {
       app: plane.apps.agent,
       host: endpoints.agentHost,
       port: endpoints.agentPort,
-    }));
-    ensureFacade(listeners.agent, ['close'], 'agent listener');
+    });
     await dependencies.publishReady(Object.freeze({ type: 'ready', ...readiness }));
+    if (state.gate !== 'open') {
+      fail(state.reasonCode ?? 'AUTHORITY_UNHEALTHY', 'Listener admission closed during startup');
+    }
     internals.startState = 'started';
     return plane;
   } catch (error) {
@@ -1360,13 +1370,15 @@ export async function startControlPlane(options = undefined) {
   }
 }
 
-// The production service must install an explicit authority/release/listener
-// composition. Silently exiting zero here would make systemd report a healthy
-// daemon while no wallet authority exists. Process acceptance imports the
-// functions above and supplies its deterministic-only dependency graph.
+// Defer the installed entrypoint until this module finishes evaluating: the
+// runtime composition imports the public control-plane functions above.
 const directlyExecuted = typeof process.argv[1] === 'string'
   && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
 if (directlyExecuted) {
-  process.stderr.write('CONTROL_PLANE_COMPOSITION_REQUIRED\n');
-  process.exitCode = 1;
+  import('./runtime/installed-service.mjs')
+    .then(({ runInstalledService }) => runInstalledService())
+    .catch(() => {
+      process.stderr.write('RUNTIME_STARTUP_FAILED\n');
+      process.exitCode = 1;
+    });
 }

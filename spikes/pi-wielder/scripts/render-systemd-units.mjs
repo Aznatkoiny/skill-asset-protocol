@@ -67,25 +67,6 @@ function closedInput(value) {
   });
 }
 
-function readEnvironmentNames(environmentPath) {
-  const bytes = fs.readFileSync(environmentPath);
-  if (bytes.length > 64 * 1024 || bytes.includes(0)) {
-    fail('SYSTEMD_RENDER_ENVIRONMENT', 'Kernel environment file is not bounded text');
-  }
-  const text = bytes.toString('utf8');
-  for (const line of text.split('\n')) {
-    if (line === '' || line.startsWith('#')) continue;
-    const equals = line.indexOf('=');
-    if (equals < 1) fail('SYSTEMD_RENDER_ENVIRONMENT', 'Kernel environment line is malformed');
-    const name = line.slice(0, equals);
-    if (!/^[A-Z][A-Z0-9_]*$/.test(name)
-        || name === 'NODE_OPTIONS' || name === 'NODE_PATH' || name.startsWith('LD_')
-        || name.startsWith('DYLD_') || name === 'GCONV_PATH' || name === 'GLIBC_TUNABLES') {
-      fail('SYSTEMD_RENDER_ENVIRONMENT', 'Kernel environment contains a loader-control field');
-    }
-  }
-}
-
 function substitute(template, replacements) {
   let output = template;
   for (const [marker, value] of Object.entries(replacements)) {
@@ -137,7 +118,13 @@ export function renderSystemdUnits(value) {
   }
   assertDirectPath(input.nodePath, 'Node executable', { regular: true });
   assertDirectPath(input.environmentPath, 'environment file', { regular: true });
-  readEnvironmentNames(input.environmentPath);
+  // Only the Kernel parses PID1's delivered credential copy. The privileged
+  // renderer checks source-file metadata and never loads secret values.
+  const environmentStat = fs.lstatSync(input.environmentPath);
+  if (environmentStat.nlink !== 1 || (environmentStat.mode & 0o7777) !== 0o600
+      || environmentStat.size > 64 * 1024) {
+    fail('SYSTEMD_RENDER_ENVIRONMENT', 'Kernel environment source must be a bounded single-link 0600 file');
+  }
   for (const field of [
     'authorityRoot', 'evidenceRoot', 'runtimeRoot', 'agentRunOutboxPath', 'enrollmentInboxPath',
   ]) assertDirectPath(input[field], field, { directory: true });

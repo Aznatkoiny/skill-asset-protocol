@@ -63,6 +63,7 @@ test('renderer emits the exact hardened numeric-identity service and retained so
       'After=network-online.target wallet-kernel-console.socket',
       'User=501', 'Group=20', 'SupplementaryGroups=',
       `Environment=WALLET_KERNEL_ENV_FILE=${f.environmentPath}`,
+      `LoadCredential=wallet-kernel-environment:${f.environmentPath}`,
       `ExecStartPre=+${f.nodePath} ${f.releaseRoot}/scripts/preflight-live-deployment.mjs --release-manifest ${f.releaseRoot}/manifest.json --kernel-uid 501 --kernel-gid 20`,
       `ExecStart=${f.nodePath} ${f.releaseRoot}/src/control-plane.mjs`,
       'Restart=no',
@@ -71,7 +72,7 @@ test('renderer emits the exact hardened numeric-identity service and retained so
       'ProtectKernelTunables=yes', 'ProtectKernelModules=yes', 'ProtectControlGroups=yes',
       'LockPersonality=yes', 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6',
       `ReadWritePaths=${f.authorityRoot} ${f.evidenceRoot} ${f.runtimeRoot} ${f.agentRunOutboxPath}`,
-      'UnsetEnvironment=NODE_OPTIONS NODE_PATH LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_DEBUG LD_PROFILE GLIBC_TUNABLES GCONV_PATH PRIVATE_KEY ANTHROPIC_API_KEY OPENAI_API_KEY CDP_API_KEY_ID CDP_API_KEY_SECRET CDP_WALLET_SECRET CDP_WALLET_NAME WALLET_KERNEL_BASE_SEPOLIA_RPC_URL',
+      'UnsetEnvironment=NODE_OPTIONS NODE_PATH LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_DEBUG LD_PROFILE GLIBC_TUNABLES GCONV_PATH PRIVATE_KEY ANTHROPIC_API_KEY OPENAI_API_KEY CDP_API_KEY_ID CDP_API_KEY_SECRET CDP_WALLET_SECRET CDP_WALLET_NAME WALLET_KERNEL_BASE_SEPOLIA_RPC_URL CREDENTIALS_DIRECTORY HOME LOGNAME USER SHELL INVOCATION_ID JOURNAL_STREAM SYSTEMD_EXEC_PID MEMORY_PRESSURE_WATCH MEMORY_PRESSURE_WRITE NOTIFY_SOCKET WATCHDOG_PID WATCHDOG_USEC LISTEN_PIDFDID',
     ]) assert.equal(service.includes(`${line}\n`), true, line);
     assert.equal(service.includes('EnvironmentFile='), false,
       'the root-prefixed preflight must never inherit the secret environment file');
@@ -134,8 +135,9 @@ test('effective projection validates exact loaded static service and enabled soc
         User: '501', Group: '20', SupplementaryGroups: '',
         Environment: `WALLET_KERNEL_ENV_FILE=${f.environmentPath}`,
         EnvironmentFiles: '', PassEnvironment: '',
-        ExecStartPreEx: `{ path=${f.nodePath} ; argv[]=${f.nodePath} ${f.releaseRoot}/scripts/preflight-live-deployment.mjs --release-manifest ${f.releaseRoot}/manifest.json --kernel-uid 501 --kernel-gid 20 ; flags=privileged ; }`,
-        ExecStartEx: `{ path=${f.nodePath} ; argv[]=${f.nodePath} ${f.releaseRoot}/src/control-plane.mjs ; flags= ; }`,
+        LoadCredential: `wallet-kernel-environment:${f.environmentPath}`,
+        ExecStartPreEx: `{ path=${f.nodePath} ; argv[]=${f.nodePath} ${f.releaseRoot}/scripts/preflight-live-deployment.mjs --release-manifest ${f.releaseRoot}/manifest.json --kernel-uid 501 --kernel-gid 20 ; flags=privileged ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
+        ExecStartEx: `{ path=${f.nodePath} ; argv[]=${f.nodePath} ${f.releaseRoot}/src/control-plane.mjs ; flags= ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
         Restart: 'no', RestartUSec: '2s', RestartPreventExitStatus: '',
         UMask: '0077', NoNewPrivileges: 'yes',
         CapabilityBoundingSet: '', AmbientCapabilities: '', ProtectSystem: 'strict',
@@ -144,9 +146,9 @@ test('effective projection validates exact loaded static service and enabled soc
         ProtectControlGroups: 'yes', LockPersonality: 'yes',
         RestrictAddressFamilies: 'AF_UNIX AF_INET AF_INET6',
         ReadWritePaths: `${f.authorityRoot} ${f.evidenceRoot} ${f.runtimeRoot} ${f.agentRunOutboxPath}`,
-        UnsetEnvironment: 'NODE_OPTIONS NODE_PATH LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_DEBUG LD_PROFILE GLIBC_TUNABLES GCONV_PATH PRIVATE_KEY ANTHROPIC_API_KEY OPENAI_API_KEY CDP_API_KEY_ID CDP_API_KEY_SECRET CDP_WALLET_SECRET CDP_WALLET_NAME WALLET_KERNEL_BASE_SEPOLIA_RPC_URL',
-        Requires: 'wallet-kernel-console.socket',
-        After: 'network-online.target wallet-kernel-console.socket',
+        UnsetEnvironment: 'NODE_OPTIONS NODE_PATH LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_DEBUG LD_PROFILE GLIBC_TUNABLES GCONV_PATH PRIVATE_KEY ANTHROPIC_API_KEY OPENAI_API_KEY CDP_API_KEY_ID CDP_API_KEY_SECRET CDP_WALLET_SECRET CDP_WALLET_NAME WALLET_KERNEL_BASE_SEPOLIA_RPC_URL CREDENTIALS_DIRECTORY HOME LOGNAME USER SHELL INVOCATION_ID JOURNAL_STREAM SYSTEMD_EXEC_PID MEMORY_PRESSURE_WATCH MEMORY_PRESSURE_WRITE NOTIFY_SOCKET WATCHDOG_PID WATCHDOG_USEC LISTEN_PIDFDID',
+        Requires: 'wallet-kernel-console.socket sysinit.target',
+        After: 'network-online.target wallet-kernel-console.socket sysinit.target basic.target systemd-tmpfiles-setup.service systemd-journald.socket',
       },
       socket: {
         Id: 'wallet-kernel-console.socket', LoadState: 'loaded', FragmentPath: f.socketOutputPath,
@@ -165,6 +167,8 @@ test('effective projection validates exact loaded static service and enabled soc
       (p) => { p.service.Restart = 'on-failure'; },
       (p) => { p.service.RestartPreventExitStatus = '78'; },
       (p) => { p.service.EnvironmentFiles = f.environmentPath; },
+      (p) => { p.service.LoadCredential = 'wallet-kernel-environment:/tmp/other'; },
+      (p) => { p.service.LoadCredential += ' extra:/tmp/other'; },
       (p) => { p.service.Environment = `${p.service.Environment} CDP_API_KEY_SECRET=sentinel`; },
       (p) => { p.service.PassEnvironment = 'CDP_API_KEY_SECRET'; },
       (p) => { p.socket.Listen = '0.0.0.0:8405 (Stream)'; },
@@ -177,17 +181,13 @@ test('effective projection validates exact loaded static service and enabled soc
   } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
 });
 
-test('installed service remains an explicit blocked gate until all live compositions are present', () => {
+test('installed service remains blocked until Linux lifecycle evidence qualifies the composition', () => {
   assert.deepEqual(LIVE_LAUNCH_GATE, {
     schemaVersion: 1,
     status: 'blocked',
     code: 'LIVE_LAUNCH_NOT_READY',
     exitStatus: 78,
     blockers: [
-      'LIVE_PREFLIGHT_COMPOSITION_REQUIRED',
-      'CONTROL_PLANE_COMPOSITION_REQUIRED',
-      'LIVE_SECRET_DELIVERY_COMPOSITION_REQUIRED',
-      'LIVE_LISTENER_RESPONSE_COMPATIBILITY_REQUIRED',
       'LIVE_SYSTEMD_LIFECYCLE_EVIDENCE_REQUIRED',
     ],
   });
@@ -213,9 +213,9 @@ test('installed service remains an explicit blocked gate until all live composit
     encoding: 'utf8',
     env: { PATH: '/usr/bin:/bin' },
   });
-  assert.equal(controlPlane.status, 1);
+  assert.equal(controlPlane.status, LIVE_LAUNCH_GATE.exitStatus);
   assert.equal(controlPlane.stdout, '');
-  assert.equal(controlPlane.stderr, 'CONTROL_PLANE_COMPOSITION_REQUIRED\n');
+  assert.equal(controlPlane.stderr, `${canonicalJson(LIVE_LAUNCH_GATE)}\n`);
 });
 
 test('live systemd static verification is explicit and never green on non-Linux', async (t) => {

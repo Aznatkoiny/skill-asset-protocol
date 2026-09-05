@@ -9,9 +9,10 @@ User={{KERNEL_UID}}
 Group={{KERNEL_GID}}
 SupplementaryGroups=
 # The root-prefixed preflight receives only this public path. It must never
-# inherit the file's CDP/RPC secret values. A future reviewed non-root launcher
-# will own bounded secret-file loading after the privileged preflight exits.
+# inherit the file's CDP/RPC secret values. PID1 supplies a separate credential
+# copy, opened only by the Kernel after its exact identity has been checked.
 Environment=WALLET_KERNEL_ENV_FILE={{ENVIRONMENT_PATH}}
+LoadCredential=wallet-kernel-environment:{{ENVIRONMENT_PATH}}
 ExecStartPre=+{{NODE_PATH}} {{RELEASE_ROOT}}/scripts/preflight-live-deployment.mjs --release-manifest {{RELEASE_ROOT}}/manifest.json --kernel-uid {{KERNEL_UID}} --kernel-gid {{KERNEL_GID}}
 ExecStart={{NODE_PATH}} {{RELEASE_ROOT}}/src/control-plane.mjs
 # Live composition is explicitly blocked in this spike. Do not retry a
@@ -32,7 +33,7 @@ ProtectControlGroups=yes
 LockPersonality=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadWritePaths={{AUTHORITY_ROOT}} {{EVIDENCE_ROOT}} {{RUNTIME_ROOT}} {{AGENT_RUN_OUTBOX_PATH}}
-UnsetEnvironment=NODE_OPTIONS NODE_PATH LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_DEBUG LD_PROFILE GLIBC_TUNABLES GCONV_PATH PRIVATE_KEY ANTHROPIC_API_KEY OPENAI_API_KEY CDP_API_KEY_ID CDP_API_KEY_SECRET CDP_WALLET_SECRET CDP_WALLET_NAME WALLET_KERNEL_BASE_SEPOLIA_RPC_URL
+UnsetEnvironment=NODE_OPTIONS NODE_PATH LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_DEBUG LD_PROFILE GLIBC_TUNABLES GCONV_PATH PRIVATE_KEY ANTHROPIC_API_KEY OPENAI_API_KEY CDP_API_KEY_ID CDP_API_KEY_SECRET CDP_WALLET_SECRET CDP_WALLET_NAME WALLET_KERNEL_BASE_SEPOLIA_RPC_URL CREDENTIALS_DIRECTORY HOME LOGNAME USER SHELL INVOCATION_ID JOURNAL_STREAM SYSTEMD_EXEC_PID MEMORY_PRESSURE_WATCH MEMORY_PRESSURE_WRITE NOTIFY_SOCKET WATCHDOG_PID WATCHDOG_USEC LISTEN_PIDFDID
 
 [Install]
 # Service is socket-triggered and deliberately static.

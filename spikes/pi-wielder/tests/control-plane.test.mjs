@@ -10,6 +10,7 @@ import {
 import { canonicalJson, KernelError, sha256 } from '../src/kernel/canonical.mjs';
 import { createAuthorityMutationCoordinator } from '../src/kernel/authority-mutation-coordinator.mjs';
 import { validatePolicyDocument } from '../src/kernel/policy-engine.mjs';
+import { LIVE_LAUNCH_GATE } from '../scripts/preflight-live-deployment.mjs';
 
 const WALLET = '0x1000000000000000000000000000000000000000';
 const SELLER = 'https://seller.example';
@@ -1063,13 +1064,13 @@ test('composition rejects injected coordinator aliases and broad operator servic
   });
 });
 
-test('uncomposed direct execution fails visibly instead of masquerading as a healthy daemon', () => {
+test('installed direct execution reports the remaining Linux lifecycle gate', () => {
   const entrypoint = fileURLToPath(new URL('../src/control-plane.mjs', import.meta.url));
   const child = spawnSync(process.execPath, [entrypoint], {
     encoding: 'utf8',
     env: Object.freeze({}),
   });
-  assert.equal(child.status, 1);
+  assert.equal(child.status, LIVE_LAUNCH_GATE.exitStatus);
   assert.equal(child.stdout, '');
-  assert.equal(child.stderr, 'CONTROL_PLANE_COMPOSITION_REQUIRED\n');
+  assert.equal(child.stderr, `${canonicalJson(LIVE_LAUNCH_GATE)}\n`);
 });

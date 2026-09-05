@@ -109,6 +109,29 @@ function readRegularFile(filePath, expectedOwnerUid, label) {
   }
 }
 
+// The source file is root-only. PID1 delivers a separate read-only credential
+// copy to the Kernel; neither release building nor verification opens its bytes.
+function environmentMetadata(filePath, expectedOwnerUid) {
+  assertAbsolute(filePath, 'environment file');
+  let parent = path.dirname(filePath);
+  for (;;) {
+    const stat = fs.lstatSync(parent, { bigint: true });
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      fail('RELEASE_ENVIRONMENT', 'environment ancestors must be direct directories');
+    }
+    if (expectedOwnerUid === 0) assertNoMutableBits(stat, 'environment ancestor', 0);
+    if (parent === path.dirname(parent)) break;
+    parent = path.dirname(parent);
+  }
+  const stat = fs.lstatSync(filePath, { bigint: true });
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n) {
+    fail('RELEASE_ENVIRONMENT', 'environment must be one direct single-link regular file');
+  }
+  const meta = metadata(stat, expectedOwnerUid, 'environment file');
+  if (meta.mode !== '600') fail('RELEASE_ENVIRONMENT', 'environment file must have mode 0600');
+  return Object.freeze({ device: stat.dev.toString(10), inode: stat.ino.toString(10), ...meta });
+}
+
 function canonicalRelative(relativePath) {
   if (typeof relativePath !== 'string' || relativePath === '' || path.isAbsolute(relativePath)
       || relativePath.includes('\\') || relativePath.includes('\0')) {
@@ -149,7 +172,14 @@ function collectEntries({ releaseRoot, manifestPath, expectedOwnerUid }) {
       if (relative === excluded) continue;
       const absolute = path.join(directory, name);
       const stat = fs.lstatSync(absolute, { bigint: true });
-      const meta = metadata(stat, expectedOwnerUid, `release entry ${relative}`);
+      // Symlink permission bits are conventionally 0777 and do not grant
+      // mutation. Its owner, containing directories and resolved target do.
+      if (stat.isSymbolicLink() && Number(stat.uid) !== expectedOwnerUid) {
+        fail('RELEASE_OWNERSHIP', 'release symlink must have the expected owner');
+      }
+      const meta = stat.isSymbolicLink()
+        ? { uid: stat.uid.toString(), gid: stat.gid.toString(), mode: (stat.mode & 0o7777n).toString(8) }
+        : metadata(stat, expectedOwnerUid, `release entry ${relative}`);
       if (stat.isDirectory()) {
         entries.push({ path: relative, kind: 'directory', ...meta, bytes: null, sha256: null, target: null });
         walk(absolute, relative);
@@ -336,10 +366,7 @@ export function buildReleaseManifest(input) {
   const nodePath = assertAbsolute(nodeInput.path, 'Node executable');
   const nodeFile = readRegularFile(nodePath, options.expectedOwnerUid, 'Node executable');
   const environmentPath = assertAbsolute(options.environmentPath, 'environment file');
-  const environmentFile = readRegularFile(environmentPath, options.expectedOwnerUid, 'environment file');
-  if (Number.parseInt(environmentFile.mode, 8) !== 0o600) {
-    fail('RELEASE_ENVIRONMENT', 'environment file must have mode 0600');
-  }
+  const environmentFile = environmentMetadata(environmentPath, options.expectedOwnerUid);
   if (!Array.isArray(options.serviceArtifacts) || options.serviceArtifacts.length !== 2) {
     fail('RELEASE_BUILD_INPUT', 'service artifact inputs must contain exactly two roles');
   }
@@ -380,11 +407,7 @@ export function buildReleaseManifest(input) {
       mode: nodeMode.toString(8),
     },
     environment: {
-      environmentMetadataHash: sha256(`${ENVIRONMENT_DOMAIN}${canonicalJson({
-        device: fs.statSync(environmentPath, { bigint: true }).dev.toString(10),
-        inode: fs.statSync(environmentPath, { bigint: true }).ino.toString(10),
-        uid: environmentFile.uid, gid: environmentFile.gid, mode: environmentFile.mode,
-      })}`),
+      environmentMetadataHash: sha256(`${ENVIRONMENT_DOMAIN}${canonicalJson(environmentFile)}`),
     },
     serviceArtifacts,
     systemd: validateSystemd(options.systemd),
@@ -425,12 +448,9 @@ export function verifyReleaseIntegrity(input) {
     fail('RELEASE_NODE_CHANGED', 'Node executable differs from the manifest');
   }
   const environmentPath = assertAbsolute(options.environmentPath, 'environment file');
-  const envStat = fs.statSync(environmentPath, { bigint: true });
-  const envFile = readRegularFile(environmentPath, options.expectedOwnerUid, 'environment file');
-  const environmentMetadataHash = sha256(`${ENVIRONMENT_DOMAIN}${canonicalJson({
-    device: envStat.dev.toString(10), inode: envStat.ino.toString(10),
-    uid: envFile.uid, gid: envFile.gid, mode: envFile.mode,
-  })}`);
+  const environmentMetadataHash = sha256(`${ENVIRONMENT_DOMAIN}${canonicalJson(
+    environmentMetadata(environmentPath, options.expectedOwnerUid),
+  )}`);
   if (environmentMetadataHash !== manifest.environment.environmentMetadataHash) {
     fail('RELEASE_ENVIRONMENT_CHANGED', 'environment metadata differs from the manifest');
   }
