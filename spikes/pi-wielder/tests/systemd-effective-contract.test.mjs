@@ -143,6 +143,39 @@ test('dependency projection rejects duplicate edges and malformed unit names', (
   }
 });
 
+test('v255 quoted escaped mount dependencies are decoded, retained, and protected against duplicate spellings', () => {
+  // Actual PID1 output from qualification run33990002633/job101370429665.
+  // String arrays use shell_maybe_quote(value, 0), which doubles backslashes:
+  // https://github.com/systemd/systemd/blob/v255/src/shared/bus-print-properties.c#L217-L248
+  // https://github.com/systemd/systemd/blob/v255/src/basic/escape.c#L510-L556
+  const encoded = String.raw`"run-credentials-wallet\\x2dkernel.service.mount"`;
+  const decoded = String.raw`run-credentials-wallet\x2dkernel.service.mount`;
+  const input = fixture();
+  const withoutMount = validateEffectiveProjection(input);
+  input.service.After += ` ${encoded}`;
+  const actual = validateEffectiveProjection(input);
+  assert.ok(actual.normalized.service.After.includes(decoded));
+  assert.equal(actual.normalized.service.After.includes(encoded), false);
+  assert.notEqual(actual.effectiveConfigHash, withoutMount.effectiveConfigHash);
+  const reordered = structuredClone(input);
+  reordered.service.After = input.service.After.split(' ').reverse().join(' ');
+  assert.equal(validateEffectiveProjection(reordered).effectiveConfigHash, actual.effectiveConfigHash);
+  for (const duplicate of [encoded, decoded]) {
+    assert.throws(() => validateEffectiveProjection({ ...input,
+      service: { ...input.service, After: `${input.service.After} ${duplicate}` } }),
+    { code: 'SYSTEMD_EFFECTIVE' });
+  }
+  for (const malformed of ['"unterminated.mount', '"extra.mount"trailing', '""',
+    '"extra mount"', '"extra.mount";command', '$(command).mount',
+    String.raw`"run-credentials-wallet\x2dkernel.service.mount"`,
+    String.raw`"extra\\q2.mount"`, String.raw`"extra\\x2.mount"`,
+    String.raw`"extra\\\\x20.mount"`]) {
+    assert.throws(() => validateEffectiveProjection({ ...input,
+      service: { ...input.service, After: `${input.service.After} ${malformed}` } }),
+    { code: 'SYSTEMD_EFFECTIVE' });
+  }
+});
+
 test('v255 socket inspection binds the real Triggers property and never requests Service', () => {
   // The socket vtable has no Service property; the generic Unit vtable exposes
   // Triggers: https://github.com/systemd/systemd/blob/v255/src/core/dbus-unit.c#L810

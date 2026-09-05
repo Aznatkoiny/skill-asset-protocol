@@ -126,7 +126,27 @@ function requireValue(actual, expected, label) {
 }
 
 function resolvedDependencies(value, mandatory, label) {
-  const units = sortedSet(value);
+  if (typeof value !== 'string' || Buffer.byteLength(value) > MAXIMUM_OUTPUT
+      || /[\x00-\x08\x0a-\x1f\x7f]/.test(value)) {
+    fail('SYSTEMD_EFFECTIVE', `${label} has malformed dependency text`);
+  }
+  // systemctl v255 shell-quotes string-array entries containing a backslash.
+  // Decode only the quoted unit-name alphabet and doubled \\xHH escape; never
+  // evaluate shell text or drop implicit credential/mount dependency edges.
+  const token = /(?:"(?:[A-Za-z0-9:_.@-]|\\\\x[0-9a-fA-F]{2})+"|(?:[A-Za-z0-9:_.@-]|\\x[0-9a-fA-F]{2})+)/y;
+  const units = [];
+  let offset = 0;
+  while (offset < value.length) {
+    if (value[offset] === ' ' || value[offset] === '\t') { offset += 1; continue; }
+    token.lastIndex = offset;
+    const match = token.exec(value);
+    if (!match || (token.lastIndex < value.length && !/[ \t]/.test(value[token.lastIndex]))) {
+      fail('SYSTEMD_EFFECTIVE', `${label} has malformed dependency quoting`);
+    }
+    units.push(match[0][0] === '"' ? JSON.parse(match[0]) : match[0]);
+    offset = token.lastIndex;
+  }
+  units.sort();
   const unitName = /^(?:[A-Za-z0-9:_.@-]|\\x[0-9a-fA-F]{2})+\.(?:service|socket|device|mount|automount|swap|target|path|timer|slice|scope)$/;
   if (new Set(units).size !== units.length
       || units.some(unit => unit.length > 255 || !unitName.test(unit))
