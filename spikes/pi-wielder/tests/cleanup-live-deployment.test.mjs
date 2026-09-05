@@ -84,7 +84,10 @@ test('the CLI offers no host bypass and bounds diagnostics', async () => {
     stdout: { write(value) { output.push(value); } }, stderr: { write(value) { errors.push(value); } } });
   assert.equal(status, 1);
   assert.deepEqual(output, []);
-  assert.deepEqual(JSON.parse(errors[0]), { code: 'LIVE_CLEANUP_ARGUMENTS', result: null });
+  assert.deepEqual(errors.map(value => JSON.parse(value)), [
+    { diagnostic: 'installed-cleanup-environment', names: [] },
+    { code: 'LIVE_CLEANUP_ARGUMENTS', result: null },
+  ]);
   if (process.platform !== 'linux' || process.getuid() !== 0 || process.version !== 'v24.18.1') {
     assert.throws(assertLiveCleanupHost, { code: 'LIVE_CLEANUP_HOST' });
   }

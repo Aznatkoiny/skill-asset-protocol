@@ -16,6 +16,15 @@ const ENVIRONMENT_FIELDS = new Set([
   'SERVICE_RESULT', 'EXIT_CODE', 'EXIT_STATUS',
 ]);
 
+// Do not share an application import with this failure path. This diagnostic
+// reads property names only and exposes neither values nor exception messages.
+export function cleanupEnvironmentDiagnostic(environment) {
+  const names = environment && typeof environment === 'object' && !Array.isArray(environment)
+    ? Object.getOwnPropertyNames(environment).filter(name => /^[A-Z][A-Z0-9_]{0,127}$/.test(name)).sort().slice(0, 128)
+    : [];
+  return Object.freeze({ diagnostic: 'installed-cleanup-environment', names: Object.freeze(names) });
+}
+
 function failure(code) {
   const error = new Error('Wallet Kernel service cleanup did not complete');
   error.code = code;
@@ -124,6 +133,7 @@ export async function cleanupLiveDeployment({ argv, environment }, effects) {
 }
 
 export async function runCleanupLiveDeployment({ argv, environment, stdout = process.stdout, stderr = process.stderr }) {
+  stderr.write(`${JSON.stringify(cleanupEnvironmentDiagnostic(environment))}\n`);
   try {
     stdout.write(`${JSON.stringify(await cleanupLiveDeployment({ argv, environment }))}\n`);
     return 0;

@@ -43,6 +43,23 @@ export const LIVE_LAUNCH_GATE = Object.freeze({
   ]),
 });
 
+// Environment diagnostics deliberately inspect names only, before any private
+// file reads. Keep the shape bounded so the host harness can retain it safely.
+export function preflightEnvironmentDiagnostic(environment) {
+  const names = environment && typeof environment === 'object' && !Array.isArray(environment)
+    ? Object.getOwnPropertyNames(environment).filter(name => /^[A-Z][A-Z0-9_]{0,127}$/.test(name)).sort().slice(0, 128)
+    : [];
+  return Object.freeze({ diagnostic: 'installed-preflight-environment', names: Object.freeze(names) });
+}
+
+export function preflightFailureDiagnostic(error) {
+  const code = error instanceof KernelError ? Object.getOwnPropertyDescriptor(error, 'code')?.value : null;
+  const causeCode = typeof code === 'string' && code.length <= 128
+    && /^(?:RELEASE|SYSTEMD|DEPLOYMENT|AGENT|AUTHORITY|KERNEL|ISOLATION|CONFIG|LIVE|RUNTIME|POLICY|BUDGET|PAYMENT|APPROVAL|RECEIPT)_[A-Z0-9_]+$/.test(code)
+    ? code : null;
+  return Object.freeze({ code: 'LIVE_PREFLIGHT_FAILED', causeCode });
+}
+
 export function parsePreflightArguments(argv) {
   if (!Array.isArray(argv) || argv.length !== 6
       || argv[0] !== '--release-manifest' || argv[2] !== '--kernel-uid'
@@ -279,10 +296,11 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     // EX_CONFIG with Restart=no prevents privileged restart storms.
     process.exitCode = LIVE_LAUNCH_GATE.exitStatus;
   } else {
+    process.stderr.write(`${canonicalJson(preflightEnvironmentDiagnostic(process.env))}\n`);
     runInstalledLivePreflight({ argv: process.argv.slice(2), environment: process.env })
       .then(({ status, preflightDigest }) => process.stdout.write(`${canonicalJson({ status, preflightDigest })}\n`))
-      .catch(() => {
-        process.stderr.write('LIVE_PREFLIGHT_FAILED\n');
+      .catch((error) => {
+        process.stderr.write(`${canonicalJson(preflightFailureDiagnostic(error))}\n`);
         process.exitCode = 1;
       });
   }

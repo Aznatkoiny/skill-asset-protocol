@@ -83,7 +83,24 @@ function capturePid1PropertyNames() {
     const codes = [];
     for (const line of raw.split('\n')) {
       let candidate = line;
-      try { candidate = JSON.parse(line)?.code; } catch {}
+      try {
+        const value = JSON.parse(line);
+        candidate = value?.code;
+        if (['installed-preflight-environment', 'installed-cleanup-environment'].includes(value?.diagnostic)
+            && Object.keys(value).sort().join(',') === 'diagnostic,names'
+            && Array.isArray(value.names) && value.names.length <= 128
+            && value.names.every((name) => typeof name === 'string' && /^[A-Z][A-Z0-9_]{0,127}$/.test(name))
+            && new Set(value.names).size === value.names.length
+            && canonicalJson(value.names) === canonicalJson([...value.names].sort())) {
+          process.stdout.write(`${canonicalJson(value)}\n`);
+        }
+        if (value?.code === 'LIVE_PREFLIGHT_FAILED'
+            && typeof value.causeCode === 'string'
+            && value.causeCode.length <= 128
+            && /^(?:RELEASE|SYSTEMD|DEPLOYMENT|AGENT|AUTHORITY|KERNEL|ISOLATION|CONFIG|LIVE|RUNTIME|POLICY|BUDGET|PAYMENT|APPROVAL|RECEIPT)_[A-Z0-9_]+$/.test(value.causeCode)) {
+          codes.push(value.causeCode);
+        }
+      } catch {}
       if (typeof candidate === 'string' && /^(?:LIVE|SYSTEMD|RELEASE|RUNTIME|DEPLOYMENT|QUALIFICATION|AUTHORITY)_[A-Z_]{2,100}$/.test(candidate)) codes.push(candidate);
     }
     process.stdout.write(`${canonicalJson({ diagnostic: 'installed-service-codes', codes: [...new Set(codes)] })}\n`);
