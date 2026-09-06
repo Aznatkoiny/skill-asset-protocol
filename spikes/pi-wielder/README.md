@@ -86,9 +86,11 @@ ZIP matched GitHub's reported digest
 `sha256:2b00a4e7e1b00bffdc805e043c59308e0ffb89fbfa0be86b2b36129c670e40f9`;
 the original manifest digest is
 `sha256:7c6a88a82d9c73cc3ba39f7449f8b1bb955d72d4d2bc494c3476169e56cb84d8`.
-The three files and separately authored provenance are preserved locally; this
-archive has not been published to the repository. The original Actions artifact
-expires at `2026-10-05T21:39:28Z`.
+The three files and separately authored provenance are preserved in the
+[repository archive](evidence/2026-09-05-installed-offline-lifecycle/README.md),
+alongside eleven earlier failed attempts with their original status. The original
+Actions artifact expires at `2026-10-05T21:39:28Z`; the repository copy preserves
+the evidence beyond that download window.
 
 The passing scope includes installed boundaries, listeners, approval/retry/replay,
 rejected stale or changed admission evidence, interrupted signing and paid retry,

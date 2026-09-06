@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "evidenceStatus": "failed_non_qualifying",
+  "authorship": "Retention metadata; not emitted by the original qualification harness.",
+  "source": {
+    "repository": "Aznatkoiny/skill-asset-protocol",
+    "workflowPath": ".github/workflows/pi-wielder-systemd.yml",
+    "runId": 33989404422,
+    "runAttempt": 1,
+    "headSha": "304fd17c4d9df5ad3e8369ad1da95b2cb550610e",
+    "runCreatedAt": "2026-09-05T20:12:28Z",
+    "reportedRunConclusion": "failure",
+    "runUrl": "https://github.com/Aznatkoiny/skill-asset-protocol/actions/runs/33989404422/attempts/1",
+    "artifact": {
+      "id": 9976154842,
+      "name": "wallet-kernel-installed-lifecycle-304fd17c4d9df5ad3e8369ad1da95b2cb550610e",
+      "reportedArchiveDigest": "sha256:151e3478f78d53b260a0f3ed4a45ae2113de4a0482dc1e6b3225ceae9eb2936b",
+      "reportedArchiveBytes": 1987,
+      "createdAt": "2026-09-05T20:12:59Z",
+      "reportedExpiresAt": "2026-10-05T20:12:58Z",
+      "metadataUrl": "https://api.github.com/repos/Aznatkoiny/skill-asset-protocol/actions/artifacts/9976154842",
+      "url": "https://github.com/Aznatkoiny/skill-asset-protocol/actions/runs/33989404422/artifacts/9976154842"
+    }
+  },
+  "retention": {
+    "recordedOn": "2026-09-05",
+    "originalFilesChanged": false,
+    "downloadedArchiveSha256": "sha256:151e3478f78d53b260a0f3ed4a45ae2113de4a0482dc1e6b3225ceae9eb2936b",
+    "archiveMatchesReportedDigest": true,
+    "files": {
+      "manifest.json": {
+        "sha256": "sha256:c7b2bec57390596eb16daeba18ceba48d4e71deacc32173335a3dc6324b839ee",
+        "bytes": 745
+      },
+      "events.jsonl": {
+        "sha256": "sha256:327635e63a4d6b8a4b49f3592eb6cfd9ed116627b502e257fff079c69ea7e16f",
+        "bytes": 1856
+      },
+      "summary.json": {
+        "sha256": "sha256:7ef9535d2383275b74cc36b25f375e0bb7af3fe693b8d7482e57f04285e36618",
+        "bytes": 1244
+      }
+    },
+    "localVerifierRecheck": {
+      "script": "scripts/verify-lifecycle-evidence.mjs",
+      "scriptSha256": "sha256:b79911396c8adbd7a1a08df625197c33ef8ba356c3b90e36da70c3074dfb076d",
+      "nodeVersion": "v24.18.1",
+      "expectedCommit": "304fd17c4d9df5ad3e8369ad1da95b2cb550610e",
+      "expectedRejection": true,
+      "exitCode": 1,
+      "code": "LIFECYCLE_EVIDENCE_INVALID"
+    }
+  }
+}
