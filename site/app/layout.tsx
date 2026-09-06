@@ -1,48 +1,23 @@
-import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
-import "./globals.css";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
+import type { Metadata } from 'next';
+import './globals.css';
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://neverhandedover.com"),
+  metadataBase: new URL('https://neverhandedover.com'),
   title: {
-    default: "Skill Asset Protocol — Spending controls for AI Agents",
-    template: "%s · Skill Asset Protocol",
+    default: 'Human Choice — More room for a life you value',
+    template: '%s · Human Choice',
   },
-  description:
-    "Pre-release offline preview of a customer-hosted Wallet Kernel for policy-bound Agent spending, exact human approvals, and planned signed receipts.",
+  description: 'Research and tools for human flourishing in the age of AI. Exploring capability, agency, and how the benefits of automation are shared.',
   openGraph: {
-    title: "Give AI Agents a wallet without giving them the keys",
-    description:
-      "Pre-release offline preview of a wallet-native Agent Spend Control Plane with budgets, seller policy, approvals, and planned signed receipts.",
-    url: "https://neverhandedover.com",
-    siteName: "SKILL ASSET PROTOCOL",
-    type: "website",
+    title: 'Human Choice — More room for a life you value',
+    description: 'Research and tools for human flourishing in the age of AI. Exploring capability, agency, and how the benefits of automation are shared.',
+    url: '/',
+    siteName: 'Human Choice',
+    type: 'website',
   },
-  alternates: { canonical: "https://neverhandedover.com" },
+  alternates: { canonical: '/' },
 };
 
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
-  return (
-    <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
-        {children}
-      </body>
-    </html>
-  );
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  return <html lang="en" data-scroll-behavior="smooth"><body>{children}</body></html>;
 }

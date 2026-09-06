@@ -130,7 +130,7 @@ function SpendProjectionPreview({
           <div className={styles.receiptTear} aria-hidden="true">
             ✂ · · · · · · · · · · · · · · · · · · · ·
           </div>
-          <p className={styles.receiptBrand}>Skill Asset Protocol</p>
+          <p className={styles.receiptBrand}>Human Choice · Wallet Kernel</p>
           <h3 id="projection-title">Unsigned session projection</h3>
           <p className={styles.receiptDim}>
             Illustrative only · not a SignedReceipt · no transaction broadcast
@@ -206,11 +206,13 @@ export function SpendControlSandbox({ pilotUrl }: { pilotUrl: string }) {
     (attempt) => attempt.decision === 'approval_required',
   );
   const focusRef = useRef<HTMLHeadingElement>(null);
-  const didMountRef = useRef(false);
+  const previousStageRef = useRef(state.stage);
 
   useEffect(() => {
-    if (didMountRef.current) focusRef.current?.focus();
-    else didMountRef.current = true;
+    if (previousStageRef.current !== state.stage) {
+      previousStageRef.current = state.stage;
+      focusRef.current?.focus();
+    }
   }, [state.stage]);
 
   return (

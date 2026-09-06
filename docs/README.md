@@ -4,6 +4,12 @@ Start with the repository [agent instructions](../AGENTS.md) for checkout
 orientation and the [document and evidence precedence addendum](evidence-precedence.md)
 when reconciling current work with historical plans or results.
 
+## Mission and website direction
+
+- [Human Choice — agreed direction](strategy/2026-09-06-human-flourishing-direction.md)
+  — the agreed purpose, capability/agency/participation commitments, initial
+  research focus, chosen Human Choice name, and local website candidate.
+
 ## Current v1 product design
 
 - [Agent Spend Control Plane — approved design](superpowers/specs/2026-07-31-agent-spend-control-plane-design.md)

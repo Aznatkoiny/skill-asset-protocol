@@ -1,4 +1,8 @@
-# Skill Asset Protocol
+# Human Choice
+
+Research and tools for human flourishing in the age of AI. The public identity
+connects capability, agency, and participation; Wallet Kernel is the first
+concrete system. See the [agreed direction](docs/strategy/2026-09-06-human-flourishing-direction.md).
 
 ## Agent Spend Control Plane
 
@@ -31,16 +35,20 @@ marketplace. Skill attribution and Creator compensation are deferred expansion
 modules: they may later consume Wallet Kernel receipts, but they do not define
 the v1 operator experience.
 
-## Pre-release website candidate
+## Human Choice website
 
-The source in [`site/`](site/) is an offline, deterministic candidate preview of
-the wallet-control product. It demonstrates policy loading, automatic allow,
-deny, exact approval, deliberate retry, and an unsigned session projection. It
-does not connect a wallet, sign a receipt, or broadcast a transaction.
+The source in [`site/`](site/) is the Human Choice website: Principles,
+Research, Systems, and About. Research question pages are proposed study outlines.
+The Systems page retains the deterministic Wallet Kernel demonstration of policy,
+allow, deny, exact approval, deliberate retry, and an unsigned session projection.
+The demonstration does not connect a wallet, sign a receipt, or broadcast a transaction.
 
-The approved design's release gate remains binding: this candidate must not
-replace the public homepage until the required implementation and fresh,
-recomputable evidence qualify. The separate `/proof` route is a static archive
+After reviewing the private Human Choice site, the owner approved the rebrand
+and explicitly authorized publication on Vercel on 2026-09-06. This authorizes
+the public mission, proposed research, and offline demonstration website;
+Wallet Kernel's implementation and fresh-evidence requirements still govern
+its live-product release. See the [publication decision](docs/strategy/2026-09-06-human-flourishing-direction.md#publication-decision).
+The separate `/proof` route is a static archive
 with one narrowly supported historical Base Sepolia receipt; the website no
 longer exposes a wallet or paid invocation endpoint.
 
@@ -54,7 +62,7 @@ npm ci
 npm run dev
 ```
 
-Open <http://localhost:3000>. The homepage needs no environment file, account,
+Open <http://localhost:3000>. The homepage and Systems demonstration need no environment file, account,
 wallet, API key, network request, or payment.
 
 ## First commercial offer
@@ -109,8 +117,8 @@ directory's README for its exact environment and safety boundary.
 
 - **`docs/superpowers/specs/2026-07-31-agent-spend-control-plane-design.md`**
   — the approved Wallet Kernel and commercial-pilot design.
-- **`site/`** — the pre-release offline wallet-control candidate and a separate
-  static historical proof archive.
+- **`site/`** — the Human Choice website, proposed research, offline
+  Wallet Kernel demonstration, and static historical proof archive.
 - **`spikes/pi-wielder/`** — the hardened wallet, policy, x402, journal,
   receipt, refund, and reconciliation evidence that the Wallet Kernel will
   evolve from.

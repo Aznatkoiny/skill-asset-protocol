@@ -60,7 +60,7 @@ export default function VariantA({ manifesto }: { manifesto: Manifesto }) {
       <div className="flex flex-wrap items-center justify-between gap-3 bg-black px-4 py-3 text-[10px] font-bold tracking-[0.16em] text-white md:px-8">
         <p>STATIC HISTORY — NOT THE CURRENT PRODUCT OR A LIVE PAYMENT ENDPOINT</p>
         <Link className="border-b border-white" href="/">
-          OPEN THE CURRENT WALLET KERNEL PREVIEW &rarr;
+          EXPLORE HUMAN CHOICE &rarr;
         </Link>
       </div>
 

@@ -1,151 +1,71 @@
 import Link from 'next/link';
+import { SiteFrame, TextLink } from './components/human-choice/SiteFrame';
+import { RoomToChoose } from './components/human-choice/RoomToChoose';
+import { commitments, questions } from './human-choice-content';
+import styles from './human-choice.module.css';
 
-import { Hero } from './components/landing/Hero';
-import { PilotCta } from './components/landing/PilotCta';
-import { ProofLoop } from './components/landing/ProofLoop';
-import { SpendControlSandbox } from './components/landing/SpendControlSandbox';
-import {
-  defaultPilotUrl,
-  evidenceReceipts,
-  repositoryUrl,
-  rolePaths,
-  spendControlDesignUrl,
-} from './landing-content';
-import styles from './landing.module.css';
-
-export default function Page() {
-  const pilotUrl =
-    process.env.NEXT_PUBLIC_PILOT_CONTACT_URL?.trim() || defaultPilotUrl;
-
+export default function HomePage() {
   return (
-    <main id="main-content" className={styles.page}>
-      <a className={styles.skipLink} href="#product-title">
-        Skip to main content
-      </a>
-
-      <header className={styles.topNav}>
-        <nav className={styles.navInner} aria-label="Primary navigation">
-          <Link className={styles.brand} href="/">
-            <span className={styles.brandMark} aria-hidden="true">
-              SA
-            </span>
-            <span className={styles.brandText}>
-              Skill Asset Protocol
-              <small>Agent spend preview</small>
-            </span>
-          </Link>
-          <div className={styles.navLinks}>
-            <a href="#how-it-works">How it works</a>
-            <a href="#sandbox">Sandbox</a>
-            <Link href="/proof">Legacy protocol proof</Link>
+    <SiteFrame>
+      <section className={styles.hero} aria-labelledby="home-title">
+        <div>
+          <p className={styles.eyebrow}>Research + tools for human flourishing</p>
+          <h1 id="home-title">Make room for a better human life.</h1>
+          <p className={styles.heroIntro}>We build and study AI systems that help people accomplish meaningful work, gain time, and retain control over their choices.</p>
+          <p className={styles.heroFootnote}>Our research asks how the benefits of automation reach the people whose lives it changes.</p>
+          <div className={styles.actions}>
+            <Link className={styles.button} href="/systems">Explore the work <span aria-hidden="true">↗</span></Link>
+            <TextLink href="/principles">Read our principles</TextLink>
           </div>
-          <a className={styles.navCta} href={pilotUrl}>
-            Design partner ↗
-          </a>
-        </nav>
-      </header>
-
-      <div className={styles.researchStrip}>
-        <span>Pre-release candidate · publication gate not cleared</span>
-        <span>
-          Customer demand, funded-wallet deployment, and live Wallet Kernel
-          settlement remain unvalidated
-        </span>
-      </div>
-
-      <Hero pilotUrl={pilotUrl} />
-      <div className={styles.hazardBand} aria-hidden="true" />
-      <ProofLoop />
-
-      <section className={styles.rolesSection} aria-labelledby="roles-title">
-        <div className={styles.rolesHeading}>
-          <div>
-            <p className={styles.eyebrow}>One kernel · three control surfaces</p>
-            <h2 id="roles-title">Bounded autonomy the buying group can inspect.</h2>
-          </div>
-          <p>
-            The Agent requests. The operator governs. The customer-owned wallet
-            signs only what the Wallet Kernel has already authorized.
-          </p>
         </div>
-        <div className={styles.roleGrid}>
-          {rolePaths.map((role) => (
-            <article key={role.label} className={styles.roleCard}>
-              <p className={styles.microLabel}>{role.label}</p>
-              <h3>{role.title}</h3>
-              <p>{role.body}</p>
-            </article>
-          ))}
+        <RoomToChoose />
+      </section>
+      <section className={styles.section} aria-labelledby="commitments-title">
+        <div className={styles.sectionHeading}>
+          <div><p className={styles.eyebrow}>What guides the work</p><h2 id="commitments-title">Progress people can feel in their lives.</h2></div>
+          <p>More time, stronger choices, and greater security count as progress—even when output stays the same.</p>
+        </div>
+        <div className={styles.commitmentGrid}>
+          {commitments.map((item) => <article className={styles.commitment} key={item.name}><p className={styles.label}>{item.name}</p><h3>{item.title}</h3><p>{item.description}</p></article>)}
         </div>
       </section>
-
-      <SpendControlSandbox pilotUrl={pilotUrl} />
-
-      <div className={styles.evidenceSection}>
-        <section aria-labelledby="evidence-title">
-          <div className={styles.evidenceHeader}>
-            <div>
-              <p className={styles.eyebrow}>Evidence stays bounded</p>
-              <h2 id="evidence-title">
-                Offline Wallet Kernel proof—not a production claim.
-              </h2>
-            </div>
-            <p>
-              The repository verifies policy, budget, approval, replay, refund,
-              and recovery behavior offline. This browser produces only an
-              unsigned projection that is not broadcast. Live CDP payment and
-              live testnet settlement evidence remain not run. The pinned Linux
-              deployment is also not run.
-            </p>
+      <section className={styles.section} aria-labelledby="system-title">
+        <div className={styles.projectFeature}>
+          <div>
+            <p className={styles.eyebrow}>A concrete place to start</p>
+            <h2 id="system-title">Delegate the task.<br />Keep a say in the terms.</h2>
+            <p>Wallet Kernel explores one part of human agency: letting an AI agent buy a resource within limits its operator understands and sets.</p>
+            <p><span className={styles.status}>Wallet Kernel · offline prototype</span></p>
+            <TextLink href="/systems">Try the spending-control demo</TextLink>
           </div>
-
-          <div className={styles.evidenceGrid}>
-            {evidenceReceipts.map((receipt) => (
-              <article key={receipt.label} className={styles.evidenceReceipt}>
-                <strong>{receipt.value}</strong>
-                <span>{receipt.label}</span>
-                <p>{receipt.detail}</p>
-              </article>
-            ))}
+          <div className={styles.flow}>
+            <p className={styles.label}>The idea in four steps</p>
+            <ol className={styles.flowSteps}>
+              <li><span>01</span><div><strong>You set the terms.</strong><p>Choose permitted sellers, budgets, and approval rules.</p></div></li>
+              <li><span>02</span><div><strong>The agent requests a resource.</strong><p>It asks within the authority you have given it.</p></div></li>
+              <li><span>03</span><div><strong>The kernel checks the request.</strong><p>Allow, decline, or ask for an exact approval.</p></div></li>
+              <li><span>04</span><div><strong>The outcome stays inspectable.</strong><p>Keep authorization, payment, and useful results distinct.</p></div></li>
+            </ol>
+            <p className={styles.finePrint}>Explore a browser simulation and inspect the separate engineering evidence.</p>
           </div>
-
-          <div className={styles.evidenceActions}>
-            <a className={styles.evidenceLink} href={spendControlDesignUrl}>
-              Read the approved control-plane design{' '}
-              <span aria-hidden="true">↗</span>
-            </a>
-            <a className={styles.evidenceLink} href={repositoryUrl}>
-              Inspect the source <span aria-hidden="true">↗</span>
-            </a>
-            <p className={styles.evidenceCaveat}>
-              Base Sepolia fixture · no mainnet · no real funds
-            </p>
-          </div>
-        </section>
-      </div>
-
-      <PilotCta pilotUrl={pilotUrl} />
-
-      <footer className={styles.footer}>
-        <div className={styles.footerBrand}>
-          <strong>Skill Asset Protocol</strong>
-          <p>
-            Wallet-native spending controls for AI Agents. Research build ·
-            Apache-2.0.
-          </p>
         </div>
-        <div className={styles.footerColumn}>
-          <strong>Explore</strong>
-          <a href="#how-it-works">How it works</a>
-          <a href="#sandbox">Spend-control sandbox</a>
-          <Link href="/proof">Historical protocol proof</Link>
+      </section>
+      <section className={styles.section} aria-labelledby="research-title">
+        <div className={styles.sectionHeading}>
+          <div><p className={styles.eyebrow}>The research agenda</p><h2 id="research-title">Questions worth staying with.</h2></div>
+          <p>Our first focus: people whose expertise and daily work are being reshaped by AI.</p>
         </div>
-        <div className={styles.footerColumn}>
-          <strong>Source</strong>
-          <a href={repositoryUrl}>GitHub repository ↗</a>
-          <a href={spendControlDesignUrl}>Approved product design ↗</a>
+        <div className={styles.researchList}>
+          {questions.slice(0, 3).map((question) => <Link href={`/research/${question.slug}`} className={styles.researchRow} key={question.slug}><span className={styles.researchNumber}>{question.number}</span><div><h3>{question.title}</h3><p>{question.summary}</p></div><div className={styles.researchEnd}>Proposed<span aria-hidden="true">↗</span></div></Link>)}
         </div>
-      </footer>
-    </main>
+        <div style={{ marginTop: 23 }}><TextLink href="/research">Explore all research questions</TextLink></div>
+      </section>
+      <section className={styles.closing}>
+        <p className={styles.eyebrow}>A purpose we can hold ourselves to</p>
+        <h2>AI should expand the lives people can choose.</h2>
+        <p>We will judge our work by what changes for people, publish what we learn, and change direction when the evidence calls for it.</p>
+        <TextLink href="/about">Meet the project</TextLink>
+      </section>
+    </SiteFrame>
   );
 }

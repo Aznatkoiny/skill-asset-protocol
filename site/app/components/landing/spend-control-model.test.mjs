@@ -537,19 +537,20 @@ test('each active stage exposes one explicit next operator action', () => {
   assert.equal(model.nextSpendSandboxAction('finalized'), null);
 });
 
-test('Hero and metadata independently lead with the Wallet Kernel', () => {
-  const hero = readFileSync(new URL('./Hero.tsx', import.meta.url), 'utf8');
+test('Human Choice identity keeps Wallet Kernel scoped to its system page', () => {
+  const hero = readFileSync(new URL('../../systems/page.tsx', import.meta.url), 'utf8');
   const layout = readFileSync(
     new URL('../../layout.tsx', import.meta.url),
     'utf8',
   );
 
   assert.match(hero, /customer-hosted Wallet Kernel/i);
-  assert.match(layout, /customer-hosted Wallet Kernel/i);
+  assert.match(layout, /Human Choice/);
+  assert.match(layout, /human flourishing/i);
   assert.doesNotMatch(hero, /reward close|reward program/i);
 });
 
-test('metadata describes a pre-release preview with planned receipts', () => {
+test('metadata describes the research purpose without claiming live product availability', () => {
   const source = readFileSync(
     new URL('../../layout.tsx', import.meta.url),
     'utf8',
@@ -560,8 +561,8 @@ test('metadata describes a pre-release preview with planned receipts', () => {
 
   assert.equal(descriptions.length, 2);
   for (const description of descriptions) {
-    assert.match(description, /pre-release offline preview/i);
-    assert.match(description, /planned signed receipts/i);
+    assert.match(description, /research and tools for human flourishing/i);
+    assert.doesNotMatch(description, /production.ready|live settlement|proven human outcomes/i);
   }
 });
 
@@ -622,9 +623,9 @@ test('pilot copy plans receipt export and allow-lists testnet sellers', () => {
   assert.doesNotMatch(source, /Approved Base Sepolia x402 resource servers/);
 });
 
-test('page evidence is unsigned and says live settlement evidence is not run', () => {
+test('system evidence is unsigned and says live settlement evidence is not run', () => {
   const source = readFileSync(
-    new URL('../../page.tsx', import.meta.url),
+    new URL('../../systems/page.tsx', import.meta.url),
     'utf8',
   ).replace(/\s+/g, ' ');
 
@@ -634,7 +635,7 @@ test('page evidence is unsigned and says live settlement evidence is not run', (
     /live CDP payment and live testnet settlement evidence remain not run/i,
   );
   assert.match(source, /customer-owned wallet/i);
-  assert.match(source, /publication gate not cleared/i);
+  assert.match(source, /Wallet Kernel is not released for live use/i);
 });
 
 test('sandbox artifact is not a signed receipt or transaction broadcast', () => {
