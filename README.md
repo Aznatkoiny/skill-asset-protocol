@@ -37,6 +37,8 @@ the v1 operator experience.
 
 ## Human Choice website
 
+The website is live at <https://neverhandedover.com>, hosted on Vercel.
+
 The source in [`site/`](site/) is the Human Choice website: Principles,
 Research, Systems, and About. Research question pages are proposed study outlines.
 The Systems page retains the deterministic Wallet Kernel demonstration of policy,

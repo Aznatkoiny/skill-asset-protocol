@@ -1,7 +1,8 @@
 # Human Choice website
 
-**Publication status:** the owner approved the Human Choice rebrand after
-reviewing the private site and authorized publication on Vercel on 2026-09-06.
+**Publication status:** live on Vercel at <https://neverhandedover.com> since
+2026-09-06. The owner approved the Human Choice rebrand after reviewing the
+private site and authorized the public deployment.
 Wallet Kernel remains an offline prototype with its live-product acceptance
 requirements in effect. See the [publication decision](../docs/strategy/2026-09-06-human-flourishing-direction.md#publication-decision)
 and [website review](../docs/reviews/2026-09-06-human-choice-website.md) for deployment results.

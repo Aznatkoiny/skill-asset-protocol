@@ -92,8 +92,8 @@ passed compilation, lint, type checks, and generation. Its validated archive
 contains 56 files, including all ten content pages and a 404 page. The exact
 source was pushed to the private Sites repository before the version was saved.
 
-The project's GitHub branch remains uncommitted. The existing public website
-and domain were not replaced. Sites calls this a production deployment of a
+At the private-review stage, the project's GitHub branch was still uncommitted
+and the public website had not been replaced. Sites calls this a production deployment of a
 separate private site; it is a review copy of the proposed website.
 
 ## Vercel publication preparation
@@ -120,3 +120,28 @@ types, and static generation in the production build; zero production
 dependency vulnerabilities; and `git diff --check`. Vercel's dry deployment
 inspection identified 42 website source files and excluded `.next`, `.vercel`,
 and `node_modules`. No local wallet or provider credentials are included.
+
+## Vercel publication result
+
+Production deployment succeeded on 2026-09-06. Vercel reports **Ready** and
+has assigned the existing public domains to Human Choice.
+
+- Main address: <https://neverhandedover.com>.
+- Deployment URL: <https://skill-asset-protocol-53o6a1faf-antonys-projects-d94f821f.vercel.app>.
+- Deployment ID: `dpl_3N5CAndNhtrnKCWrQE5Ja31Q2bhy`.
+- Published website source: `e2a22f3f090ac5f117973579d84ba69d711564e1` on
+  `codex/human-choice-website`, pushed to the project's GitHub repository.
+- Alias status: Vercel confirms `neverhandedover.com`,
+  `www.neverhandedover.com`, `skillassetprotocol.com`,
+  `skill-asset-protocol.vercel.app`, and the existing team project alias.
+
+Browser verification on the public domain showed the Human Choice homepage
+without an authentication prompt. The Rest choice changed its explanation;
+navigation to Systems displayed the offline sandbox and the live-use release
+limit. The meaningful-delegation research page rendered its proposed-study
+status, method, outcomes, and reconsideration criteria. This supplements the
+full local browser checks above; it is not a new human or payment study.
+
+The final follow-up commit records publication results in documentation only.
+It does not change the deployed application. The website branch is pushed;
+this publication does not merge the branch into the repository's default branch.
