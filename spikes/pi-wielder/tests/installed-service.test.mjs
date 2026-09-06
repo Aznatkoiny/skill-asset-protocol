@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { canonicalJson } from '../src/kernel/canonical.mjs';
 import { REQUIRED_ISOLATION_PROBE_RESULTS } from '../src/agent/isolation-preflight.mjs';
-import { composeInstalledService } from '../src/runtime/installed-service.mjs';
+import { assertServiceConfinement, composeInstalledService } from '../src/runtime/installed-service.mjs';
 
 const H = `sha256:${'a'.repeat(64)}`;
+const CONFINEMENT = ['CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb']
+  .map((field) => `${field}:\t0000000000000000`).join('\n') + '\nNoNewPrivs:\t1\n';
 const commit = 'a'.repeat(40);
 const root = `/srv/wallet/releases/${commit}`;
 const config = {
@@ -41,6 +43,7 @@ function fixture(changes = {}) {
     processApi: { platform: 'linux', pid: 12345, version: 'v24.18.1', execPath: process.execPath,
       getuid: () => 501, geteuid: () => 501, getgid: () => 501, getegid: () => 501, getgroups: () => [501] },
     readDeployment: () => config,
+    readProcessStatus: () => CONFINEMENT,
     inspectDescriptor: (fd) => {
       events.push('activation');
       return { fd, family: 'AF_INET', type: 'SOCK_STREAM', listening: true, address: '127.0.0.1', port: 8405 };
@@ -83,10 +86,22 @@ test('root, extra groups, wrong socket, and inherited secrets cannot reach the r
     (f) => { f.effects.processApi.getgroups = () => [501, 502]; },
     (f) => { f.input.environment.LISTEN_PID = '999'; },
     (f) => { f.input.environment.CDP_API_KEY_SECRET = 'sentinel'; },
+    (f) => { f.effects.readProcessStatus = () => CONFINEMENT.replace('NoNewPrivs:\t1', 'NoNewPrivs:\t0'); },
   ]) {
     const f = fixture(); mutate(f);
     await assert.rejects(composeInstalledService(f.input, f.effects));
     assert.equal(f.events.includes('runtime'), false);
+  }
+});
+
+test('installed confinement rejects capabilities, duplicate observations, and absent privilege facts', () => {
+  assert.doesNotThrow(() => assertServiceConfinement(CONFINEMENT));
+  for (const field of ['CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb']) {
+    assert.throws(() => assertServiceConfinement(CONFINEMENT.replace(`${field}:\t0000000000000000`, `${field}:\t0000000000000001`)),
+      { code: 'RUNTIME_CONFINEMENT' });
+  }
+  for (const value of ['', `${CONFINEMENT}NoNewPrivs:\t1\n`, CONFINEMENT.replace('NoNewPrivs:\t1\n', '')]) {
+    assert.throws(() => assertServiceConfinement(value), { code: 'RUNTIME_CONFINEMENT' });
   }
 });
 

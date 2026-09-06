@@ -1,4 +1,4 @@
-name: Pi Wielder Linux isolation and blocked live-launch contract
+name: Pi Wielder Linux isolation and installed lifecycle
 
 on:
   pull_request:
@@ -61,3 +61,103 @@ jobs:
             WALLET_KERNEL_TEST_AGENT_UID="$agent_uid" \
             WALLET_KERNEL_TEST_AGENT_GID="$agent_gid" \
             npm run test:systemd
+
+  installed-lifecycle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out the exact qualification revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install exact Node runtime
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.18.1
+          cache: npm
+          cache-dependency-path: spikes/pi-wielder/package-lock.json
+
+      - name: Prepare a standalone release without privileged package scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          qualification_stage="$RUNNER_TEMP/wallet-kernel-prepared"
+          mkdir "$qualification_stage"
+          git clone --no-local --no-hardlinks "$GITHUB_WORKSPACE" "$qualification_stage/source"
+          cp -R "$qualification_stage/source/spikes/pi-wielder" "$qualification_stage/release"
+          npm ci --ignore-scripts --prefix "$qualification_stage/release"
+          qualification_commit="$(git -C "$qualification_stage/source" rev-parse HEAD)"
+          test "$qualification_commit" = "$(git rev-parse HEAD)"
+          qualification_root=/opt/wallet-kernel-qualification
+          test ! -e "$qualification_root"
+          # Hosted tool installation can leave /opt writable by the runner.
+          # Establish the immutable ancestor required by the release contract
+          # on this disposable VM; never weaken the installed path checks.
+          test -d /opt
+          test ! -L /opt
+          stat --format='qualification ancestor before: %n uid=%u gid=%g mode=%a' / /opt
+          sudo chown 0:0 /opt
+          sudo chmod 0755 /opt
+          sudo install -d -m 0755 "$qualification_root/releases/$qualification_commit" "$qualification_root/node/bin"
+          sudo cp -R "$qualification_stage/source" "$qualification_root/source"
+          sudo cp -R "$qualification_stage/release/." "$qualification_root/releases/$qualification_commit/"
+          sudo install -m 0755 "$(command -v node)" "$qualification_root/node/bin/node"
+          sudo chown -hR 0:0 "$qualification_root"
+          stat --format='qualification ancestor prepared: %n uid=%u gid=%g mode=%a' / /opt "$qualification_root" "$qualification_root/node" "$qualification_root/node/bin" "$qualification_root/node/bin/node"
+
+      - name: Qualify installed deterministic startup and recovery with PID1
+        shell: bash
+        run: |
+          set -euo pipefail
+          qualification_root=/opt/wallet-kernel-qualification
+          qualification_commit="$(git rev-parse HEAD)"
+          kernel_user=wallet-kernel-qualification
+          agent_user=wallet-agent-qualification
+          sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin "$kernel_user"
+          sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin "$agent_user"
+          sudo -- /usr/bin/env -i PATH=/usr/bin:/bin \
+            "$qualification_root/node/bin/node" \
+            "$qualification_root/releases/$qualification_commit/scripts/qualify-systemd-lifecycle.mjs" \
+            --source-checkout "$qualification_root/source" \
+            --kernel-uid "$(id -u "$kernel_user")" --kernel-gid "$(id -g "$kernel_user")" \
+            --agent-uid "$(id -u "$agent_user")" --agent-gid "$(id -g "$agent_user")" \
+            --output "$qualification_root/report"
+
+      - name: Verify qualification evidence independently
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          qualification_root=/opt/wallet-kernel-qualification
+          qualification_commit="$(git rev-parse HEAD)"
+          "$qualification_root/node/bin/node" \
+            "$qualification_root/releases/$qualification_commit/scripts/verify-lifecycle-evidence.mjs" \
+            "$qualification_root/report" --commit "$qualification_commit"
+
+      - name: Retain only public qualification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wallet-kernel-installed-lifecycle-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            /opt/wallet-kernel-qualification/report/manifest.json
+            /opt/wallet-kernel-qualification/report/events.jsonl
+            /opt/wallet-kernel-qualification/report/summary.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove the disposable deployment
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          qualification_root=/opt/wallet-kernel-qualification
+          qualification_commit="$(git rev-parse HEAD)"
+          sudo -- /usr/bin/env -i PATH=/usr/bin:/bin \
+            "$qualification_root/node/bin/node" \
+            "$qualification_root/releases/$qualification_commit/scripts/cleanup-systemd-qualification.mjs" \
+            --deployment "$qualification_root/releases/$qualification_commit/deployment.json"

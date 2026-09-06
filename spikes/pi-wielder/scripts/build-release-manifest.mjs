@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { canonicalJson } from '../src/kernel/canonical.mjs';
-import { buildReleaseManifest } from '../src/kernel/release-integrity.mjs';
+import { buildReleaseManifest, serializeReleaseManifest, validateReleaseManifest } from '../src/kernel/release-integrity.mjs';
 
 function readCanonicalInput(filePath) {
   if (typeof filePath !== 'string' || !path.isAbsolute(filePath) || path.resolve(filePath) !== filePath) {
@@ -30,7 +30,9 @@ export function writeReleaseManifestExclusive({ manifestPath, manifest }) {
       || path.resolve(manifestPath) !== manifestPath) {
     throw new Error('release manifest output path must be canonical and absolute');
   }
-  const bytes = Buffer.from(`${canonicalJson(manifest)}\n`);
+  // Reject a release the installed reader cannot consume before creating the
+  // exclusive output file or reporting a successful seal.
+  const bytes = serializeReleaseManifest(validateReleaseManifest(manifest));
   const descriptor = fs.openSync(manifestPath,
     fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
     0o644);

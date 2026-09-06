@@ -5,28 +5,34 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { canonicalJson } from '../src/kernel/canonical.mjs';
+import { canonicalJson, KernelError } from '../src/kernel/canonical.mjs';
 import {
   captureDeploymentIsolationMetadata,
   captureDeploymentAuthorityMetadata,
   deploymentRendererInput,
   readDeploymentConfig,
+  isInstalledQualificationRelease,
 } from '../src/kernel/deployment.mjs';
 import { inspectEffectiveSystemd } from './inspect-systemd-effective.mjs';
 import { renderSystemdUnits } from './render-systemd-units.mjs';
 import { probeAgentIsolation } from './preflight-agent-isolation.mjs';
 import {
   assertClosedLoaderEnvironment,
+  MAXIMUM_RELEASE_MANIFEST_BYTES,
+  serializeReleaseManifest,
   validateReleaseManifest,
   verifyReleaseIntegrity,
 } from '../src/kernel/release-integrity.mjs';
 
 const READER_RELATIVE = 'scripts/prelaunch-kernel-reader.mjs';
+const INSTALLED_ROOT = fileURLToPath(new URL('../', import.meta.url)).replace(/\/$/, '');
 
 // The installed preflight, runtime, credential delivery and native listeners are
 // composed below and in src/runtime/. Offline tests cannot qualify PID1, actual
 // dropped identities or installed start/restart/cleanup. Keep both executable
-// entrypoints closed until a reviewed release retains that Linux evidence.
+// CDP entrypoints closed until a reviewed release retains that Linux evidence.
+// A manifest-bound offline-qualification profile exercises the same installed
+// lifecycle with fixed deterministic adapters and a loopback-only network envelope.
 export const LIVE_LAUNCH_GATE = Object.freeze({
   schemaVersion: 1,
   status: 'blocked',
@@ -36,6 +42,29 @@ export const LIVE_LAUNCH_GATE = Object.freeze({
     'LIVE_SYSTEMD_LIFECYCLE_EVIDENCE_REQUIRED',
   ]),
 });
+
+// Environment diagnostics deliberately inspect names only, before any private
+// file reads. Keep the shape bounded so the host harness can retain it safely.
+export function preflightEnvironmentDiagnostic(environment) {
+  const names = environment && typeof environment === 'object' && !Array.isArray(environment)
+    ? Object.getOwnPropertyNames(environment).filter(name => /^[A-Z][A-Z0-9_]{0,127}$/.test(name)).sort().slice(0, 128)
+    : [];
+  return Object.freeze({ diagnostic: 'installed-preflight-environment', names: Object.freeze(names) });
+}
+
+// Node's process.env has a special prototype. Snapshot only this trusted native
+// source at the CLI boundary; caller-supplied validation remains strict.
+export function capturePreflightProcessEnvironment() {
+  return Object.freeze({ ...process.env });
+}
+
+export function preflightFailureDiagnostic(error) {
+  const code = error instanceof KernelError ? Object.getOwnPropertyDescriptor(error, 'code')?.value : null;
+  const causeCode = typeof code === 'string' && code.length <= 128
+    && /^(?:RELEASE|SYSTEMD|DEPLOYMENT|AGENT|AUTHORITY|KERNEL|ISOLATION|CONFIG|LIVE|RUNTIME|POLICY|BUDGET|PAYMENT|APPROVAL|RECEIPT)_[A-Z0-9_]+$/.test(code)
+    ? code : null;
+  return Object.freeze({ code: 'LIVE_PREFLIGHT_FAILED', causeCode });
+}
 
 export function parsePreflightArguments(argv) {
   if (!Array.isArray(argv) || argv.length !== 6
@@ -53,17 +82,37 @@ export function parsePreflightArguments(argv) {
 }
 
 export function readManifestOnce(manifestPath) {
-  const descriptor = fs.openSync(manifestPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  let descriptor;
+  try { descriptor = fs.openSync(manifestPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK); }
+  catch (cause) { throw new KernelError('RELEASE_MANIFEST_FILE', 'release manifest could not be opened directly', { cause }); }
   try {
-    const stat = fs.fstatSync(descriptor);
-    if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== 0 || (stat.mode & 0o022) !== 0
-        || stat.size <= 0 || stat.size > 4 * 1024 * 1024) {
-      throw new Error('release manifest must be one bounded regular file');
+    const stat = fs.fstatSync(descriptor, { bigint: true });
+    if (!stat.isFile() || stat.nlink !== 1n || stat.uid !== 0n || (stat.mode & 0o022n) !== 0n) {
+      throw new KernelError('RELEASE_MANIFEST_FILE', 'release manifest must be one immutable root-owned regular file');
     }
-    const bytes = fs.readFileSync(descriptor);
-    const value = JSON.parse(bytes.toString('utf8'));
-    if (!bytes.equals(Buffer.from(`${canonicalJson(value)}\n`))) {
-      throw new Error('release manifest must be canonical JSON plus newline');
+    if (stat.size <= 0n || stat.size > BigInt(MAXIMUM_RELEASE_MANIFEST_BYTES)) {
+      throw new KernelError('RELEASE_MANIFEST_SIZE', 'release manifest is outside the supported byte limit');
+    }
+    // Read at most the stat size plus one, so growth cannot turn this bounded
+    // reader into an unbounded allocation after the metadata check.
+    const buffer = Buffer.alloc(Number(stat.size) + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const count = fs.readSync(descriptor, buffer, length, buffer.length - length, length);
+      if (count === 0) break;
+      length += count;
+    }
+    const after = fs.fstatSync(descriptor, { bigint: true });
+    if (length !== Number(stat.size) || ['dev', 'ino', 'size', 'uid', 'gid', 'mode', 'nlink', 'mtimeNs', 'ctimeNs']
+      .some(field => stat[field] !== after[field])) {
+      throw new KernelError('RELEASE_MANIFEST_RACE', 'release manifest changed while being read');
+    }
+    const bytes = buffer.subarray(0, length);
+    let value;
+    try { value = JSON.parse(bytes.toString('utf8')); }
+    catch (cause) { throw new KernelError('RELEASE_MANIFEST_JSON', 'release manifest is not JSON', { cause }); }
+    if (!bytes.equals(serializeReleaseManifest(value))) {
+      throw new KernelError('RELEASE_MANIFEST_CANONICAL', 'release manifest must be canonical JSON plus newline');
     }
     return validateReleaseManifest(value);
   } finally { fs.closeSync(descriptor); }
@@ -248,15 +297,17 @@ export async function runInstalledLivePreflight({ argv, environment }, effects =
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  if (LIVE_LAUNCH_GATE.status === 'blocked') {
+  if (LIVE_LAUNCH_GATE.status === 'blocked' && !isInstalledQualificationRelease(INSTALLED_ROOT)) {
     process.stderr.write(`${canonicalJson(LIVE_LAUNCH_GATE)}\n`);
     // EX_CONFIG with Restart=no prevents privileged restart storms.
     process.exitCode = LIVE_LAUNCH_GATE.exitStatus;
   } else {
-    runInstalledLivePreflight({ argv: process.argv.slice(2), environment: process.env })
+    const environment = capturePreflightProcessEnvironment();
+    process.stderr.write(`${canonicalJson(preflightEnvironmentDiagnostic(environment))}\n`);
+    runInstalledLivePreflight({ argv: process.argv.slice(2), environment })
       .then(({ status, preflightDigest }) => process.stdout.write(`${canonicalJson({ status, preflightDigest })}\n`))
-      .catch(() => {
-        process.stderr.write('LIVE_PREFLIGHT_FAILED\n');
+      .catch((error) => {
+        process.stderr.write(`${canonicalJson(preflightFailureDiagnostic(error))}\n`);
         process.exitCode = 1;
       });
   }

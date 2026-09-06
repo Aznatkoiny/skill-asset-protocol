@@ -1,18 +1,21 @@
 # RUNBOOK - Pi Wielder Agent Spend Control Plane
 
-The supported automated workflow is deterministic and offline. It covers both the
-legacy Collar proof and the newer Wallet Kernel process-acceptance path. No funded
+The supported automated workflows are offline. They cover the legacy Collar proof,
+Wallet Kernel process acceptance, and disposable installed Linux qualification. No funded
 wallet, provider key, CDP credential, or live facilitator is needed. Pi is the Wielder;
 Agent and Operator name local control-plane security roles.
 
-Current release status is intentionally asymmetric:
+Current release status:
 
 - deterministic verification and evidence are **measured offline**; wallet settlement,
   deployment, and cross-UID isolation are simulated;
 - live CDP and Base Sepolia payment are **not-run**;
-- the installed preflight, runtime, secret delivery, and native listener composition
-  have offline tests; Linux/systemd launch remains **blocked** by
-  `LIVE_LAUNCH_NOT_READY` (exit 78) until actual installed lifecycle evidence qualifies;
+- installed `offline-qualification` passed all 43 required checks at source
+  `3ef2dbcb78bb7c04ec19aa34b0af7dc73eadeef2`, with root, systemd PID1, and exactly
+  Node 24.18.1 on Ubuntu 24.04; see the
+  [original run and evidence](#disposable-installed-qualification);
+- the default or explicit `cdp-testnet` profile remains **blocked** by
+  `LIVE_LAUNCH_NOT_READY` (exit 78); offline qualification does not enable live CDP;
 - there is no mainnet mode, automated funding, custody service, or real-funds workflow.
 
 Do not interpret a local macOS pass, a deterministic adapter, or a skipped systemd test
@@ -394,9 +397,11 @@ operator can review the trust boundary; satisfying them does not remove the curr
 1. Use Linux with systemd, a clean exact Git commit, `npm ci`, and exactly Node
    24.18.1. The pinned Node executable and the full installed dependency tree are part
    of release integrity.
-2. Provision distinct, non-root numeric Kernel and Pi UIDs with pinned primary GIDs.
-   Clear supplementary groups before either privileged probe or service execution.
-   Live startup refuses root, a shared UID, identity drift, or enrollment/config drift.
+2. Provision distinct, non-root numeric Kernel and Pi UIDs with pinned primary GIDs
+   and no additional account-group memberships. Dropped probes clear supplementary
+   groups, and service startup checks the actual process groups. An empty systemd
+   `SupplementaryGroups=` does not remove the account database's memberships.
+   Startup refuses root, a shared UID, identity drift, or enrollment/config drift.
 3. Choose one root-owned trusted ancestor. Every configured private, writable,
    configuration, release, socket, evidence, and handoff path must be reached by a
    complete non-symlink descriptor walk beneath it. Any group/other-writable or sticky
@@ -427,9 +432,10 @@ offline authority bootstrap, and separately confirmed enrollment/policy inputs r
 explicit prerequisites. It verifies a clean standalone source checkout at the declared
 commit, the prepared source bytes/modes, and installed package metadata against the
 committed lock, then hashes every installed byte into the release manifest. It does not
-run npm as root or claim to reproduce registry tarballs. Both installed entrypoints
-remain gated; there is no environment flag or CLI switch that enables an unqualified
-release.
+run npm as root or claim to reproduce registry tarballs. Both installed CDP entrypoints
+remain gated; there is no environment flag or CLI switch that enables a live release.
+The separate manifest-bound `offline-qualification` profile below can exercise the
+installed lifecycle only with its fixed synthetic external adapters.
 
 Start from [deployment.example.json](deploy/deployment.example.json) and
 [kernel.env.example](deploy/kernel.env.example). Replace the zero commit, choose actual
@@ -440,11 +446,18 @@ The separate environment source contains customer CDP/RPC inputs as inert, bound
 `KEY=VALUE` data. Do not use the legacy mixed-purpose `.env.example` for this service.
 The example uses trusted ancestor `/` to cover `/opt`, `/var`, `/run`, and `/etc`;
 every traversed directory still must pass its ownership and non-symlink checks.
+Commit the reviewed source first, then generate the deployment file inside the
+prepared release addressed by that commit. Do not try to commit a deployment file
+that contains its own resulting Git commit. The release manifest binds that generated
+file, the selected policy/routes, and the committed executable graph.
 
 Production unit artifacts have fixed paths:
 `/etc/systemd/system/wallet-kernel.service` and
 `/etc/systemd/system/wallet-kernel-console.socket`. Linked or custom search-path units
-are unsupported. Run the installer only from the verified source or prepared release,
+are unsupported. The host must provide immutable root-owned `/usr/bin/systemctl`
+and `/usr/bin/busctl`. The inspector reads credential mappings and the environment-file
+list as typed PID1 properties because systemd v255 does not faithfully print them
+through `systemctl show`. Run the installer only from the verified source or prepared release,
 using the exact pinned Node binary, after completing the offline prerequisites:
 
 ```text
@@ -513,19 +526,106 @@ The loader never sources shell text or mutates `process.env`. Native Hono adapte
 `overrideGlobalObjects: false`. The Operator Unix socket and inherited console listener
 start before Agent admission; the runtime closes its authority and listeners on startup
 failure. Actual PID1 delivery, dropped-Agent denial of the delivered copy, and installed
-start/restart/cleanup must still be qualified on the target Linux host.
+start/restart/cleanup passed in the revision-bound
+[offline qualification below](#disposable-installed-qualification). A changed
+release or target host needs fresh evidence.
 
-At present, step 12 does **not** produce a live service. The preflight command emits a
-machine-readable gate with code `LIVE_LAUNCH_NOT_READY` and exits 78. The remaining
-release blocker is:
+For the default or explicit `cdp-testnet` profile, step 12 does **not** produce a live
+service. The preflight command still emits a machine-readable gate with code
+`LIVE_LAUNCH_NOT_READY` and exits 78. It continues to report:
 
 - `LIVE_SYSTEMD_LIFECYCLE_EVIDENCE_REQUIRED`.
+
+The passing installed offline result does not change that executable admission
+gate or authorize CDP execution. Accepting the evidence in a reviewed CDP/testnet
+runner remains separate work.
 
 The listener requirement includes production `@hono/node-server` adapters configured
 with `overrideGlobalObjects: false`. A local macOS test cannot supply the required
 Linux root/systemd lifecycle evidence. A skipped Linux/systemd integration is recorded
 as skipped, never passed. Any failure after socket enablement must leave the socket
 disabled and the service stopped.
+
+### Disposable installed qualification
+
+The [`installed-lifecycle` job](../../.github/workflows/pi-wielder-systemd.yml)
+is the host procedure for `executionProfile: "offline-qualification"`.
+It needs a disposable Ubuntu 24.04 VM with systemd as PID1, root for installation,
+and exactly Node 24.18.1. It creates dedicated Kernel/Agent accounts and installs the
+fixed unit names under `/etc/systemd/system`. Use a clean VM with none of the fixed
+qualification directories or Wallet Kernel units already present. This procedure
+creates and resets synthetic authority; it must not select a customer deployment.
+
+This procedure passed all **43 required checks** at source commit
+`3ef2dbcb78bb7c04ec19aa34b0af7dc73eadeef2` in
+[run 33993435474, attempt 1](https://github.com/Aznatkoiny/skill-asset-protocol/actions/runs/33993435474/attempts/1).
+The [installed job](https://github.com/Aznatkoiny/skill-asset-protocol/actions/runs/33993435474/job/101379614017)
+completed qualification, independent verification, and final teardown successfully.
+Local verification of the original artifact recomputed 43 checks, no missing or
+failed checks, and a null manifest failure. This result identifies the qualified
+source revision; a later documentation or merge commit is not the measured revision.
+
+The workflow checks out the exact qualification revision, creates a standalone
+source clone, installs locked dependencies unprivileged with `npm ci --ignore-scripts`,
+and copies the prepared source, release, and Node executable into root-owned paths
+under `/opt/wallet-kernel-qualification`. The source checkout stays clean. Per-host
+deployment, fixture policy, and route files are generated only in
+`releases/<commit>` before the installer seals that release. The installer verifies
+the source commit and bytes, package lock, ownership, unit paths, and PID1 configuration;
+it enables the console socket without starting it.
+
+The qualification harness uses the installed commands and listeners. The verified
+result covers actual process IDs, capabilities and inherited socket identity;
+Agent/Kernel filesystem boundaries and PID1 credential delivery; automatic payment and
+exact approval with deliberate retry; clean restart and forced-process recovery;
+rejected invalid starts; and durable holds, signatures and signed receipts across
+interrupted signing, interrupted paid retry, unresolved payment, and charged failure.
+Each monetary scenario uses fresh synthetic authority. The fixture key is public and
+must never receive funds. No customer CDP/RPC values are supplied or live adapters loaded.
+
+The profile renders `IPAddressDeny=any` and `IPAddressAllow=localhost`, and the inspector
+checks the effective properties. Those properties alone are not a network-denial test.
+The workflow does not establish reboot recovery or recreate `/run` state across a VM
+reboot. Local component passes and skipped tests remain separate from the measured
+installed run.
+
+Only `manifest.json`, `events.jsonl`, and `summary.json` in
+`/opt/wallet-kernel-qualification/report` are uploaded. These public files contain
+bounded lifecycle observations and public projections, not environment files,
+credentials, private keys, payment headers, SQLite files, or raw service logs. The
+workflow runs `scripts/verify-lifecycle-evidence.mjs` against the expected commit and
+retains the artifacts for 30 days. Review the run conclusion and retained artifacts
+together; an uploaded failure report is not successful qualification. The evidence
+scope remains `installed-offline-qualification`, with live CDP and testnet transactions
+`not-run` and public release `not-qualified`.
+
+For the passing run, the [original Actions artifact](https://github.com/Aznatkoiny/skill-asset-protocol/actions/runs/33993435474/artifacts/9977391251)
+contains the three unchanged public files. The downloaded ZIP matches GitHub's
+reported digest
+`sha256:2b00a4e7e1b00bffdc805e043c59308e0ffb89fbfa0be86b2b36129c670e40f9`;
+the original manifest's byte digest is
+`sha256:7c6a88a82d9c73cc3ba39f7449f8b1bb955d72d4d2bc494c3476169e56cb84d8`.
+The files and separately authored provenance are preserved in the
+[repository archive](evidence/2026-09-05-installed-offline-lifecycle/README.md),
+alongside eleven earlier failed attempts with their original status. The original
+Actions artifact expires at `2026-10-05T21:39:28Z`; the repository copy preserves
+the evidence beyond that download window.
+
+The final workflow step invokes `scripts/cleanup-systemd-qualification.mjs` with
+`--deployment <release>/deployment.json` and the pinned Node executable. This helper accepts only
+the exact disposable profile/paths and verifies installed unit bytes, PID1 fragment
+paths and commands before acting. It attempts socket stop, service stop, and socket
+disable independently, then waits for no jobs, no service process, a disabled inactive
+socket, and closed TCP/admin listeners. It deletes only the verified unit files after
+quiescence and reloads PID1. Failed ownership or quiescence checks retain the unit
+files; any cleanup error fails the step. The helper never deletes unrelated units
+or accounts. The VM, fixture state and dedicated accounts may then be discarded as
+a whole. This final step runs after artifact upload and passed in the qualified
+job above; an uploaded artifact alone does not establish teardown success.
+
+This job supplies evidence for the named installed offline scenarios. It does not remove
+`LIVE_LAUNCH_NOT_READY`, authorize a funded run, or satisfy the separately human-gated
+Base Sepolia runner and evidence requirements in section 14.
 
 ## 11. Agent enrollment, policy, and credential handling
 
@@ -582,12 +682,13 @@ new descriptor confirmation, enrollment import, policy/config validation, and fr
 isolation report; it never silently rotates a token inside an existing binding.
 
 CDP credentials are human-provisioned secrets. The required names are
-`CDP_API_KEY_ID`, `CDP_API_KEY_SECRET`, `CDP_WALLET_SECRET`, and `CDP_WALLET_NAME`, but
-the current release does not have a reviewed path that loads them after privileged
-preflight without passing them through the root-prefixed preflight process. Provision
-them only in an external owner-only secret store for the future non-root loader; do not
-populate an improvised environment
-or paste values into shell history, chat, unit files, release manifests, run
+`CDP_API_KEY_ID`, `CDP_API_KEY_SECRET`, `CDP_WALLET_SECRET`, and `CDP_WALLET_NAME`.
+The installed composition obtains its inert environment input through PID1's fixed
+credential copy, opened after the Kernel identity and release checks. The live profile
+remains blocked and the qualification workflow uses only synthetic values. For a
+future authorized CDP deployment, provision the external owner-only source described
+in section 9; do not populate an improvised environment or paste values into shell
+history, chat, unit files, release manifests, run
 descriptors, evidence, or tracked files. `CDP_WALLET_NAME` must resolve to the same
 customer-owned wallet address pinned by the active PolicyVersion. Funding that wallet
 with Base Sepolia test USDC is a human action; the software never invokes a faucet or
@@ -614,8 +715,10 @@ systemctl start wallet-kernel-console.socket
 
 Then `npm run operator -- console launch` asks the Unix admin API for a one-time URL.
 The bearer travels only in the URL fragment, which browsers do not send in HTTP. The
-root-owned socket-activated loopback listener retains the reserved port across a Kernel
-crash; do not replace it with a self-bound listener. Deterministic mode has a direct
+root-owned socket-activated loopback listener supplies the Kernel's inherited console
+descriptor. Clean restarts preserve socket activation; failed starts or runtime faults
+disable and stop it as described in section 13. Do not replace it with a self-bound
+listener. Deterministic mode has a direct
 loopback fallback for offline testing only.
 
 ### Approval and denial
@@ -693,6 +796,16 @@ closes SQLite, and releases the process-lifetime authority lock last. A normal r
 must run full recovery, event-chain and receipt-parity validation before reopening
 admission. Do not delete a lock, socket, intent, or pending row to make startup pass.
 
+`ExecStopPost` invokes the pinned Node cleanup helper. Only exact
+`SERVICE_RESULT=success` preserves the enabled console socket so an ordinary
+`systemctl restart wallet-kernel.service` can pass preflight again. A failed preflight,
+failed start, runtime failure or `SIGKILL` independently attempts socket disable and
+`stop --no-block`. Missing or malformed stop-phase status fails into cleanup. The
+helper requests cleanup; the caller must still await an inactive/failed service with
+`MainPID=0`, no jobs, and a disabled inactive socket. There is no automatic restart
+loop or retained console listener after a fault. Explicit fault recovery re-enables
+the socket and imports a fresh isolation attestation before starting again.
+
 For maintenance or Agent replacement, prevent socket activation before stopping the
 service:
 
@@ -701,8 +814,9 @@ systemctl disable --now wallet-kernel-console.socket
 systemctl stop wallet-kernel.service
 ```
 
-Verify both units are `inactive`, the socket is `disabled`, both `Job` values are
-empty, `MainPID=0`, no listener remains on `127.0.0.1:8405`, and a role-`bootstrap`
+Verify the service is `inactive` or `failed` with `MainPID=0`, the socket is `inactive`
+and `disabled`, both `Job` values are empty, no listener remains on `127.0.0.1:8402`,
+`127.0.0.1:8405` or the configured Unix admin socket, and a role-`bootstrap`
 authority-lock probe succeeds. Keep a connection storm running during the check; after
 socket disablement, dropped Pi traffic must not reactivate the service or acquire the
 authority lock. If any check fails, leave the socket disabled and the service stopped.
@@ -800,7 +914,8 @@ website reframe remains gated on fresh qualifying testnet evidence; the quaranti
 2026-07-15 n=48 aggregate cannot satisfy that gate because normalized per-call samples
 were not retained.
 
-The following remain outside this spike: mainnet, real funds, custody, hosted policy
-authority, automated funding, qualified installed Linux lifecycle, demonstrated live
-CDP payment or PID1 secret delivery, and any public commercialization claim based only
-on offline evidence.
+The installed offline lifecycle and PID1 credential delivery are qualified for the
+source revision and host procedure recorded in section 10. Live CDP payment with
+retained Base Sepolia evidence remains unqualified. Mainnet, real funds, custody,
+hosted policy authority, automated funding, and
+public commercialization claims based only on offline evidence remain outside scope.

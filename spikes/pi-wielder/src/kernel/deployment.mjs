@@ -22,8 +22,12 @@ function inside(parent, child) {
 }
 
 export function validateDeploymentConfig(value) {
-  const config = exactRecord(value, FIELDS, [], 'DEPLOYMENT_CONFIG', 'public deployment');
+  const config = exactRecord(value, FIELDS, ['executionProfile'], 'DEPLOYMENT_CONFIG', 'public deployment');
   if (config.schemaVersion !== 1 || !/^[0-9a-f]{40}$/.test(config.commit)) fail('invalid deployment version or commit');
+  if (config.executionProfile !== undefined
+      && !['cdp-testnet', 'offline-qualification'].includes(config.executionProfile)) {
+    fail('unsupported installed execution profile');
+  }
   for (const field of IDENTITIES) {
     if (typeof config[field] !== 'string' || !/^[1-9][0-9]*$/.test(config[field])
         || !Number.isSafeInteger(Number(config[field]))) fail('deployment identities must be positive numeric text');
@@ -65,7 +69,17 @@ export function validateDeploymentConfig(value) {
 
 export function deploymentRendererInput(value) {
   const config = validateDeploymentConfig(value);
-  return Object.freeze(Object.fromEntries(RENDER_FIELDS.map((field) => [field, config[field]])));
+  return Object.freeze({ ...Object.fromEntries(RENDER_FIELDS.map((field) => [field, config[field]])),
+    ...(config.executionProfile === undefined ? {} : { executionProfile: config.executionProfile }) });
+}
+
+// Selection is sealed into deployment.json and the release manifest. Neither an
+// environment variable nor command-line input selects a qualification adapter.
+export function isInstalledQualificationRelease(releaseRoot) {
+  try {
+    const config = readDeploymentConfig(path.join(releaseRoot, 'deployment.json'));
+    return config.releaseRoot === releaseRoot && config.executionProfile === 'offline-qualification';
+  } catch { return false; }
 }
 
 export function readDeploymentConfig(filePath, { expectedOwnerUid = 0 } = {}) {

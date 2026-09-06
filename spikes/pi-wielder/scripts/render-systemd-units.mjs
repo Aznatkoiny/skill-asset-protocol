@@ -52,7 +52,7 @@ function closedInput(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     fail('SYSTEMD_RENDER_INPUT', 'systemd render input must be one plain object');
   }
-  const allowed = new Set([...INPUT_FIELDS, 'install', 'expectedOwnerUid']);
+  const allowed = new Set([...INPUT_FIELDS, 'install', 'expectedOwnerUid', 'executionProfile']);
   const keys = Reflect.ownKeys(value);
   if (INPUT_FIELDS.some((field) => !Object.hasOwn(value, field))
       || keys.some((field) => typeof field !== 'string' || !allowed.has(field))) {
@@ -60,8 +60,12 @@ function closedInput(value) {
   }
   const base = exactRecord(Object.fromEntries(INPUT_FIELDS.map((field) => [field, value[field]])),
     INPUT_FIELDS, [], 'SYSTEMD_RENDER_INPUT', 'systemd render input');
+  if (Object.hasOwn(value, 'executionProfile') && !['cdp-testnet', 'offline-qualification'].includes(value.executionProfile)) {
+    fail('SYSTEMD_RENDER_INPUT', 'execution profile must be absent, cdp-testnet, or offline-qualification');
+  }
   return Object.freeze({
     ...base,
+    ...(value.executionProfile === 'offline-qualification' ? { executionProfile: value.executionProfile } : {}),
     install: value.install === undefined ? false : value.install,
     expectedOwnerUid: value.expectedOwnerUid === undefined ? 0 : value.expectedOwnerUid,
   });
@@ -145,6 +149,8 @@ export function renderSystemdUnits(value) {
     ENVIRONMENT_PATH: input.environmentPath, AUTHORITY_ROOT: input.authorityRoot,
     EVIDENCE_ROOT: input.evidenceRoot, RUNTIME_ROOT: input.runtimeRoot,
     AGENT_RUN_OUTBOX_PATH: input.agentRunOutboxPath,
+    EXECUTION_PROFILE: input.executionProfile === 'offline-qualification'
+      ? 'IPAddressDeny=any\nIPAddressAllow=localhost' : '',
   };
   const serviceBytes = substitute(fs.readFileSync(SERVICE_TEMPLATE, 'utf8'), replacements);
   const socketBytes = substitute(fs.readFileSync(SOCKET_TEMPLATE, 'utf8'), replacements);
@@ -164,6 +170,7 @@ export function renderSystemdUnits(value) {
     servicePath: input.serviceOutputPath, socketPath: input.socketOutputPath,
     readWritePaths: [input.authorityRoot, input.evidenceRoot, input.runtimeRoot,
       input.agentRunOutboxPath],
+    ...(input.executionProfile ? { executionProfile: input.executionProfile } : {}),
   });
   return Object.freeze({
     serviceBytes, socketBytes,

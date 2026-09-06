@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { fork } from 'node:child_process';
+import { fork, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
@@ -12,6 +12,7 @@ import { Hono } from 'hono';
 import { encodePaymentRequiredHeader } from '@x402/core/http';
 import { createX402V2Transport } from '../src/adapters/x402-v2-transport.mjs';
 import { listenActivatedConsole, listenLoopback, listenUnixAdmin } from '../src/runtime/listeners.mjs';
+import { acquireAuthorityLock } from '../src/kernel/authority-lock.mjs';
 
 test('actual Agent and Operator adapters preserve native fetch Response compatibility with x402', async () => {
   const native = {Request,Response,Headers};
@@ -118,4 +119,83 @@ test('native console adapter adopts an inherited loopback fd3 without replacing 
   assert.deepEqual(await response.json(), {nativeResponse:true});
   child.send('close');
   assert.deepEqual(await exited, {code:0, signal:null}, stderr);
+});
+
+function socketRecoveryFixture(t) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-socket-recovery-'));
+  fs.chmodSync(directory, 0o700);
+  const databasePath = path.join(directory, 'kernel.sqlite');
+  const pathTrust = Object.freeze({mode:'deterministic', trustedAncestor:directory,
+    kernelUid:process.getuid(), agentUid:process.getuid()});
+  const authorityLock = acquireAuthorityLock({databasePath, role:'kernel', pathTrust});
+  t.after(()=> {authorityLock.close(); fs.rmSync(directory, {recursive:true, force:true});});
+  const app = new Hono();
+  app.get('/operator/probe', context=>context.json({ok:true}));
+  return {app, databasePath, authorityLock, socketPath:path.join(directory, 'admin.sock'),
+    kernelUid:process.getuid(), kernelGid:process.getgid()};
+}
+
+function leaveCrashedSocket(socketPath) {
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL('./fixtures/runtime-stale-socket-worker.mjs', import.meta.url)), socketPath],
+    {encoding:'utf8', timeout:5000});
+  assert.equal(result.signal, 'SIGKILL', result.stderr);
+  assert.equal(fs.lstatSync(socketPath).isSocket(), true);
+}
+
+test('a hard-crash Unix socket is recovered only while holding its genuine Kernel authority lock', async (t) => {
+  const input = socketRecoveryFixture(t);
+  leaveCrashedSocket(input.socketPath);
+  assert.throws(()=>listenUnixAdmin({...input,authorityLock:undefined}), {code:'RUNTIME_LISTENER'});
+  assert.throws(()=>listenUnixAdmin({...input,authorityLock:{close(){}}}), {code:'RUNTIME_LISTENER'});
+  assert.throws(()=>listenUnixAdmin({...input,databasePath:`${input.databasePath}.wrong`}), {code:'RUNTIME_LISTENER'});
+  const listener = await listenUnixAdmin(input);
+  await listener.close();
+  assert.equal(fs.existsSync(input.socketPath), false);
+  leaveCrashedSocket(input.socketPath);
+  input.authorityLock.close();
+  assert.throws(()=>listenUnixAdmin(input), {code:'RUNTIME_LISTENER'});
+  assert.equal(fs.lstatSync(input.socketPath).isSocket(), true);
+});
+
+test('socket recovery refuses a live listener and preserves its inode', async (t) => {
+  const input = socketRecoveryFixture(t);
+  const listener = await listenUnixAdmin(input);
+  const before = fs.lstatSync(input.socketPath, {bigint:true});
+  try {
+    await assert.rejects(listenUnixAdmin(input), {code:'RUNTIME_LISTENER'});
+    const after = fs.lstatSync(input.socketPath, {bigint:true});
+    assert.equal(after.ino, before.ino);
+    assert.equal(after.dev, before.dev);
+  } finally {await listener.close();}
+});
+
+test('socket recovery rejects symlinks, hard links and unsafe modes without removing them', (t) => {
+  const input = socketRecoveryFixture(t);
+  leaveCrashedSocket(input.socketPath);
+  fs.chmodSync(input.socketPath, 0o666);
+  assert.throws(()=>listenUnixAdmin(input), {code:'RUNTIME_LISTENER'});
+  fs.chmodSync(input.socketPath, 0o600);
+  const alias = `${input.socketPath}.alias`;
+  fs.linkSync(input.socketPath, alias);
+  assert.throws(()=>listenUnixAdmin(input), {code:'RUNTIME_LISTENER'});
+  fs.unlinkSync(alias);
+  fs.renameSync(input.socketPath, alias);
+  fs.symlinkSync(alias, input.socketPath);
+  assert.throws(()=>listenUnixAdmin(input), {code:'RUNTIME_LISTENER'});
+  assert.equal(fs.lstatSync(input.socketPath).isSymbolicLink(), true);
+});
+
+test('socket replacement during stale probing is refused and the replacement survives', async (t) => {
+  const input = socketRecoveryFixture(t);
+  leaveCrashedSocket(input.socketPath);
+  t.mock.method(net.Socket.prototype, 'connect', function () {
+    setImmediate(()=>{
+      fs.unlinkSync(input.socketPath);
+      fs.writeFileSync(input.socketPath, 'replacement-must-survive', {mode:0o600});
+      this.emit('error', Object.assign(Error('synthetic stale probe'), {code:'ECONNREFUSED'}));
+    });
+    return this;
+  });
+  await assert.rejects(listenUnixAdmin(input), {code:'RUNTIME_LISTENER'});
+  assert.equal(fs.readFileSync(input.socketPath, 'utf8'), 'replacement-must-survive');
 });

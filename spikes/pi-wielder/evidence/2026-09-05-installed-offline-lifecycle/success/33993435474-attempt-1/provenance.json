@@ -1,0 +1,115 @@
+{
+  "schemaVersion": 1,
+  "evidenceStatus": "installed_offline_qualified",
+  "authorship": "Retention metadata authored after the run, not original harness output; the reviewed copy is retained in the repository.",
+  "source": {
+    "repository": "Aznatkoiny/skill-asset-protocol",
+    "workflowPath": ".github/workflows/pi-wielder-systemd.yml",
+    "runId": 33993435474,
+    "runAttempt": 1,
+    "headSha": "3ef2dbcb78bb7c04ec19aa34b0af7dc73eadeef2",
+    "reportedRunConclusion": "success",
+    "runUrl": "https://github.com/Aznatkoiny/skill-asset-protocol/actions/runs/33993435474/attempts/1",
+    "job": {
+      "id": 101379614017,
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/Aznatkoiny/skill-asset-protocol/actions/runs/33993435474/job/101379614017",
+      "steps": [
+        {
+          "name": "Check out the exact qualification revision",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2
+        },
+        {
+          "name": "Install exact Node runtime",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3
+        },
+        {
+          "name": "Prepare a standalone release without privileged package scripts",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4
+        },
+        {
+          "name": "Qualify installed deterministic startup and recovery with PID1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5
+        },
+        {
+          "name": "Verify qualification evidence independently",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6
+        },
+        {
+          "name": "Retain only public qualification evidence",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7
+        },
+        {
+          "name": "Remove the disposable deployment",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8
+        }
+      ]
+    },
+    "artifact": {
+      "id": 9977391251,
+      "name": "wallet-kernel-installed-lifecycle-3ef2dbcb78bb7c04ec19aa34b0af7dc73eadeef2",
+      "reportedArchiveDigest": "sha256:2b00a4e7e1b00bffdc805e043c59308e0ffb89fbfa0be86b2b36129c670e40f9",
+      "reportedArchiveBytes": 14530,
+      "reportedExpiresAt": "2026-10-05T21:39:28Z",
+      "metadataUrl": "https://api.github.com/repos/Aznatkoiny/skill-asset-protocol/actions/artifacts/9977391251",
+      "url": "https://github.com/Aznatkoiny/skill-asset-protocol/actions/runs/33993435474/artifacts/9977391251"
+    }
+  },
+  "retention": {
+    "recordedAt": "2026-09-05T21:41:02.537887+00:00",
+    "originalFilesChanged": false,
+    "archiveMatchesReportedDigest": true,
+    "downloadedArchiveSha256": "sha256:2b00a4e7e1b00bffdc805e043c59308e0ffb89fbfa0be86b2b36129c670e40f9",
+    "capturedRunMetadataSha256": "sha256:500f7a1e972b9240a5ef92c32ba39f79b1b5f19050a067b04db333deeb81ea9f",
+    "capturedJobsMetadataSha256": "sha256:220b915fae6096205f58885c1fa14cb53a60eb0c0c1ec1adfb927de2cbb78ae3",
+    "files": {
+      "manifest.json": {
+        "sha256": "sha256:7c6a88a82d9c73cc3ba39f7449f8b1bb955d72d4d2bc494c3476169e56cb84d8",
+        "bytes": 1203
+      },
+      "events.jsonl": {
+        "sha256": "sha256:25cdd1d43028e9ea4df6d8662370745b7ecf7e9c4d6fdc5718778932ab7f6d93",
+        "bytes": 128128
+      },
+      "summary.json": {
+        "sha256": "sha256:f45a544542ea8598ad1f6fbf956511cdc905897e7c5d9b8f79af4e884829273a",
+        "bytes": 285
+      }
+    },
+    "localVerifierRecheck": {
+      "script": "scripts/verify-lifecycle-evidence.mjs",
+      "scriptSha256": "sha256:b79911396c8adbd7a1a08df625197c33ef8ba356c3b90e36da70c3074dfb076d",
+      "sourceCommit": "3ef2dbcb78bb7c04ec19aa34b0af7dc73eadeef2",
+      "nodeVersion": "v24.18.1",
+      "exitCode": 0,
+      "summary": {
+        "checks": 43,
+        "commit": "3ef2dbcb78bb7c04ec19aa34b0af7dc73eadeef2",
+        "failed": [],
+        "lastEventHash": "sha256:e944884c65fca9631505840d52eb03501e6631cfd1f0ae7914ba0688ef5d0424",
+        "liveCdp": "not-run",
+        "missing": [],
+        "publicRelease": "not-qualified",
+        "schemaVersion": 1,
+        "scope": "installed-offline-qualification",
+        "testnetTransaction": "not-run",
+        "valid": true
+      }
+    }
+  }
+}

@@ -22,10 +22,11 @@ seller.
 | Mode | What has been exercised | Honest status |
 |---|---|---|
 | `offline-deterministic` | Real local child processes, SQLite authority, policy/approval paths, restart recovery, deterministic x402 settlement, Pi adapter path, signed per-session projections, and recomputable evidence | **Measured offline**; wallet, deployment, and OS isolation are explicitly simulated. No external provider or chain is contacted. |
-| `cdp-testnet` | The prepared-release installer, privileged preflight, Kernel credential delivery, native listeners, and durable runtime composition have offline tests | **Not run.** Actual Linux/systemd lifecycle qualification remains incomplete. Both installed entrypoints stop with `LIVE_LAUNCH_NOT_READY` (exit 78); there is no override switch. |
+| Installed `offline-qualification` profile | Actual installed service, PID1 credential delivery, dropped identities, socket activation, and recovery on Ubuntu 24.04, with fixed synthetic wallet/seller/chain adapters | **Measured installed offline:** 43/43 required checks at `3ef2dbc`, with root, systemd PID1, and exactly Node 24.18.1. [Original run and evidence](#installed-linux-qualification). |
+| `cdp-testnet` profile (explicit or default) | The prepared-release installer, privileged preflight, Kernel credential delivery, native listeners, and durable runtime composition have offline tests | **Not run.** Both installed CDP entrypoints stop with `LIVE_LAUNCH_NOT_READY` (exit 78); there is no override switch. |
 | Mainnet | No mode, route, deployment, or evidence path exists | **Out of scope and unsupported.** No automated funding, mainnet transaction, or real-funds operation is allowed. |
 
-An offline pass is not evidence of live isolation, CDP payment, wallet funding, or a
+These offline results do not establish CDP payment, wallet funding, or a
 Base Sepolia transaction. The current implementation must not be used to reframe public
 website claims until a fresh, human-authorized, externally anchored testnet evidence
 bundle qualifies. Historical network results remain separately labeled below.
@@ -52,6 +53,53 @@ The automated proof is fully offline: an unfunded throwaway wallet signs determi
 x402 authorizations, injected adapters verify and synthesize settlement, and canned
 model responses avoid external APIs. Mock execution is fail-closed and remains the
 default when `MOCK_LLM` is unset.
+
+### Installed Linux qualification
+
+[Run 33993435474, attempt 1](https://github.com/Aznatkoiny/skill-asset-protocol/actions/runs/33993435474/attempts/1)
+passed all **43 required installed offline checks** at source commit
+`3ef2dbcb78bb7c04ec19aa34b0af7dc73eadeef2` on Ubuntu 24.04 with root, systemd
+as PID1, and exactly Node 24.18.1. Independent local verification of the original
+artifact recomputed every check, with no missing or failed checks and no manifest
+failure. The [installed job](https://github.com/Aznatkoiny/skill-asset-protocol/actions/runs/33993435474/job/101379614017)
+also passed final teardown after artifact upload. The qualification applies to
+that source revision and the named scenarios, separately from later documentation
+or merge commits.
+
+The [`installed-lifecycle` workflow](../../.github/workflows/pi-wielder-systemd.yml)
+prepares a standalone, root-owned release addressed by the exact reviewed commit.
+Dependency installation runs unprivileged with lifecycle scripts disabled; the
+installer checks source provenance and the locked package tree before sealing it.
+Successful installation means `sealed_not_started`, not a lifecycle pass.
+
+`executionProfile: "offline-qualification"` is immutable deployment data covered by
+the release manifest. It selects fixed synthetic CDP, seller, and chain behavior
+and renders loopback-only systemd IP rules. It has no live-provider fallback and
+needs no wallet funding or customer secrets. Actual processes, HTTP listeners,
+SQLite recovery, signature creation, and PID1 credential isolation are the host
+behaviors under examination. Inspecting the IP rules alone does not demonstrate
+that the host enforces them.
+
+The [original Actions artifact](https://github.com/Aznatkoiny/skill-asset-protocol/actions/runs/33993435474/artifacts/9977391251)
+contains unchanged `manifest.json`, `events.jsonl`, and `summary.json`. Its downloaded
+ZIP matched GitHub's reported digest
+`sha256:2b00a4e7e1b00bffdc805e043c59308e0ffb89fbfa0be86b2b36129c670e40f9`;
+the original manifest digest is
+`sha256:7c6a88a82d9c73cc3ba39f7449f8b1bb955d72d4d2bc494c3476169e56cb84d8`.
+The three files and separately authored provenance are preserved in the
+[repository archive](evidence/2026-09-05-installed-offline-lifecycle/README.md),
+alongside eleven earlier failed attempts with their original status. The original
+Actions artifact expires at `2026-10-05T21:39:28Z`; the repository copy preserves
+the evidence beyond that download window.
+
+The passing scope includes installed boundaries, listeners, approval/retry/replay,
+rejected stale or changed admission evidence, interrupted signing and paid retry,
+unresolved holds, charged-failure receipts, and cleanup. Wallet, seller, and chain
+behavior is synthetic. This does not establish a CDP payment, a Base Sepolia
+transaction, reboot recovery, customer demand, or public-release readiness. The CDP
+entrypoints remain blocked. See the
+[qualification procedure and cleanup rules](RUNBOOK.md#disposable-installed-qualification)
+before using the disposable-host workflow.
 
 ## Agent approval and call identity
 
@@ -238,8 +286,9 @@ projections as separate capabilities. The deterministic acceptance runner suppli
 offline graph. `src/runtime/installed-service.mjs` verifies the installed process,
 release, PID1 configuration, activation descriptor, and isolation report before
 `installed-runtime.mjs` loads PID1-delivered credentials and composes the real authority,
-wallet adapter, observer, Agent listener, and Operator transports. The executable gate
-remains closed pending actual Linux lifecycle qualification. See [RUNBOOK §10](RUNBOOK.md#10-clean-install-bootstrap-and-the-intentional-live-block).
+wallet adapter, observer, Agent listener, and Operator transports. The installed
+offline scenarios are qualified for the revision and run above; the CDP/testnet
+executable gate remains closed. See [RUNBOOK §10](RUNBOOK.md#10-clean-install-bootstrap-and-the-intentional-live-block).
 
 ```text
 Pi or another HTTP client (legacy Collar demonstration)
